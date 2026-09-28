@@ -1,6 +1,6 @@
 {
-  "version": "0.4.1",
-  "releaseNotes": "0.4.1: 重复棋谱不再截断、统一落子时间基准、存档标注数据质量、改语言后界面立即刷新（不再需要重开页面）、分析快照与归档数据一致、样本增长后提示重新学习",
+  "version": "0.4.2",
+  "releaseNotes": "0.4.2: 中途加入的对局也能识别开局（2 子给大类、3 子给具体开局）、新增回避手检测（前后皆高分中间一臭棋）、将胜乱下与规律性节奏计分；未出现回避手时风险分与旧版逐位一致",
   "downloadUrl": "https://github.com/AODOJUST/gomoku-anti-cheat-detector/archive/refs/heads/main.zip",
   "releaseUrl": "https://github.com/AODOJUST/gomoku-anti-cheat-detector/releases"
 }

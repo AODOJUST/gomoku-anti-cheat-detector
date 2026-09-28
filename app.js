@@ -707,6 +707,94 @@ function markDesperate(steps) {
   return steps;
 }
 
+// 0.4.2 §2.3: 回避手 (evasion move) — a deliberately bad hand played between two good ones,
+// read as smoke for the benefit of a detector rather than as a chess mistake.
+//
+// The shape is what makes it interesting: ONE hand the player gave significant win rate away
+// on, while their own previous and next hands were both the engine's top choice with almost
+// nothing given away. A real blunder does not come wrapped in two perfect hands, so the
+// pattern is much rarer than "played a bad move" and much less likely to be a coincidence.
+// It is also direction-blind: it fires in a won position, a lost one, or an even one.
+//
+// Kept a separate pass from markDesperate, not a branch of it: markDesperate looks for a RUN
+// of hopeless hands in a LOST position (bestWR < 6%), which is the exact opposite situation.
+//
+// `thresholds` is the resolved threshold object (riskParams(...).t), so all five cuts are
+// configurable and learnable without this file knowing where they came from.
+function markEvasion(steps, thresholds) {
+  const t = thresholds || BASE_THRESHOLDS;
+  const lossMin = t.evasionLoss != null ? t.evasionLoss : 0.20;
+  const goodMax = t.goodLoss != null ? t.goodLoss : 0.05;
+  for (let i = 0; i < steps.length; i++) steps[i].evasion = false;
+
+  // Same population sideAggregate() scores, so "excluded from the main statistics" below is
+  // literally the same set of hands being moved out of it. `forcedDefense` is already exempt
+  // (§2.4: a hand that had no alternative cannot be a deliberate smoke screen), and the
+  // opening is excluded because there is no "previous hand of my own" yet.
+  const own = { B: [], W: [] };
+  for (let i = 0; i < steps.length; i++) {
+    const s = steps[i];
+    if (!s.analyzed || s.isOpening || s.forcedDefense) continue;
+    if (s.side === 'B' || s.side === 'W') own[s.side].push(s);
+  }
+  const isGood = (s) => !!s && s.top1 && (s.loss == null || s.loss < goodMax);
+
+  for (const side of ['B', 'W']) {
+    const list = own[side];
+    // Ends are skipped on purpose: an evasion is DEFINED by having a good hand on each side,
+    // so a hand at either end of the side's sequence cannot be one.
+    for (let k = 1; k < list.length - 1; k++) {
+      const s = list[k];
+      if (s.top1) continue;                                    // was the best move anyway
+      if (s.loss == null || s.loss < lossMin) continue;         // not a blunder
+      if (isGood(list[k - 1]) && isGood(list[k + 1])) s.evasion = true;
+    }
+  }
+  return steps;
+}
+
+// The per-side evasion figures §2.3 scores. Split out of sideAggregate so the two things it
+// returns can be read separately — the COUNT (how often) and the REGULARITY (how evenly
+// spaced), which mean different things: a player who blunders once may have simply blundered,
+// while three of them at a fixed interval is a rhythm.
+function evasionStats(steps, side, thresholds) {
+  const t = thresholds || BASE_THRESHOLDS;
+  const own = steps.filter(x => x.side === side && x.analyzed && !x.isOpening && !x.forcedDefense);
+  const evs = own.filter(x => x.evasion);
+  const count = evs.length;
+
+  // §2.2 信号 B: the gaps between evasion hands measured in that side's own move sequence.
+  // stddev/mean is the coefficient of variation — scale-free, so "every third hand" scores the
+  // same whether the game lasted 12 moves or 120. Below `evasionMin` evasions there is not
+  // enough of a pattern to talk about one, so the term stays 0 rather than being noisy.
+  let regularity = 0;
+  const minEv = t.evasionMin != null ? t.evasionMin : 3;
+  if (count >= minEv) {
+    const positions = [];
+    own.forEach((s, i) => { if (s.evasion) positions.push(i); });
+    const gaps = [];
+    for (let i = 1; i < positions.length; i++) gaps.push(positions[i] - positions[i - 1]);
+    if (gaps.length) {
+      const mean = avg(gaps);
+      const std = Math.sqrt(avg(gaps.map(g => (g - mean) ** 2)));
+      const regMax = t.evasionReg != null ? t.evasionReg : 0.35;
+      // A perfectly even rhythm (std 0) -> 1; at or beyond the ceiling -> 0.
+      regularity = mean > 0 ? clamp(1 - std / mean / Math.max(1e-6, regMax), 0, 1) : 0;
+    }
+  }
+
+  // §2.2 信号 C: 将胜乱下 — a big loss taken while already winning. Independent of the
+  // evasion flag: the hand does not need good neighbours to be worth reporting, because
+  // throwing away a won position is not something a strong player does by accident.
+  const winWR = t.winningWR != null ? t.winningWR : 0.85;
+  const lossMin = t.evasionLoss != null ? t.evasionLoss : 0.20;
+  const winBlunders = own.filter(s =>
+    s.bestWR != null && s.bestWR >= winWR &&
+    s.loss != null && s.loss >= lossMin).length;
+
+  return { count, regularity, winBlunders };
+}
+
 // Per-step engine time budget.
 //   budget = min( max(2000, recordedMs), panelThinkMs )
 // recordedMs == null (no timing data) -> fall back to the panel value (fixed budget mode).
@@ -820,6 +908,9 @@ async function analyzeStepwise(record, opts, onProgress, onStep) {
   }
 
   markDesperate(steps);
+  // 0.4.2 §2.3: the evasion pass, right after markDesperate and before anything aggregates —
+  // sideAggregate() drops the hands this flags, so it must have run by then.
+  markEvasion(steps, riskParams(learned).t);
   // 0.3.3 C: same fingerprint pass as analyzeGame, for the same reason.
   if (learned && learned.features && learned.features.length &&
       typeof GMLearn !== 'undefined' && GMLearn && GMLearn.matchFeatures) {
@@ -832,6 +923,11 @@ async function analyzeStepwise(record, opts, onProgress, onStep) {
 // A compact live summary, used while 实时逐步分析 is still accumulating steps.
 function summarizeSteps(steps, times, opts) {
   const hasTime = (times || []).some(v => v != null);
+  const params = (opts && opts.learned) || null;
+  // 0.4.2 §2.3: the live summary has to run the same pass the finished report does, or the
+  // risk score would visibly change the moment the game ends — and the change would look like
+  // a bug. markEvasion() rewrites the flags from scratch, so re-running it per update is safe.
+  markEvasion(steps, riskParams(params).t);
   // Two steps in a row by the same side cannot happen in a real game. The live session
   // only holds PLAYED moves, so an adjacency here means the capture lost one.
   let issues = 0;
@@ -846,8 +942,8 @@ function summarizeSteps(steps, times, opts) {
     orderIssues: issues,
     hasTime,
     suspect: (opts && opts.suspect) || 'both',
-    black: sideAggregate(steps, 'B', hasTime, (opts && opts.learned) || null),
-    white: sideAggregate(steps, 'W', hasTime, (opts && opts.learned) || null),
+    black: sideAggregate(steps, 'B', hasTime, params),
+    white: sideAggregate(steps, 'W', hasTime, params),
   };
 }
 
@@ -871,8 +967,19 @@ function rampDown(v, lo, hi) {
 // The 0.3.1 constants, kept here as the fallback so the detector runs with no learner at
 // all. storage.js holds the canonical copy (DEFAULT_WEIGHTS / DEFAULT_THRESHOLDS) that the
 // learner and the viewer read; this literal is what a run uses before anyone ever pressed
-// 重新学习, and the two are the same six / nine numbers.
-const BASE_WEIGHTS = { top1: 0.20, acpl: 0.08, sharp: 0.22, out: 0.27, desperate: 0.08, time: 0.15 };
+// 重新学习, and the two are the same numbers.
+//
+// 0.4.2 §2.3 adds the last two. They are a SURCHARGE on top of the six, not a slice of them:
+// 0.4.2's acceptance criteria require a risk score that does not move when neither signal
+// fires (§2.6 #6, §五 #5), and making room by scaling the six down to 0.90 — the arithmetic
+// §2.3 sketches — would multiply EVERY existing score by ~0.9 and flip games sitting on the
+// 70 cut from 高风险 to 可疑. So the six keep the values that sum to 1, the two add on top,
+// and sideAggregate() clamps the total at 100. learn.js normalises the two groups separately
+// for the same reason.
+const BASE_WEIGHTS = {
+  top1: 0.20, acpl: 0.08, sharp: 0.22, out: 0.27, desperate: 0.08, time: 0.15,
+  evasion: 0.06, winBlunder: 0.04,
+};
 const BASE_THRESHOLDS = {
   top1Lo: 0.72, top1Hi: 0.90,
   acplLo: 0.003, acplHi: 0.015,
@@ -880,6 +987,14 @@ const BASE_THRESHOLDS = {
   outTop5Hi: 0.03,
   riskHigh: 70, riskMid: 40,
   simWeight: 0.10,
+  // 0.4.2 §4.3: the evasion thresholds. Same mechanism as the rest — learn.js merges its own
+  // copy key by key, and only for keys it knows — so all five are learnable. The defaults are
+  // the ones §2.3 documents.
+  evasionLoss: 0.20,    // "a blunder": win rate this hand gave up
+  goodLoss: 0.05,       // "a good hand": ceiling for the two hands either side of it
+  evasionMin: 3,        // fewest evasions before the rhythm score means anything
+  evasionReg: 0.35,     // stddev / mean ceiling for "a regular rhythm"
+  winningWR: 0.85,      // "winning" for the 将胜乱下 signal
 };
 
 // Resolve learnedParams into the two objects sideAggregate consumes. Unknown or
@@ -1053,6 +1168,9 @@ async function analyzeGame(record, opts, onProgress) {
   }
 
   markDesperate(steps);
+  // 0.4.2 §2.3: same pass as the stepwise path, for the same reason — and before buildReport,
+  // which is where sideAggregate() reads the flags.
+  markEvasion(steps, riskParams(learned).t);
 
   // 0.3.3 C: mark steps whose fingerprint matches a human-confirmed AI move. Done here, on
   // the finished step array, because the match is a post-processing pass over verdicts — it
@@ -1069,7 +1187,14 @@ async function analyzeGame(record, opts, onProgress) {
 }
 
 function sideAggregate(steps, side, hasTime, params) {
-  const s = steps.filter(x => x.side === side && !x.isOpening && x.analyzed && !x.forcedDefense);
+  const { w, t } = riskParams(params);
+  // 0.4.2 §2.3: an evasion hand is excluded from the main statistics. That exclusion IS the
+  // signal: a deliberately bad move would otherwise dilute the very percentages (Top-1 /
+  // ACPL / Top5-外) it is meant to be evidence about — the operator would see a "human-like"
+  // ACPL produced by the smoke screen rather than by the play. The two evasion terms below
+  // are what carries that evidence instead, so nothing is lost.
+  const s = steps.filter(x => x.side === side && !x.isOpening && x.analyzed &&
+                              !x.forcedDefense && !x.evasion);
   if (!s.length) return null;
   const n = s.length;
   const top1 = avg(s.map(x => x.top1 ? 1 : 0));
@@ -1081,6 +1206,9 @@ function sideAggregate(steps, side, hasTime, params) {
   const sharpHit = sharp.length ? avg(sharp.map(x => x.top1 ? 1 : 0)) : null;
   const outTop5 = avg(s.map(x => x.outsideTop5 ? 1 : 0));
   const desperateCount = s.filter(x => x.desperate).length;
+  // Counted over the side's whole sequence (evasions included, since an evasion is one of
+  // them) — see evasionStats. Zero on every hand ⇒ both new terms below are exactly 0.
+  const ev = evasionStats(steps, side, t);
 
   let time = null;
   if (hasTime) {
@@ -1095,11 +1223,6 @@ function sideAggregate(steps, side, hasTime, params) {
     }
   }
 
-  // 0.3.3: the risk model is parameterised so 样本驱动的学习 can move it. `params` is the
-  // learnedParams blob (or null); every field falls back to the 0.3.1 constant, so a run
-  // with no samples is numerically identical to the pre-0.3.3 detector.
-  const { w, t } = riskParams(params);
-
   const aTop1 = rampUp(top1, t.top1Lo, t.top1Hi);
   const aAcpl = rampDown(meanLoss, t.acplLo, t.acplHi);
   const aSharp = sharp.length >= 3 ? clamp((sharpHit - t.sharpHitLo) / Math.max(0.05, t.sharpHitSpan), 0, 1) : 0.5;
@@ -1111,26 +1234,42 @@ function sideAggregate(steps, side, hasTime, params) {
     const uncorr = clamp(1 - Math.abs(time.corrLoss), 0, 1);
     aTime = 0.6 * flat + 0.4 * uncorr;
   }
+  // 0.4.2 §2.3: the two evasion sub-scores. Both are exactly 0 when the side has no evasion
+  // hands and no 将胜乱下 hands — which is what keeps an ordinary game's risk score identical
+  // to 0.4.1's (§2.6 #6). `aEvasion` is half "how many" and half "how regular": a single
+  // blunder between two good hands is worth something, but a rhythm of them is worth more.
+  // A term reaches full weight at 5 evasions and a perfectly even rhythm.
+  const aEvasion = clamp(ev.count / 5, 0, 1) * 0.5 +
+                   ev.regularity * clamp(ev.count / 4, 0, 1) * 0.5;
+  const aWinBlunder = clamp(ev.winBlunders / 3, 0, 1);
   // 0.3.3 C: the feature library's similarity match. Only present once 重新学习 has built a
   // library; it then claims `simWeight` of the score and the six base terms are scaled down
-  // proportionally, so the total stays exactly 1 and an unlearned run is bit-identical to
-  // 0.3.1. `aiSimilar` is set by GMLearn.matchFeatures() before this runs.
+  // proportionally, so an unlearned run is bit-identical to 0.3.1. `aiSimilar` is set by
+  // GMLearn.matchFeatures() before this runs.
   const hasLib = !!(params && params.features && params.features.length);
   const simCount = hasLib ? s.filter(x => x.aiSimilar).length : 0;
   const aSim = hasLib ? clamp(simCount / n, 0, 1) : 0;
   const simW = hasLib ? clamp(t.simWeight != null ? t.simWeight : 0.10, 0, 0.5) : 0;
   const wEff = {};
   for (const k in w) wEff[k] = w[k] * (1 - simW);
-  const risk = 100 * (wEff.top1 * aTop1 + wEff.acpl * aAcpl + wEff.sharp * aSharp + wEff.out * aOut
-                    + wEff.desperate * aDesperate + wEff.time * aTime + simW * aSim);
+  // The six 0.3.1 terms plus simW still sum to 1; the two evasion terms are a surcharge on
+  // top of that (see BASE_WEIGHTS), so the total may exceed 1 and is clamped. With no evasion
+  // the surcharge is 0 and this is arithmetically the 0.4.1 expression.
+  const risk = clamp(100 * (wEff.top1 * aTop1 + wEff.acpl * aAcpl + wEff.sharp * aSharp + wEff.out * aOut
+                    + wEff.desperate * aDesperate + wEff.time * aTime + simW * aSim
+                    + wEff.evasion * aEvasion + wEff.winBlunder * aWinBlunder), 0, 100);
   const level = risk >= t.riskHigh ? '高风险' : (risk >= t.riskMid ? '可疑' : '低风险');
   return {
     side, n, top1, top3, top5, meanLoss, sharpHit, outTop5, desperateCount,
     sharpCount: sharp.length, time, simCount,
+    // 0.4.2 §二. n / top1 / meanLoss above deliberately do NOT include these hands; these
+    // three fields are the only place they are counted.
+    evasionCount: ev.count, evasionRegularity: ev.regularity, winBlunderCount: ev.winBlunders,
     contributions: {
       top1: wEff.top1 * aTop1 * 100, acpl: wEff.acpl * aAcpl * 100, sharp: wEff.sharp * aSharp * 100,
       out: wEff.out * aOut * 100, desperate: wEff.desperate * aDesperate * 100, time: wEff.time * aTime * 100,
       sim: simW * aSim * 100,
+      evasion: wEff.evasion * aEvasion * 100, winBlunder: wEff.winBlunder * aWinBlunder * 100,
     },
     risk, level,
   };
@@ -1201,6 +1340,9 @@ if (typeof module !== 'undefined' && module.exports) {
     parseRecord, coordToShare, evalNum, SIZE,
     analyzeGame, analyzeStepwise, analyzeStep, scoreStep, stepBudget, summarizeSteps,
     buildReport, markDesperate, sideAggregate, sideFromStone, orderIssues,
+    // 0.4.2 §二: the evasion pass and its per-side figures, exported so the unit tests can
+    // drive the two thresholds directly instead of only through a full analysis.
+    markEvasion, evasionStats,
     getEngine, defaultThreadNum, resolveThreadNum, engineInfo, warmEngine,
     // 0.3.4 活四：导出形状识别与判定，供单元测试直接驱动（不再依赖引擎胜率）
     liveFourHolder, applyTerminal, boardFromCoords, scanThreats,

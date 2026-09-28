@@ -26,7 +26,8 @@
  * THE MIRROR RULE
  * ---------------
  * `subscoresForSide()` below recomputes app.js's sideAggregate sub-terms (aTop1, aAcpl,
- * aSharp, aOut, aDesperate, aTime). It is a deliberate copy: learn.js must be usable
+ * aSharp, aOut, aDesperate, aTime — plus, since 0.4.2, aEvasion and aWinBlunder, and the same
+ * exclusion of evasion hands from the six). It is a deliberate copy: learn.js must be usable
  * without app.js (and app.js without learn.js). If you change a ramp in one, change it
  * in the other — both read their anchors from the same DEFAULT_THRESHOLDS object, so
  * only the *shape* of the formula is duplicated, not the numbers.
@@ -35,7 +36,10 @@
   'use strict';
   if (g.GMLearn) return;
 
-  var FALLBACK_WEIGHTS = { top1: 0.20, acpl: 0.08, sharp: 0.22, out: 0.27, desperate: 0.08, time: 0.15 };
+  var FALLBACK_WEIGHTS = {
+    top1: 0.20, acpl: 0.08, sharp: 0.22, out: 0.27, desperate: 0.08, time: 0.15,
+    evasion: 0.06, winBlunder: 0.04,
+  };
   var FALLBACK_THRESHOLDS = {
     top1Lo: 0.72, top1Hi: 0.90,
     acplLo: 0.003, acplHi: 0.015,
@@ -43,6 +47,8 @@
     outTop5Hi: 0.03,
     riskHigh: 70, riskMid: 40,
     simWeight: 0.10,
+    // 0.4.2 §4.3
+    evasionLoss: 0.20, goodLoss: 0.05, evasionMin: 3, evasionReg: 0.35, winningWR: 0.85,
   };
 
   // 0.3.3 §3.5. Kept in sync with storage.js (which the viewer reads to gate the button);
@@ -51,10 +57,18 @@
   var LOW_SAMPLES = 20;
 
   var BASE_KEYS = ['top1', 'acpl', 'sharp', 'out', 'desperate', 'time'];
+  // 0.4.2 §2.3: the two evasion terms are a SURCHARGE — they add to the risk score instead of
+  // taking a share of it (see app.js BASE_WEIGHTS for why). So they are learned inside their
+  // own budget rather than normalised together with the six: normalising all eight to 1 would
+  // scale the six down to ~0.9 and drop every score by 10%, which is exactly what 0.4.2
+  // §2.6 #6 forbids. The two groups are therefore normalised separately, to 1.00 and 0.10.
+  var EVASION_KEYS = ['evasion', 'winBlunder'];
+  var WEIGHT_KEYS = BASE_KEYS.concat(EVASION_KEYS);
 
   var WEIGHT_LABEL = {
     top1: 'Top1 吻合', acpl: 'ACPL 均损', sharp: '唯一手', out: 'Top5 之外',
     desperate: '将败冲四', time: '时间规律',
+    evasion: '回避手', winBlunder: '将胜乱下',
   };
   var THRESHOLD_LABEL = {
     top1Lo: 'Top1 下界', top1Hi: 'Top1 上界',
@@ -62,6 +76,9 @@
     sharpHitLo: '唯一手命中下界', sharpHitSpan: '唯一手跨度',
     outTop5Hi: 'Top5 之外 上界',
     riskHigh: '高风险线', riskMid: '可疑线', simWeight: '特征库权重',
+    evasionLoss: '回避手损失阈值', goodLoss: '好棋损失上限',
+    evasionMin: '规律性最小回避数', evasionReg: '规律性标准差上限',
+    winningWR: '将胜胜率阈值',
   };
 
   // ---------- small stats helpers ----------
@@ -356,11 +373,44 @@
   }
 
   // ---------- B: sub-score weights from AUC ----------
+  // 0.4.2 §2.3: the per-side evasion figures, mirroring app.js's evasionStats(). `all` is the
+  // side's whole scored sequence (evasions included); the caller passes it because the main
+  // statistics use the sequence with the evasions taken OUT of it.
+  function evasionFigures(all, th) {
+    var count = 0, winBlunders = 0, regularity = 0, i;
+    for (i = 0; i < all.length; i++) if (all[i].evasion) count++;
+    var minEv = th.evasionMin != null ? th.evasionMin : 3;
+    if (count >= minEv) {
+      var positions = [];
+      for (i = 0; i < all.length; i++) if (all[i].evasion) positions.push(i);
+      var gaps = [];
+      for (i = 1; i < positions.length; i++) gaps.push(positions[i] - positions[i - 1]);
+      if (gaps.length) {
+        var gm = mean(gaps), gs = 0;
+        for (i = 0; i < gaps.length; i++) gs += Math.pow(gaps[i] - gm, 2);
+        var std = Math.sqrt(gs / gaps.length);
+        var regMax = th.evasionReg != null ? th.evasionReg : 0.35;
+        regularity = gm > 0 ? clamp(1 - std / gm / Math.max(1e-6, regMax), 0, 1) : 0;
+      }
+    }
+    var winWR = th.winningWR != null ? th.winningWR : 0.85;
+    var lossMin = th.evasionLoss != null ? th.evasionLoss : 0.20;
+    for (i = 0; i < all.length; i++) {
+      var s = all[i];
+      if (s.bestWR != null && s.bestWR >= winWR && s.loss != null && s.loss >= lossMin) winBlunders++;
+    }
+    return { count: count, regularity: regularity, winBlunders: winBlunders };
+  }
+
   // app.js's per-side sub-terms, recomputed here (see THE MIRROR RULE at the top).
   function subscoresForSide(rep, side, hasTime, th) {
-    var steps = ((rep && rep.steps) || []).filter(function (x) {
+    var all = ((rep && rep.steps) || []).filter(function (x) {
       return x.side === side && !x.isOpening && x.analyzed && !x.forcedDefense;
     });
+    // 0.4.2 §2.3: the main six are computed over the sequence WITHOUT the evasion hands, exactly
+    // as sideAggregate() does. A sample archived before 0.4.2 has no `evasion` field at all, so
+    // this is a no-op for it — which is what keeps an old corpus training the same way.
+    var steps = all.filter(function (x) { return !x.evasion; });
     if (!steps.length) return null;
     var top1 = mean(steps.map(function (x) { return x.top1 ? 1 : 0; }));
     var losses = steps.map(function (x) { return x.loss; }).filter(function (v) { return v != null; });
@@ -394,11 +444,17 @@
       var uncorr = clamp(1 - Math.abs(time.corrLoss), 0, 1);
       aTime = 0.6 * flat + 0.4 * uncorr;
     }
+    var ev = evasionFigures(all, th);
+    var aEvasion = clamp(ev.count / 5, 0, 1) * 0.5 +
+                   ev.regularity * clamp(ev.count / 4, 0, 1) * 0.5;
+    var aWinBlunder = clamp(ev.winBlunders / 3, 0, 1);
     return {
       top1: aTop1, acpl: aAcpl, sharp: aSharp, out: aOut, desperate: aDesperate, time: aTime,
+      evasion: aEvasion, winBlunder: aWinBlunder,
       // raw, un-ramped aggregates — the ramp anchors are learned from these
       n: steps.length, rawTop1: top1, rawLoss: meanLoss, rawSharpHit: sharpHit, rawOutTop5: outTop5,
       hasSharp: sharp.length >= 3,
+      evasionCount: ev.count, evasionRegularity: ev.regularity, winBlunderCount: ev.winBlunders,
     };
   }
 
@@ -447,7 +503,7 @@
     if (!agg.pos.length || !agg.neg.length) return null;
 
     var aucs = {};
-    BASE_KEYS.forEach(function (k) {
+    WEIGHT_KEYS.forEach(function (k) {
       aucs[k] = weightedAUC(
         agg.pos.map(function (p) { return { v: p.sub[k], w: p.w }; }),
         agg.neg.map(function (n) { return { v: n.sub[k], w: n.w }; }));
@@ -455,15 +511,29 @@
 
     // A term that separates the two classes keeps its edge; one that does not is pushed to
     // a floor rather than to zero. Zero would let the learner collapse the risk score onto
-    // a single term and throw away every other piece of evidence — the floor keeps all six
+    // a single term and throw away every other piece of evidence — the floor keeps all eight
     // in the sum, so a weak dataset degrades to "roughly uniform", never to "one metric".
-    var raw = {}, sum = 0;
-    BASE_KEYS.forEach(function (k) {
-      raw[k] = Math.max(0.02, aucs[k] - 0.5);
-      sum += raw[k];
-    });
-    var weights = {};
-    BASE_KEYS.forEach(function (k) { weights[k] = r4(raw[k] / sum); });
+    //
+    // 0.4.2 §2.3: TWO sums, not one. The six share a budget of 1.00 and the two evasion terms
+    // share their own — the sum of their defaults, 0.10. Normalising all eight in one sum
+    // would hand the six ~0.9 of their former share and drop every score by 10%, so a learned
+    // run with no evasion at all would score lower than an unlearned one, which is exactly
+    // what §2.6 #6 forbids. Each budget is read off the defaults, so changing a default weight
+    // moves its group's budget with it.
+    var dw = defaultWeights();
+    var group = function (keys) {
+      var raw = {}, sum = 0, budget = 0, i;
+      for (i = 0; i < keys.length; i++) {
+        raw[keys[i]] = Math.max(0.02, aucs[keys[i]] - 0.5);
+        sum += raw[keys[i]];
+        budget += (dw[keys[i]] || 0);
+      }
+      var out = {};
+      for (i = 0; i < keys.length; i++) out[keys[i]] = sum ? r4(raw[keys[i]] / sum * budget) : 0;
+      return out;
+    };
+    var weights = group(BASE_KEYS), evW = group(EVASION_KEYS);
+    EVASION_KEYS.forEach(function (k) { weights[k] = evW[k]; });
     return { weights: weights, aucs: aucs, pos: agg.pos.length, neg: agg.neg.length };
   }
 
@@ -504,8 +574,11 @@
 
   function riskOfSub(sub, weights) {
     var r = 0;
-    BASE_KEYS.forEach(function (k) { r += (weights[k] || 0) * sub[k]; });
-    return 100 * r;
+    WEIGHT_KEYS.forEach(function (k) { r += (weights[k] || 0) * sub[k]; });
+    // Clamped to mirror app.js sideAggregate() exactly: the two evasion weights sit ON TOP of
+    // the six, so an evasion-heavy side can add up past 1.0. Without the clamp here the risk
+    // cut search could place 高风险 above 100 — a line the real score can never cross.
+    return clamp(100 * r, 0, 100);
   }
 
   // The 高风险 cut, chosen as the F1-optimal split of the learned risk score across AI
@@ -605,7 +678,7 @@
 
   // ---------- diff helpers for the UI (0.3.3 §3.4 学习结果展示) ----------
   function diffWeights(before, after) {
-    return BASE_KEYS.map(function (k) {
+    return WEIGHT_KEYS.map(function (k) {
       var b = (before && before[k] != null) ? before[k] : null;
       var a = (after && after[k] != null) ? after[k] : null;
       return {
@@ -617,7 +690,9 @@
   }
 
   var THRESHOLD_KEYS = ['top1Lo', 'top1Hi', 'acplLo', 'acplHi', 'sharpHitLo', 'sharpHitSpan',
-                        'outTop5Hi', 'riskHigh', 'riskMid'];
+                        'outTop5Hi', 'riskHigh', 'riskMid',
+                        // 0.4.2 §4.3
+                        'evasionLoss', 'goodLoss', 'evasionMin', 'evasionReg', 'winningWR'];
 
   function diffThresholds(before, after) {
     return THRESHOLD_KEYS.map(function (k) {
@@ -635,6 +710,10 @@
     MIN_SAMPLES: MIN_SAMPLES,
     LOW_SAMPLES: LOW_SAMPLES,
     BASE_KEYS: BASE_KEYS,
+    // 0.4.2 §2.3: the two evasion weights are learned in their own budget, so anything that
+    // wants to walk "every weight" wants WEIGHT_KEYS, not BASE_KEYS.
+    EVASION_KEYS: EVASION_KEYS,
+    WEIGHT_KEYS: WEIGHT_KEYS,
     METRIC_KEYS: METRIC_KEYS,
     SIM_KEYS: SIM_KEYS,
     SIM_LABEL: SIM_LABEL,

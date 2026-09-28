@@ -565,6 +565,10 @@
     // Derived fields are recomputed above, but the NAME is the operator's: only fill it in
     // when the file carried none, so an import never renames a curated archive.
     if (!entry.name) entry.name = defaultArchiveName(entry);
+    // 0.4.2 §4.1: the family, when the specific opening is not known. Derived from whatever
+    // the entry or the record carries, so a pre-0.4.2 archive (code only) answers the 大类
+    // filter too.
+    entry.openingFamily = openingFamilyOf(entry);
     return entry;
   }
 
@@ -1060,7 +1064,17 @@
   // ---------- 0.3.3 learned parameters ----------
   // The learner's output. `null` means "never trained" — the detector then uses the
   // 0.3.1 defaults, which is exactly the pre-0.3.3 behaviour.
-  var DEFAULT_WEIGHTS = { top1: 0.20, acpl: 0.08, sharp: 0.22, out: 0.27, desperate: 0.08, time: 0.15 };
+  // 0.3.3 §3.5 / 0.4.2 §2.3. `evasion` and `winBlunder` are a SURCHARGE on top of the six
+  // 0.3.1 terms, not a slice of them. 0.4.2's own acceptance criteria require an unchanged
+  // risk score whenever neither signal fires (§2.6 #6, §五 #5), and making room for the two by
+  // scaling the six down to 0.90 would multiply every existing score by ~0.9 — enough to flip
+  // a game sitting exactly on the 70 cut from 高风险 to 可疑. So the six keep the values that
+  // sum to 1 and the surcharge is additive; app.js clamps the total at 100. Same literal as
+  // app.js BASE_WEIGHTS and learn.js FALLBACK_WEIGHTS — the three are one set of numbers.
+  var DEFAULT_WEIGHTS = {
+    top1: 0.20, acpl: 0.08, sharp: 0.22, out: 0.27, desperate: 0.08, time: 0.15,
+    evasion: 0.06, winBlunder: 0.04,
+  };
   var DEFAULT_THRESHOLDS = {
     top1Lo: 0.72, top1Hi: 0.90,     // aTop1 ramp: at/below Lo -> 0, at/above Hi -> 1
     acplLo: 0.003, acplHi: 0.015,   // aAcpl ramp: lower loss is better
@@ -1068,6 +1082,14 @@
     outTop5Hi: 0.03,                // aOut ramp
     riskHigh: 70, riskMid: 40,      // 高风险 / 可疑 cut lines
     simWeight: 0.10,                // share of the risk score the feature library may claim
+    // 0.4.2 §4.3: the evasion thresholds, learnable through the same mechanism as the rest
+    // (learn.js merges its own copy of this object key by key, and only for keys it knows).
+    // These defaults are the ones §2.3 documents.
+    evasionLoss: 0.20,              // "a blunder": win rate the side gave up on that hand
+    goodLoss: 0.05,                 // "a good hand": ceiling for the two neighbours
+    evasionMin: 3,                  // fewest evasions before the rhythm score means anything
+    evasionReg: 0.35,               // stddev / mean ceiling for "a regular rhythm"
+    winningWR: 0.85,                // "winning" for the 将胜乱下 signal
   };
   // 0.3.3 §3.5: below this many samples 重新学习 is disabled outright; below LOW it runs
   // but is labelled unreliable. The two are separate so a 6-sample run is still allowed
@@ -1185,6 +1207,10 @@
       top1: !!s.top1, top3: !!s.top3, top5: !!s.top5, outsideTop5: !!s.outsideTop5,
       bestWR: s.bestWR, actualWR: s.actualWR, loss: s.loss,
       isSharp: !!s.isSharp, forcedDefense: !!s.forcedDefense, desperate: !!s.desperate,
+      // 0.4.2 §2.3: this hand is a deliberate-looking blunder with good hands either side —
+      // an evasion. Kept per step so the badge survives a reload and the per-side evasion
+      // figures can be recomputed from the archive without re-analysing it.
+      evasion: !!s.evasion,
       isOpening: !!s.isOpening, analyzed: !!s.analyzed,
       // 0.3.1: the operator's own mark, set from the viewer on any step. A flagged step is
       // the engine's verdict; a manually-marked one is a human "this looks like AI" — the
@@ -1219,6 +1245,13 @@
         top1: a.top1, top3: a.top3, top5: a.top5, meanLoss: a.meanLoss,
         sharpHit: a.sharpHit, sharpCount: a.sharpCount, outTop5: a.outTop5,
         desperateCount: a.desperateCount,
+        // 0.4.2 §二: how many of this side's hands were evasions, how regular their rhythm was
+        // (0..1), and how many were 将胜乱下. Excluded from n/top1/meanLoss above — that
+        // exclusion is the point of the signal, so the totals here and the percentages there
+        // deliberately count different hands.
+        evasionCount: a.evasionCount || 0,
+        winBlunderCount: a.winBlunderCount || 0,
+        evasionRegularity: a.evasionRegularity || 0,
         // 0.3.3 C: how many of this side's steps fingerprint-matched a known AI move.
         simCount: a.simCount || 0,
         time: a.time || null,
@@ -1270,6 +1303,24 @@
   }
 
   // ---------- archive assembly ----------
+  // 0.4.2 §4.1: the ONE-LEVEL-UP answer, for a capture that pinned 直止/斜止 but not which of
+  // the 13 openings it was. `opening` (the code) is null in that case, and without this field
+  // the game would be filed under 未识别 even though its family IS known — and the viewer's
+  // list badge and its 大类 filter would then disagree. Derived rather than stored blindly, so
+  // every reader works on pre-0.4.2 archives too (code only, no `openingFamily`).
+  //
+  // The two category strings are hardcoded for the same reason `低风险` is a few lines above:
+  // storage.js is the shared layer and must not depend on openings.js being loaded.
+  function openingFamilyOf(entry) {
+    if (entry.openingFamily) return entry.openingFamily;
+    if (typeof entry.opening === 'string' && entry.opening) return entry.opening.charAt(0);
+    var op = entry.record && entry.record.meta && entry.record.meta.opening;
+    if (op && op.stage === 'family') {
+      return op.category === '直止' ? 'D' : (op.category === '斜止' ? 'I' : null);
+    }
+    return null;
+  }
+
   // `record` keeps `prejoin` provenance: those stones must be replayed (the board is
   // complete) but must never be scored.
   function buildArchive(input) {
@@ -1330,6 +1381,10 @@
       report: slimReport(rep),
     };
     entry.name = defaultArchiveName(entry);
+    // 0.4.2 §4.1: see openingFamilyOf. A family-only capture has `opening: null` (the code IS
+    // the name of a specific opening, and there is not one) but a known family, so the list
+    // badge can say 直止/斜止 and the 大类 filter can find it.
+    entry.openingFamily = openingFamilyOf(entry);
     return entry;
   }
 
@@ -1410,10 +1465,13 @@
       if (f.terminated === 'no' && a.terminated) return false;
       // Three levels of one field: the family ("D" 直止 / "I" 斜止) is a prefix of the code,
       // so the whole-family case is a prefix test and the single-opening case an equality.
+      // 0.4.2 §4.1: a family-only capture has no code but does have a family, so it belongs in
+      // the 大类 filter and does NOT belong in 未识别 — `openingFamily` is what makes those
+      // two answers agree with the badge the list draws.
       if (f.opening) {
-        if (f.opening === '__none__') { if (a.opening) return false; }
+        if (f.opening === '__none__') { if (a.opening || a.openingFamily) return false; }
         else if (f.opening.length === 1) {
-          if (!a.opening || a.opening.charAt(0) !== f.opening) return false;
+          if ((a.opening || a.openingFamily || '').charAt(0) !== f.opening) return false;
         } else if (a.opening !== f.opening) return false;
       }
       return true;

@@ -94,8 +94,10 @@
 
   // Meta carries the mid-join flags under three different names across builds
   // (0.2.6 record: unorderedCount / inferredCount; report: incomplete). Any of them means
-  // the first stones in the array are not the first stones of the game, so "the opening"
-  // is not recoverable and guessing one would be a fabrication.
+  // the first stones in the array are not the first stones of the game, so the ORDER is not
+  // recoverable. 0.4.2 §一 narrows what that costs: the ROLES may still be recoverable from
+  // the positions (see normalizeRoles), so this now sends detectOpening down the
+  // role-by-position path instead of refusing outright.
   function orderUnknown(meta) {
     if (!meta) return false;
     if (meta.incomplete) return true;
@@ -104,12 +106,75 @@
     return false;
   }
 
-  // moves: [[x,y], ...] in play order (app coordinates). meta: optional {unorderedCount…}.
-  // Returns { category, name, fullName, code } or null — never a guess.
-  function detectOpening(moves, meta) {
-    if (!moves || moves.length < 3) return null;
-    if (orderUnknown(meta)) return null;
-    var m1 = moves[0], m2 = moves[1], m3 = moves[2];
+  // ---------- reading the input (0.4.2 §1.3) ----------
+  // `moves` holds either [x,y] arrays — the original contract — or {x,y,side} objects. A side
+  // comes from, in order: the point's own `side`; `meta.stones[i]`, which uses the same
+  // 1 = black / 2 = white encoding as `record.stones` (the authority on colour) and is what
+  // makes a mid-join's roles recoverable at all; and index parity as the last resort, which is
+  // only right when the list really does start at move 1.
+  function pointAt(p) {
+    if (!p) return null;
+    if (Array.isArray(p)) return (p.length >= 2) ? [p[0], p[1]] : null;
+    if (typeof p === 'object' && p.x != null && p.y != null) return [p.x, p.y];
+    return null;
+  }
+  function sideAt(moves, meta, i) {
+    var p = moves[i];
+    if (p && typeof p === 'object' && !Array.isArray(p) && p.side) return p.side;
+    var st = meta && meta.stones;
+    if (st) { if (st[i] === 1) return 'B'; if (st[i] === 2) return 'W'; }
+    return (i % 2 === 0) ? 'B' : 'W';
+  }
+
+  // ---------- 0.4.2 §一: roles by POSITION, not by order ----------
+  // Black 1 is pinned to tengen by the definition of an opening, white 2 is the only stone of
+  // the other colour, and black 3 is what is left. So once the STONES are known, "which one
+  // came first" stops deciding anything (§1.2 关键观察) — which is what lets a mid-join be
+  // identified at all. Whatever position cannot decide, this refuses to guess.
+  //
+  // 2 stones: only the family is determined, from white's direction away from tengen.
+  function detectFamily(moves, meta) {
+    if (!moves || moves.length !== 2) return null;
+    var b = null, w = null, i;
+    for (i = 0; i < 2; i++) {
+      var p = pointAt(moves[i]);
+      if (!p) return null;
+      if (sideAt(moves, meta, i) === 'B') b = p; else w = p;
+    }
+    if (!b || !w) return null;
+    if (b[0] !== CENTER || b[1] !== CENTER) return null;
+    var dx = w[0] - CENTER, dy = w[1] - CENTER;
+    // White 2 is one of the 8 neighbours, so the Chebyshev distance is exactly 1.
+    if (Math.max(Math.abs(dx), Math.abs(dy)) !== 1) return null;
+    // Orthogonal -> direct (直止); diagonal -> indirect (斜止). The same test lookupTriple
+    // applies below, so the two stages can never disagree about a shape's family.
+    return (dx === 0 || dy === 0) ? '直止' : '斜止';
+  }
+
+  // 3 stones with an unrecoverable order -> { m1, m2, m3 }, or null when the position does not
+  // pin the roles: there must be exactly two black stones and one white one, and black 1 must
+  // be the single black stone on tengen. Ambiguity (no black on tengen, or two) refuses.
+  function normalizeRoles(moves, meta) {
+    if (!moves || moves.length !== 3) return null;
+    var blacks = [], whites = [], i;
+    for (i = 0; i < 3; i++) {
+      var p = pointAt(moves[i]);
+      if (!p) return null;
+      (sideAt(moves, meta, i) === 'B' ? blacks : whites).push(p);
+    }
+    if (blacks.length !== 2 || whites.length !== 1) return null;
+    var tengen = [];
+    for (i = 0; i < blacks.length; i++) {
+      if (blacks[i][0] === CENTER && blacks[i][1] === CENTER) tengen.push(blacks[i]);
+    }
+    if (tengen.length !== 1) return null;
+    return { m1: tengen[0], m2: whites[0],
+             m3: (blacks[0] === tengen[0]) ? blacks[1] : blacks[0] };
+  }
+
+  // The 26-name table walk, shared by the ordered and the role-recovered path so the two can
+  // never disagree about what a given triple means.
+  function lookupTriple(m1, m2, m3) {
     if (!m1 || !m2 || !m3) return null;
 
     // Black 1 must be at tengen, or this is not one of the 26 openings at all (a game that
@@ -144,7 +209,42 @@
     var hit = (direct ? DIRECT : INDIRECT)[b[0] + ',' + b[1]];
     if (!hit) return null;                 // no orbit here — not a legal opening
     return { category: hit.category, name: hit.name, code: hit.code,
-             fullName: hit.category + '·' + hit.name };
+             fullName: hit.category + '·' + hit.name, stage: 'opening' };
+  }
+
+  // The family as a one-letter code, so a capture that only knows the family can still be
+  // filed under 直止 / 斜止 without inventing a name for it (0.4.2 §4.1).
+  var FAMILY_CODE = { '直止': 'D', '斜止': 'I' };
+  function familyCode(category) { return FAMILY_CODE[category] || null; }
+
+  // moves: [[x,y] | {x,y,side}, ...] — the game's moves, in play order when it is known.
+  // meta: optional { unorderedCount | inferredCount | incomplete, stones }.
+  // Returns { category, name, code, fullName, stage } or null — never a guess.
+  //
+  // 0.4.2 §1.3 gives it two stages:
+  //   stage 'opening'  3 stones whose roles are known — in order, or recovered from position
+  //   stage 'family'   2 stones: only 直止 / 斜止 is determined, `name` and `code` are null
+  function detectOpening(moves, meta) {
+    if (!moves) return null;
+    var n = moves.length;
+
+    if (n === 2) {
+      var fam = detectFamily(moves, meta);
+      if (!fam) return null;
+      return { category: fam, name: null, code: null, fullName: fam, stage: 'family' };
+    }
+    if (n < 3) return null;
+
+    if (orderUnknown(meta)) {
+      // Only a 3-stone board pins the roles. With more stones on the board "black 3" is not
+      // identifiable inside the set — a later black stone sits in the same central 5x5 — so a
+      // mid-join onto a full board still refuses: a wrong name is worse than no name.
+      if (n !== 3) return null;
+      var t = normalizeRoles(moves, meta);
+      return t ? lookupTriple(t.m1, t.m2, t.m3) : null;
+    }
+
+    return lookupTriple(pointAt(moves[0]), pointAt(moves[1]), pointAt(moves[2]));
   }
 
   // ---------- presentation helpers ----------
@@ -185,6 +285,16 @@
 
   function label(opening, locale) {
     if (!opening) return null;
+    // 0.4.2 §1.4: a family-only capture. The name is genuinely not recoverable, and saying so
+    // is the point — 「直止（大类，具体开局待定）」 rather than a plausible-looking guess. The
+    // category stays Chinese in every locale for the same reason as below: it IS the RIF term.
+    if (typeof opening === 'object' && opening.stage === 'family' && opening.category) {
+      // `open|…`, not a dotted `open.…` key: dotted keys are for lookups built at runtime
+      // (`t(g.labelKey)` in tree() below), and the key extractor reads every literal `t('…')`
+      // as an `ns|text` pair — a literal dotted key would be filed with an empty text and
+      // reported as a missing translation forever.
+      return opening.category + '（' + t('open|大类，具体开局待定') + '）';
+    }
     var o = byCode(typeof opening === 'string' ? opening : opening && opening.code);
     // A stored object with a name but no resolvable code (an archive written by an older
     // build) still has its Chinese name — better that than dropping the label entirely.
@@ -227,6 +337,12 @@
   g.GMOpening = {
     CENTER: CENTER,
     detectOpening: detectOpening,
+    // 0.4.2 §一: the two role-by-position helpers, exported so the tests can drive them
+    // directly instead of only through detectOpening's dispatch.
+    detectFamily: detectFamily,
+    normalizeRoles: normalizeRoles,
+    lookupTriple: lookupTriple,
+    familyCode: familyCode,
     byCode: byCode,
     label: label,
     TREE: TREE,

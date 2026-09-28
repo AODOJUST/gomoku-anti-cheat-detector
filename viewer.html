@@ -330,6 +330,11 @@
   /* 0.3.3 C: the feature-library match badge — purple, deliberately unlike both the
      engine's red 可疑 and the operator's blue 人工标记. */
   .badge.b-sim{background:#7a2a6b;color:#fff}
+  /* 0.4.2 §二: the evasion badge — teal, the last hue not already spoken for. It has to be
+     unlike 将败 (orange, a run of hopeless hands in a LOST position) because the two sit in
+     adjacent columns and mean opposite things, and unlike 可疑 (red) because it is a claim
+     about intent rather than a verdict on strength. */
+  .badge.b-evasion{background:#0e7490;color:#e6f7fb}
   /* The learning before/after table. Two numeric columns with a signed delta. */
   .ltable td,.ltable th{padding:5px 12px;text-align:left;white-space:nowrap}
   .ltable td.num{text-align:right;font-family:Consolas,monospace}
@@ -541,7 +546,7 @@
       <div class="scroll"><table id="tbl">
         <thead><tr>
           <th>#</th><th>方</th><th>实际</th><th>最佳</th><th>前5候选(胜率%)</th>
-          <th>T1</th><th>T3</th><th>T5</th><th>胜率差</th><th>妙手</th><th>将败</th><th>被迫防守</th><th>耗时ms</th><th>标记</th><th>人工标记</th>
+          <th>T1</th><th>T3</th><th>T5</th><th>胜率差</th><th>妙手</th><th>将败</th><th>回避</th><th>被迫防守</th><th>耗时ms</th><th>标记</th><th>人工标记</th>
         </tr></thead>
         <tbody></tbody>
       </table></div>
@@ -772,7 +777,7 @@
         <div class="scroll"><table id="dTbl">
           <thead><tr>
             <th>#</th><th>方</th><th>实际</th><th>最佳</th><th>前5候选(胜率%)</th>
-            <th>T1</th><th>T3</th><th>T5</th><th>胜率差</th><th>妙手</th><th>将败</th><th>被迫防守</th><th>耗时ms</th><th>标记</th><th>人工标记</th>
+            <th>T1</th><th>T3</th><th>T5</th><th>胜率差</th><th>妙手</th><th>将败</th><th>回避</th><th>被迫防守</th><th>耗时ms</th><th>标记</th><th>人工标记</th>
           </tr></thead>
           <tbody></tbody>
         </table></div>
@@ -947,7 +952,7 @@
         <div class="scroll"><table id="sTbl">
           <thead><tr>
             <th>#</th><th>方</th><th>实际</th><th>最佳</th><th>前5候选(胜率%)</th>
-            <th>T1</th><th>T3</th><th>T5</th><th>胜率差</th><th>妙手</th><th>将败</th><th>被迫防守</th><th>耗时ms</th><th>标记</th><th>人工标注</th>
+            <th>T1</th><th>T3</th><th>T5</th><th>胜率差</th><th>妙手</th><th>将败</th><th>回避</th><th>被迫防守</th><th>耗时ms</th><th>标记</th><th>人工标注</th>
           </tr></thead>
           <tbody></tbody>
         </table></div>
@@ -1066,7 +1071,7 @@
         <div class="scroll"><table id="seTbl">
           <thead><tr>
             <th>#</th><th>方</th><th>实际</th><th>最佳</th><th>前5候选(胜率%)</th>
-            <th>T1</th><th>T3</th><th>T5</th><th>胜率差</th><th>妙手</th><th>将败</th><th>被迫防守</th><th>耗时ms</th><th>标记</th><th>人工标注</th>
+            <th>T1</th><th>T3</th><th>T5</th><th>胜率差</th><th>妙手</th><th>将败</th><th>回避</th><th>被迫防守</th><th>耗时ms</th><th>标记</th><th>人工标注</th>
           </tr></thead>
           <tbody></tbody>
         </table></div>

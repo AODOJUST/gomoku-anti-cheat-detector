@@ -116,6 +116,11 @@
       { key: 'loss',      label: T('viewer|胜率差'),     hide: true  },
       { key: 'sharp',     label: T('viewer|妙手'),       hide: true  },
       { key: 'desperate', label: T('viewer|将败'),       hide: true  },
+      // 0.4.2 §2.5: 回避 sits next to 将败 because the two are easy to confuse and mean
+      // opposite things — 将败 is a run of hopeless hands in a LOST position, 回避 is one bad
+      // hand between two perfect ones in any position. Their badges are deliberately different
+      // colours for the same reason.
+      { key: 'evasion',   label: T('viewer|回避'),       hide: true  },
       { key: 'forced',    label: T('viewer|被迫防守'),   hide: true  },
       { key: 'thinkMs',   label: T('viewer|耗时ms'),     hide: true  },
       { key: 'badge',     label: T('viewer|标记'),       hide: false },
@@ -220,7 +225,7 @@
   }
 
   // The header ▼ can hide a column but cannot bring it back — the header goes with it. This
-  // menu is the way back, and it is the only place that lists all fifteen at once.
+  // menu is the way back, and it is the only place that lists all sixteen at once.
   function renderColMenu() {
     var el = $('colMenu');
     if (!el || !colPrefs) return;
@@ -341,6 +346,15 @@
     if (report) renderReport(); else resetReport();
     var active = document.querySelector('.navbtn.active');
     showView(active ? active.dataset.view : 'detect');
+    // 0.4.2 §2.5: the two detail panes are built entirely in JS — 指标汇总's rows, the step
+    // table's <tbody>, the contribution list — so `apply(document)` above cannot reach them,
+    // and `showView` only refreshes the LIST (`refreshArchives()`). The result was a
+    // half-translated view: the ▾ column menu switched to "Evasion" while 回避手 / 将胜乱下
+    // two inches away stayed in the load-time language. Exactly the 0.4.1 §五.3 defect, in the
+    // other pane. `renderDetail` dereferences `curArchive` unguarded (unlike
+    // `renderSampleDetail`, which returns early), so the test has to be here.
+    if (curArchive) renderDetail();
+    if (curSample) renderSampleDetail();
   }
 
   // =====================================================================
@@ -1226,7 +1240,7 @@
           wr: s.bestWR != null ? T('viewer|胜率{p}', { p: pct(s.bestWR) }) : T('viewer|未分析'),
         }) +
         ' · ' + (!s.analyzed ? T('viewer|(跳过)') : (s.top1 ? 'Top1' : (s.top3 ? 'Top3' : (s.top5 ? 'Top5' : T('viewer|Top5外'))))) +
-        (s.isSharp ? ' · ' + T('viewer|唯一手') : '') + (s.desperate ? ' · ' + T('viewer|将败') : '')
+        (s.isSharp ? ' · ' + T('viewer|唯一手') : '') + (s.desperate ? ' · ' + T('viewer|将败') : '') + (s.evasion ? ' · ' + T('viewer|回避') : '')
       : boardHint();
     document.querySelectorAll('#tbl tbody tr').forEach(function (tr, i) {
       tr.classList.toggle('cur', i === curStep - 1);
@@ -1264,6 +1278,9 @@
     if (s.source === 'ai-suggest') badges.push('<span class="badge b-ai">' + T('viewer|AI参考') + '</span>');
     if (s.isSharp) badges.push('<span class="badge b-sharp">' + T('viewer|唯一手') + '</span>');
     if (s.desperate) badges.push('<span class="badge b-desp">' + T('viewer|将败') + '</span>');
+    // 0.4.2 §2.5: its own colour, because "this hand was deliberately bad" is a claim about
+    // intent and must not read like the engine's 可疑 verdict or like 将败's hopelessness.
+    if (s.evasion) badges.push('<span class="badge b-evasion">' + T('viewer|回避') + '</span>');
     if (s.forcedDefense) badges.push('<span class="badge" style="background:#888;color:#fff">' + T('viewer|豁免') + '</span>');
     // 0.3.3 C: the step fingerprint-matched a human-confirmed AI move. Its own colour and
     // its own wording — it is a similarity to the operator's own library, which is a
@@ -1278,6 +1295,7 @@
       '<td>' + (s.top1 ? '✓' : '') + '</td><td>' + (s.top3 ? '✓' : '') + '</td><td>' + (s.top5 ? '✓' : '') + '</td>' +
       '<td>' + (s.loss != null ? (s.loss * 100).toFixed(1) + '%' : '—') + '</td>' +
       '<td>' + (s.isSharp ? T('viewer|是') : '') + '</td><td>' + (s.desperate ? T('viewer|是') : '') + '</td>' +
+      '<td>' + (s.evasion ? T('viewer|是') : '') + '</td>' +
       '<td>' + (s.forcedDefense ? '✓' : '') + '</td>' +
       '<td>' + (s.thinkMs != null ? s.thinkMs : '—') + '</td>' +
       '<td>' + badges.join(' ') + '</td>';
@@ -1343,6 +1361,23 @@
   }
   function desCount(a) { return a ? T('viewer|{n}次', { n: a.desperateCount }) : '—'; }
   function simCount(a) { return a ? T('viewer|{n} 步', { n: a.simCount || 0 }) : '—'; }
+  // 0.4.2 §2.5. The evasion row carries two numbers because they answer different questions —
+  // how many, and how evenly they were spaced. `0.00` regularity is the normal answer for one
+  // or two evasions (below the count that makes a rhythm measurable), so it is printed rather
+  // than hidden. `—` means the archive predates the field, NOT "we looked and found none":
+  // claiming a clean answer we never computed is the one thing this row must not do.
+  function evCount(a) {
+    if (!a || a.evasionCount == null) return '—';
+    var n = a.evasionCount || 0;
+    // The zero case reuses the plain `{n}次` row the 将败冲四 row above already uses, so the
+    // two rows stay typographically identical when there is nothing to report.
+    return n ? T('viewer|{n}次（规律性 {p}）', { n: n, p: (a.evasionRegularity || 0).toFixed(2) })
+             : T('viewer|{n}次', { n: 0 });
+  }
+  function wbCount(a) {
+    if (!a || a.winBlunderCount == null) return '—';
+    return T('viewer|{n}次', { n: a.winBlunderCount || 0 });
+  }
 
   function summaryTableHtml(rep, opts) {
     rep = rep || {};
@@ -1356,6 +1391,8 @@
       '<tr><td>' + T('viewer|唯一手命中') + '</td><td>' + sharpHit(rep.black) + '</td><td>' + sharpHit(rep.white) + '</td></tr>' +
       '<tr><td>' + T('viewer|Top5 之外') + '</td><td>' + (rep.black ? pct(rep.black.outTop5) : '—') + '</td><td>' + (rep.white ? pct(rep.white.outTop5) : '—') + '</td></tr>' +
       '<tr><td>' + T('viewer|将败冲四') + '</td><td>' + desCount(rep.black) + '</td><td>' + desCount(rep.white) + '</td></tr>' +
+      '<tr><td>' + T('viewer|回避手') + '</td><td>' + evCount(rep.black) + '</td><td>' + evCount(rep.white) + '</td></tr>' +
+      '<tr><td>' + T('viewer|将胜乱下') + '</td><td>' + wbCount(rep.black) + '</td><td>' + wbCount(rep.white) + '</td></tr>' +
       (opts.sim ? ('<tr><td>' + T('viewer|AI 指纹命中') + '</td><td>' + simCount(rep.black) + '</td><td>' + simCount(rep.white) + '</td></tr>') : '') +
       '<tr><td>' + T('viewer|时间模式') + '</td><td colspan="2">' + (rep.hasTime ? T('viewer|真实间隔') : T('viewer|固定预算')) + '</td></tr>' +
       '<tr><td>' + T('viewer|冲四豁免') + '</td><td colspan="2">' + T('viewer|{n} 手', { n: rep.forcedCount || 0 }) + '</td></tr>' +
@@ -1404,6 +1441,8 @@
       '<tr><td>' + T('viewer|Top-5') + '</td><td>' + (sm ? pct(sm.top5) : '—') + '</td><td>' + (sw ? pct(sw.top5) : '—') + '</td></tr>' +
       '<tr><td>' + T('viewer|ACPL') + '</td><td>' + (sm ? (sm.meanLoss * 100).toFixed(1) + '%' : '—') + '</td><td>' + (sw ? (sw.meanLoss * 100).toFixed(1) + '%' : '—') + '</td></tr>' +
       '<tr><td>' + T('viewer|将败冲四') + '</td><td>' + desCount(sm) + '</td><td>' + desCount(sw) + '</td></tr>' +
+      '<tr><td>' + T('viewer|回避手') + '</td><td>' + evCount(sm) + '</td><td>' + evCount(sw) + '</td></tr>' +
+      '<tr><td>' + T('viewer|将胜乱下') + '</td><td>' + wbCount(sm) + '</td><td>' + wbCount(sw) + '</td></tr>' +
       '<tr><td>' + T('viewer|被迫防守豁免') + '</td><td colspan="2">' + T('viewer|{n} 手', { n: report.forcedCount || 0 }) + '</td></tr>' +
       '</table>';
     document.querySelector('#tbl tbody').innerHTML = '';
@@ -1413,10 +1452,10 @@
   $('expJson').onclick = function () { if (report) download('report.json', JSON.stringify(report, null, 2), 'application/json'); };
   $('expCsv').onclick = function () {
     if (!report) return;
-    var csv = 'move,side,actual,best,top1,top3,top5,loss,sharp,desperate,thinkMs,manualAI\n';
+    var csv = 'move,side,actual,best,top1,top3,top5,loss,sharp,desperate,evasion,thinkMs,manualAI\n';
     report.steps.forEach(function (s) {
       csv += [s.moveNo, s.side, s.actualStr, s.bestStr, s.top1, s.top3, s.top5,
-              s.loss == null ? '' : s.loss, s.isSharp, s.desperate, s.thinkMs == null ? '' : s.thinkMs,
+              s.loss == null ? '' : s.loss, s.isSharp, s.desperate, s.evasion, s.thinkMs == null ? '' : s.thinkMs,
               s.manualAI ? '是' : ''].join(',') + '\n';
     });
     download('report.csv', csv, 'text/csv');
@@ -1657,8 +1696,14 @@
       var meta = (a.blackRisk || 0) + '/' + (a.whiteRisk || 0) + ' · ' + G.modeLabel(a.mode) +
                  ' · ' + T('viewer|{n}手', { n: a.totalMoves || 0 }) +
                  // The opening, when it was identifiable. The archive stores only the code,
-                 // so the name comes back from openings.js.
-                 (a.opening ? ' · ' + GMOpening.label(a.opening) : '') +
+                 // so the name comes back from openings.js. 0.4.2 §4.1: a mid-join that pinned
+                 // the FAMILY but not which of the 13 openings it was has no code at all — the
+                 // family object lives in the record's meta, and without falling back to it the
+                 // card would say nothing while the 大类 filter still found the game.
+                 (function () {
+                   var opo = (rm.opening) || a.opening;
+                   return opo ? ' · ' + GMOpening.label(opo) : '';
+                 })() +
                  ' · ' + G.beijingTime(a.createdAt) +
                  // 和棋 is the only outcome worth a badge here: a draw has no winner, so
                  // without it the card looks exactly like a game that never finished.
@@ -2382,7 +2427,7 @@
           wr: s.bestWR != null ? T('viewer|胜率{p}', { p: pct(s.bestWR) }) : T('viewer|未分析'),
         }) +
         ' · ' + (!s.analyzed ? T('viewer|(跳过)') : (s.top1 ? 'Top1' : (s.top3 ? 'Top3' : (s.top5 ? 'Top5' : T('viewer|Top5外'))))) +
-        (s.isSharp ? ' · ' + T('viewer|唯一手') : '') + (s.desperate ? ' · ' + T('viewer|将败') : '') +
+        (s.isSharp ? ' · ' + T('viewer|唯一手') : '') + (s.desperate ? ' · ' + T('viewer|将败') : '') + (s.evasion ? ' · ' + T('viewer|回避') : '') +
         (s.forcedDefense ? ' · ' + T('viewer|冲四豁免') : '') +
         ' · ' + T('viewer|前5候选 {list}', { list: (s.candStrs || []).join(' ') })
       : T('viewer|棋谱：{n} / {total} 子（拖滑块或点按钮逐步查看）', { n: stones.length, total: total });
@@ -2433,11 +2478,11 @@
   $('dExpJson').onclick = function () { if (curArchive) exportArchiveJson(curArchive); };
   $('dExpCsv').onclick = function () {
     if (!curArchive || !curArchive.report) return;
-    var csv = 'move,side,actual,best,top1,top3,top5,loss,sharp,desperate,thinkMs,badges,manualAI\n';
+    var csv = 'move,side,actual,best,top1,top3,top5,loss,sharp,desperate,evasion,thinkMs,badges,manualAI\n';
     (curArchive.report.steps || []).forEach(function (s) {
       csv += [s.moveNo, s.side, s.actualStr, s.bestStr, s.top1, s.top3, s.top5,
-              s.loss == null ? '' : s.loss, s.isSharp, s.desperate, s.thinkMs == null ? '' : s.thinkMs,
-              [s.isSharp ? '唯一手' : '', s.desperate ? '将败' : '', s.forcedDefense ? '豁免' : '',
+              s.loss == null ? '' : s.loss, s.isSharp, s.desperate, s.evasion, s.thinkMs == null ? '' : s.thinkMs,
+              [s.isSharp ? '唯一手' : '', s.desperate ? '将败' : '', s.evasion ? '回避' : '', s.forcedDefense ? '豁免' : '',
                isFlagged(s) ? '可疑' : '', s.source === 'prejoin' ? '还原' : ''].filter(Boolean).join('/'),
               s.manualAI ? '是' : ''
              ].join(',') + '\n';
@@ -3067,7 +3112,7 @@
           wr: st.bestWR != null ? T('viewer|胜率{p}', { p: pct(st.bestWR) }) : T('viewer|未分析'),
         }) +
          ' · ' + (!st.analyzed ? T('viewer|(跳过)') : (st.top1 ? 'Top1' : (st.top3 ? 'Top3' : (st.top5 ? 'Top5' : T('viewer|Top5外'))))) +
-         (st.isSharp ? ' · ' + T('viewer|唯一手') : '') + (st.desperate ? ' · ' + T('viewer|将败') : '') +
+         (st.isSharp ? ' · ' + T('viewer|唯一手') : '') + (st.desperate ? ' · ' + T('viewer|将败') : '') + (st.evasion ? ' · ' + T('viewer|回避') : '') +
          (st.forcedDefense ? ' · ' + T('viewer|冲四豁免') : '') +
          (st.aiSimilar ? ' · ' + T('viewer|疑AI指纹') +
             (st.aiSim != null ? '(' + st.aiSim + ')' : '') : ''))
@@ -3838,8 +3883,13 @@
       numTable(GMLearn.diffWeights(lp.before && lp.before.weights, lp.weights), 4) + '</div>';
     if (lp.aucs) {
       h += '<div class="lbox"><b>' + T('viewer|AUC 区分度') + '</b><div class="hint">' +
-        GMLearn.BASE_KEYS.map(function (k) {
-          return esc(paramLabel('learn.weight.' + k, GMLearn.WEIGHT_LABEL[k] || k)) + ' ' + lp.aucs[k].toFixed(3);
+        // 0.4.2: WEIGHT_KEYS (all eight), not BASE_KEYS — the two evasion terms are learned
+        // too, just in their own budget. Guarded per key because a learnedParams written
+        // before 0.4.2 has no `aucs` entry for them, and an unguarded .toFixed() here would
+        // throw and blank the whole 学习面板.
+        GMLearn.WEIGHT_KEYS.map(function (k) {
+          return esc(paramLabel('learn.weight.' + k, GMLearn.WEIGHT_LABEL[k] || k)) + ' ' +
+            (lp.aucs[k] != null ? lp.aucs[k].toFixed(3) : '—');
         }).join(' · ') +
         '</div><div class="hint">' + T('viewer|0.5 = 无区分度；越接近 1，该分项越能分开 AI 与人类。') + '</div></div>';
     }

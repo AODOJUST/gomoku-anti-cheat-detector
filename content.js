@@ -186,13 +186,27 @@
   // goes through both agrees.
   function movePoint(m) { return [m.col, 14 - m.row]; }
 
-  // The opening of the CURRENT game, or null. Cheap enough for the status line: it only ever
-  // looks at the first three moves, and it refuses outright as soon as any stone has an
-  // unknown place in the order.
+  // The opening of the CURRENT game, or null.
+  //
+  // 0.4.2 §一: no longer gated on a recoverable order. Black 1 is pinned to tengen by the
+  // definition of an opening, so with 2 or 3 stones on the board the ROLES are decided by
+  // position and a mid-join is identifiable for real (2 stones -> family only). Past three
+  // stones "black 3" is not identifiable inside the set any more, so there the ordered path
+  // is the only one — and it does need the order.
   function currentOpening() {
     var mv = activeMoves();
-    if (mv.length < 3 || countInferred(mv)) return null;
-    return GMOpening.detectOpening([movePoint(mv[0]), movePoint(mv[1]), movePoint(mv[2])], null);
+    if (mv.length < 2) return null;
+    var inferred = countInferred(mv);
+    if (mv.length > 3 && inferred) return null;
+    var pts = [], sides = [];
+    var upto = mv.length < 3 ? mv.length : 3;
+    for (var i = 0; i < upto; i++) {
+      pts.push(movePoint(mv[i]));
+      // 1 = black / 2 = white in the collector; anything else lets openings.js fall back to
+      // index parity (only correct when the list really does start at move 1).
+      sides.push(mv[i].stone === 1 ? 'B' : (mv[i].stone === 2 ? 'W' : null));
+    }
+    return GMOpening.detectOpening(pts, { unorderedCount: inferred, stones: sides });
   }
 
   // Adjacent same-colour moves: impossible in gomoku (black starts, play alternates), so
@@ -250,9 +264,12 @@
         source: fromSocket() ? 'socket' : 'dom',
         rule: isRenju() ? 'renju' : 'freestyle',
         // The RIF opening, derived from the first three KEPT moves (the dedup above can drop
-        // one, and then "move 3" would not be the third stone). Refuses when any stone's
-        // place in the order is unknown, because then the first three are not the opening.
-        opening: GMOpening.detectOpening(pts, { unorderedCount: inferred }),
+        // one, and then "move 3" would not be the third stone). 0.4.2 §一: when the order is
+        // unknown the roles are recovered from the positions instead of the whole thing being
+        // refused, so a mid-join now yields either a real name (3 stones) or the family alone
+        // (2 stones, `stage: 'family'`). `stones` is what makes that possible — the colours
+        // are known even when the order is not.
+        opening: GMOpening.detectOpening(pts, { unorderedCount: inferred, stones: stones }),
         // registered | guest | spectator, plus the route it was decided by — these are all
         // heuristics and an undiagnosable guess is worse than no field.
         identity: ident.identity,
