@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Gomoku Detector — engine host</title>
+</head>
+<body>
+<!-- 0.3.3: storage.js so analyzeGame can read learnedParams, and learn.js so it can run the
+     feature-library match. Without them the offscreen run would silently ignore everything
+     重新学习 produced, and the in-page panel's verdicts would disagree with the viewer's. -->
+<!-- 0.3.6 §1.5 load order: i18n.js first, then the 8 locale tables, then everything else.
+     storage.js calls T()/TO() lazily (it is also require()d by the unit suites with no
+     browser), but app.js's i18nErr() reaches for GMI18n.errCode() at throw time, so the core
+     has to be resident before app.js is evaluated. The locale tables are here for the same
+     reason content.js needs them: a T() that resolves against an empty dictionary would
+     silently emit Chinese inside an otherwise-English session. offscreen.js sets the locale
+     from settings at boot. -->
+<script src="i18n.js"></script>
+<script src="locale/zh-CN.js"></script>
+<script src="locale/zh-TW.js"></script>
+<script src="locale/ja.js"></script>
+<script src="locale/ko.js"></script>
+<script src="locale/en.js"></script>
+<script src="locale/ru.js"></script>
+<script src="locale/fr.js"></script>
+<script src="locale/de.js"></script>
+<script src="storage.js"></script>
+<script src="learn.js"></script>
+<script src="app.js"></script>
+<script src="offscreen.js"></script>
+</body>
+</html>

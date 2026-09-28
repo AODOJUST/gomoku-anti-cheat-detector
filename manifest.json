@@ -1,0 +1,58 @@
+{
+  "manifest_version": 3,
+  "name": "Gomoku Anti-Cheat Detector",
+  "version": "0.3.7",
+  "description": "Records gomoku.com move order from the game socket, identifies the RIF opening, runs the Rapfi engine offscreen (multi-threaded or single-threaded fallback, global or stepwise), archives every game and replays it in the built-in viewer. 0.3.6 ships in 8 languages (zh-CN / zh-TW / ja / ko / en / ru / fr / de), switchable from a right-click menu on the toolbar icon or the viewer's settings page, and repaints the panel and the viewer the instant the setting changes. Stored identity values (tags, annotation labels, risk levels, opening codes) stay canonical so the learner keeps matching them by literal, and only their display is translated; error text travels from the offscreen engine as codes and is translated by whichever surface shows it. Adds a 📋 copy button to the panel header that puts the whole verdict on the clipboard as one line: model, both players, hand count, opening name and each side's AI rate. It also lets a board snapshot that arrives exactly one move ahead of the socket confirm that stone when its own event lands late, so a hand the server did report no longer counts as having no order. 0.3.7 makes game-end detection independent of any single page signal: it snapshots the board when a game ends, when a draw is declared, when the player starts a new game, and when the board is cleared or rebuilt, so a game that stopped mid-way is still archived and is never overwritten by the next one; the settlement wording (rematch / draw) is read as a fallback trigger too. It defaults the thread count to half the available cores (a 32-thread host defaults to 16, up from the old cap of 8), and ranks a four-three kill above a live four when deciding that the game is decided, so a losing side that opens a live four no longer ends the analysis early.",
+  "permissions": [
+    "storage",
+    "offscreen",
+    "contextMenus"
+  ],
+  "host_permissions": [
+    "https://gomoku.com/*",
+    "https://www.gomoku.com/*"
+  ],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'"
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "打开 Gomoku 检测查看器"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://gomoku.com/*",
+        "https://www.gomoku.com/*"
+      ],
+      "js": [
+        "hook.js"
+      ],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": [
+        "https://gomoku.com/*",
+        "https://www.gomoku.com/*"
+      ],
+      "js": [
+        "i18n.js",
+        "locale/zh-CN.js",
+        "locale/zh-TW.js",
+        "locale/ja.js",
+        "locale/ko.js",
+        "locale/en.js",
+        "locale/ru.js",
+        "locale/fr.js",
+        "locale/de.js",
+        "storage.js",
+        "openings.js",
+        "content.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ]
+}

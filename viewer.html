@@ -1,0 +1,1154 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>五子棋 AI 反作弊检测器 · 查看器</title>
+<style>
+  :root{
+    --bg:#0f1419; --panel:#1a2029; --line:#2a3441; --txt:#e6edf3; --mut:#8b98a5;
+    --red:#e74c3c; --green:#2ecc71; --yellow:#f1c40f; --blue:#3c5ee7; --orange:#e67e22;
+
+    /* ---- one UI scale for the whole viewer ----
+       0.2.4 split the old single 2x scale into 外壳×2 / 细则×1.2, but switched it on only
+       for the replay pane: 检测 and 设置 kept their pre-0.2.4 sizes, so the three tabs read
+       as three different applications. 0.2.6 lifted the scales onto :root, which turns them
+       on everywhere. The one surface that keeps its own compact sizing is the in-page panel
+       (content.js) — it is a 580px overlay that has to stay out of the game's way.
+
+         shell  ×2   : nav, titles, panel chrome, card box, radii, gaps, button height
+         detail ×1.2 : the text INSIDE a box — labels, badges, table type, figures
+
+       0.3.0 shrinks that whole set by another 0.85 (the operator found ×2 too large on a
+       laptop), so the effective factors are shell ×1.7 and detail ×1.02 — i.e. the fine
+       print ends up at almost exactly the pre-0.2.4 size while the chrome stays roomier.
+       Only the numbers change again; nothing downstream needs to know.
+
+       An element that is hard to classify belongs to `detail`: keeping text readable at
+       normal size is the safer mistake than inflating it. */
+    --ui-shell-padding:20px;      /* 原 12px ×2  ×0.85 */
+    --ui-shell-radius:10px;       /* 原 6px  ×2  ×0.85 */
+    --ui-shell-gap:17px;          /* 原 10px ×2  ×0.85 */
+    --ui-shell-btn-height:41px;   /* 原 24px ×2  ×0.85 */
+    --ui-shell-title:29px;        /* 原 17px ×2  ×0.85 */
+    --ui-shell-nav:22px;          /* 原 13px ×2  ×0.85 */
+
+    --ui-detail-font:14px;        /* 原 13px ×1.2 ×0.85 */
+    /* 0.3.5 §2.1: the fine print was the one thing 0.3.0's extra 0.85 shrank below its
+       pre-0.2.4 size (11px × 1.2 × 0.85 ≈ 11px again). Only this one variable moves —
+       scaling --ui-detail-font / --ui-detail-large too would push the whole detail layer
+       up a step and unbalance it against the shell. */
+    --ui-detail-small:13px;       /* 原 11px ×1.2，去掉 0.85 收缩 */
+    --ui-detail-large:17px;       /* 原 17px ×1.2 ×0.85 */
+    --ui-detail-padding:9px;      /* 原 8px  ×1.2 ×0.85 */
+    --ui-detail-radius:7px;       /* 原 6px  ×1.2 ×0.85 */
+  }
+  *{box-sizing:border-box}
+  body{margin:0;font-family:"Segoe UI",Microsoft YaHei,sans-serif;background:var(--bg);color:var(--txt);font-size:var(--ui-detail-font)}
+  /* 0.3.5 §2.2: the nav stays put. Nothing above it may scroll-container it — body/.wrap
+     carry no overflow, and the two scroll boxes (.scroll / .archive-grid) are below it. */
+  header{position:sticky;top:0;z-index:100;padding:14px var(--ui-shell-padding);background:var(--panel);border-bottom:1px solid var(--line);display:flex;align-items:center;gap:var(--ui-shell-gap);flex-wrap:wrap}
+  header h1{font-size:var(--ui-detail-large);margin:0;font-weight:600;white-space:nowrap}
+  header h1 .sub{font-size:var(--ui-detail-small);color:var(--mut);font-weight:400}
+  #status{font-size:var(--ui-detail-small);color:var(--mut);margin-left:auto}
+  .wrap{padding:var(--ui-shell-gap) var(--ui-shell-padding);max-width:1560px;margin:0 auto}
+  .main-row{display:flex;gap:var(--ui-shell-gap);align-items:flex-start;flex-wrap:wrap}
+  .left-col{flex:0 0 auto;max-width:100%;display:flex;flex-direction:column;gap:var(--ui-shell-gap)}
+  .right-col{flex:1 1 320px;min-width:320px;display:flex;flex-direction:column;gap:var(--ui-shell-gap)}
+  /* `.left-col` 是 `flex:0 0 auto` ⇒ 宽度取 **max-content**。而检测页左列里有两段长 `.hint`
+     说明（0.3.4 起「步骤操作」那段三行文字，max-content ≈ 1300px），于是整列被撑满，
+     `.right-col`（min-width 320）挤不下就换行 —— 检测页在**任何窄于 ~1650px 的窗口**里都塌成
+     单列：1920 的屏上看不出来，1366 的笔记本上是坏的，正是 probe-layout 存在的意义。
+     给一个**由棋盘决定的确定宽度**（530 棋盘 + 2×20 内边距 + 2×1 边框 = 这一列本来就该有的宽度），
+     长段落就不再参与尺寸决策。只作用于检测页：回放详情的 `.left-col` 本来就是对的。 */
+  #view-detect .main-row > .left-col{flex:0 0 auto;width:calc(530px + 2 * var(--ui-shell-padding) + 2px)}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:calc(var(--ui-shell-radius) + 4px);padding:var(--ui-shell-padding)}
+  .panel h2{font-size:var(--ui-shell-title);margin:0 0 var(--ui-detail-padding);color:var(--mut);font-weight:600;letter-spacing:.5px}
+  textarea{width:100%;height:110px;background:#0d1117;color:var(--txt);border:1px solid var(--line);border-radius:var(--ui-detail-radius);padding:var(--ui-detail-padding);font-family:Consolas,monospace;font-size:var(--ui-detail-small)}
+  button{background:var(--blue);color:#fff;border:0;border-radius:var(--ui-shell-radius);padding:0 22px;min-height:var(--ui-shell-btn-height);cursor:pointer;font-size:var(--ui-detail-font)}
+  button.sec{background:#2a3441}
+  button.danger{background:#7a2a2a}
+  button:disabled{opacity:.5;cursor:not-allowed}
+  label{font-size:var(--ui-detail-small);color:var(--mut);display:inline-flex;align-items:center;gap:6px;margin-right:14px}
+  select,input[type=number],input[type=text],input[type=datetime-local]{background:#0d1117;color:var(--txt);border:1px solid var(--line);border-radius:var(--ui-detail-radius);padding:8px 10px;font-size:var(--ui-detail-small)}
+  input[type=checkbox]{accent-color:var(--blue);width:20px;height:20px}
+  #progress{height:10px;background:#0d1117;border-radius:5px;overflow:hidden;margin-top:var(--ui-detail-padding)}
+  #bar{height:100%;width:0;background:var(--green);transition:width .2s}
+  /* max-width lets a board shrink on a narrow window; drawBoard derives every radius and
+     font size from cv.width, so the stone numbers scale with it. */
+  canvas{background:#c9a227;border-radius:var(--ui-detail-radius);display:block;margin:0 auto;cursor:crosshair;max-width:100%}
+  canvas.ro{cursor:default}
+  .step-bar{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+  /* The slider is the one step-bar item that has to give way: a fixed 280px made the whole
+     column that much wider, and at the ×2 shell scale the detect page's two columns stopped
+     fitting on one row. It flexes between 110 and 280 instead. */
+  input[type=range]{flex:1 1 90px;min-width:90px;max-width:280px;width:auto;height:26px}
+  .score{display:flex;gap:var(--ui-shell-gap);flex-wrap:wrap}
+  .card{flex:1;min-width:150px;background:#0d1117;border:1px solid var(--line);border-radius:var(--ui-detail-radius);padding:var(--ui-detail-padding);text-align:center}
+  /* shell-scale figure: it is the headline number, not card fine print */
+  .card .big{font-size:37px;font-weight:700}
+  .card .lab{font-size:var(--ui-detail-small);color:var(--mut);margin-top:4px}
+  .lv-低风险{color:var(--green)} .lv-可疑{color:var(--yellow)} .lv-高风险{color:var(--red)}
+  table{width:100%;border-collapse:collapse;font-size:var(--ui-detail-small)}
+  th,td{padding:7px 10px;border-bottom:1px solid var(--line);text-align:center;white-space:nowrap}
+  th{color:var(--mut);font-weight:600;position:sticky;top:0;background:var(--panel);z-index:1}
+  tr.cur{outline:2px solid var(--blue)}
+  /* 0.3.4: a step row is a jump target for the board cursor, so it has to look clickable. */
+  #tbl tbody tr{cursor:pointer}
+  #tbl tbody td.ma{cursor:default}
+  /* 0.3.5 §2.4: the black/white colouring moves from the 方 cell to the WHOLE row, so a hand
+     can be followed across every column at a glance instead of only at its left edge.
+     The 方 cell keeps its own rule below (same colours, plus weight and radius) — the row
+     rule only ties with it, never fights it.
+     Badges, annotation buttons and the 人工标记 cell deliberately opt out: they carry their
+     own colour because their colour IS their meaning (唯一手 / 将败 / 豁免 / 疑AI指纹 …),
+     and repainting them black or white would erase the distinction. */
+  #tbl tbody tr.side-B td,#dTbl tbody tr.side-B td,#sTbl tbody tr.side-B td,#seTbl tbody tr.side-B td{background:#111;color:#fff}
+  #tbl tbody tr.side-W td,#dTbl tbody tr.side-W td,#sTbl tbody tr.side-W td,#seTbl tbody tr.side-W td{background:#f5f5f5;color:#000}
+  /* 可疑 is a TINT, not a replacement: the row rule above outranks this one on `background`,
+     so an inset overlay is used to lay the red wash over whichever side colour is there
+     instead of erasing it. (At equal specificity, a plain background here would lose.) */
+  tr.flagged td{background:rgba(231,76,60,.12);box-shadow:inset 0 0 0 9999px rgba(231,76,60,.14)}
+  td.side-B{background:#111;color:#fff;font-weight:600;border-radius:4px}
+  td.side-W{background:#f5f5f5;color:#000;font-weight:600;border-radius:4px}
+  /* The 人工标记 placeholder is --mut (#8b98a5) grey, which reads on the dark panel but
+     disappears on a white row — the one place the new row colour needed a companion rule. */
+  tr.side-W td.ma .ma-off{color:#5c6773}
+  .scroll{max-height:64vh;overflow:auto}
+  .badge{padding:2px 10px;border-radius:var(--ui-detail-radius);font-size:var(--ui-detail-small)}
+  /* The opening is a headline fact about the game, not a figure to be read out of a table,
+     so it sits beside the title. Green to separate it from the risk badges. */
+  .badge.b-open{background:#1d3b2a;color:#7fe0a3;border:1px solid #2c6b45}
+  .b-flag{background:var(--red);color:#fff}
+  .b-sharp{background:var(--yellow);color:#000}
+  .b-desp{background:var(--orange);color:#fff}
+  .b-ai{background:#3c5ee7;color:#fff}
+  .b-pre{background:#4a5568;color:#fff}
+  .hint{font-size:var(--ui-detail-small);color:var(--mut);line-height:1.6}
+  .contrib{font-size:var(--ui-detail-small);color:var(--mut)}
+  .facts td{text-align:left;white-space:normal;padding:5px 0;border:0;font-size:var(--ui-detail-small);width:auto}
+  .facts td:first-child{color:var(--mut);width:150px}
+  .facts tr.warn td{color:var(--yellow)}
+  .btn-row{display:flex;gap:var(--ui-shell-gap);flex-wrap:wrap;align-items:center}
+  .tabs{display:flex;gap:6px;margin-bottom:var(--ui-detail-padding);border-bottom:1px solid var(--line)}
+  .tab{padding:8px 18px;cursor:pointer;font-size:var(--ui-detail-font);color:var(--mut);border-bottom:2px solid transparent}
+  .tab.active{color:var(--txt);border-bottom-color:var(--blue)}
+  .tabpane{display:none}
+  .tabpane.active{display:block}
+
+  /* ---- nav ---- */
+  .nav{display:flex;gap:4px;background:#0d1117;border:1px solid var(--line);border-radius:var(--ui-shell-radius);padding:4px}
+  .navbtn{background:transparent;color:var(--mut);font-size:var(--ui-shell-nav);padding:8px 22px;border-radius:var(--ui-detail-radius)}
+  .navbtn:hover{background:#202834;color:var(--txt)}
+  .navbtn.active{background:var(--blue);color:#fff}
+  .view{display:none}
+  .view.active{display:block}
+  .hidden{display:none !important}
+
+  /* ---- 0.3.5 §3.2 步骤明细列折叠 ---- */
+  /* The ▼ sits inside the <th>, so it must not look like part of the label; the header row
+     is where the cursor already means "sort" in the list panes, hence a distinct glyph with
+     its own hover state rather than a clickable header. */
+  .col-toggle{display:inline-block;margin-right:5px;font-size:9px;opacity:.4;cursor:pointer;
+              vertical-align:middle;user-select:none}
+  .col-toggle:hover{opacity:1;color:var(--blue)}
+  .colmenu{position:fixed;z-index:200;background:#1f2733;border:1px solid var(--line);
+           border-radius:var(--ui-shell-radius);padding:12px 16px;min-width:210px;
+           box-shadow:0 10px 30px rgba(0,0,0,.6)}
+  .colmenu .cmh{color:var(--mut);font-size:var(--ui-detail-small);letter-spacing:.4px;
+                margin-bottom:6px;white-space:nowrap}
+  .colmenu .cmrow{display:flex;align-items:center;gap:9px;padding:4px 2px;
+                  font-size:var(--ui-detail-small);color:var(--txt);cursor:pointer;
+                  white-space:nowrap;margin:0}
+  .colmenu .cmrow:hover{color:#cfe0ff}
+  .colmenu .cmrow input[type=checkbox]{width:16px;height:16px;margin:0}
+  .colmenu .cmrow.fixed{color:var(--mut);cursor:default}
+  .colmenu .cmft{display:flex;gap:8px;margin-top:10px;padding-top:10px;
+                 border-top:1px solid var(--line);flex-wrap:wrap}
+  .colmenu .cmft button{min-height:0;padding:4px 10px;font-size:var(--ui-detail-small);
+                        background:#2a3441;border-radius:var(--ui-detail-radius)}
+
+  /* ---- replay list ---- */
+  .filters-bar{display:flex;align-items:center;gap:var(--ui-shell-gap);flex-wrap:wrap}
+  .filters-bar .sp{flex:1}
+  .fchat{font-size:var(--ui-detail-small);color:var(--yellow)}
+  /* The filter grid is shell chrome: roomy boxes, but their labels are detail text. */
+  .fgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:var(--ui-detail-padding) var(--ui-shell-gap);margin-top:var(--ui-detail-padding)}
+  .fcell{display:flex;flex-direction:column;gap:6px}
+  .fcell>label{margin:0;font-size:var(--ui-detail-small)}
+  .fcell .fx{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+  .fcell select,.fcell input{flex:1;min-width:0}
+  .fcell input.num{flex:0 0 120px;width:120px}
+  .alist{margin-top:var(--ui-detail-padding)}
+  /* 0.3.5 §2.2: this sticks in the VIEWPORT (its panel has no overflow), so once the header
+     went sticky it would have parked underneath it. --header-h is measured from the real
+     header by viewer.js — it wraps at narrow widths, so a hard-coded offset would be wrong
+     exactly when the window is small. */
+  .ahead{display:flex;gap:var(--ui-shell-gap);align-items:center;padding:10px var(--ui-shell-padding);border-bottom:1px solid var(--line);font-size:var(--ui-detail-small);color:var(--mut);position:sticky;top:var(--header-h,0px);background:var(--panel);z-index:1}
+  .ahead .h{display:flex;align-items:center;gap:6px;cursor:pointer;user-select:none;white-space:nowrap}
+  .ahead .h:hover{color:var(--txt)}
+  .ahead .h .ar{font-size:var(--ui-detail-small)}
+  .ahead .h.on{color:var(--blue)}
+  /* The card box is shell (padding/radius), its contents are detail. Card height is what
+     sets list density: at ×2 inside, a card was ~135px tall and only four fitted on a
+     1440×900 window; at ×1.2 it is ~66px and eight do, which is what the spec asks for. */
+  .acard{display:flex;gap:var(--ui-shell-gap);align-items:center;padding:var(--ui-detail-padding) var(--ui-shell-padding);border-bottom:1px solid #22303c;cursor:pointer;font-size:var(--ui-detail-font)}
+  .acard:hover{background:#202834}
+  .acard .ico{width:12px;height:12px;border-radius:50%;flex:none}
+  .acard .body{flex:1;min-width:0}
+  /* display:block matters: these are <span>s in the markup, and an inline box ignores
+     text-overflow plus vertical margin — the name, the old name and the metrics all
+     collapsed onto one wrapping line. */
+  .acard .nm{display:block;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .acard .meta{display:block;font-size:var(--ui-detail-small);color:var(--mut);margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .acard .cat{font-size:var(--ui-detail-small);padding:2px 12px;border-radius:14px;border:1px solid #3d5a80;background:#16233d;color:#8fb6ff;flex:none}
+  .empty{padding:44px;text-align:center;color:var(--mut);font-size:var(--ui-detail-font)}
+  /* Pagination, 15 per page. Without it the list is one 12 000px scroll once the 200-archive
+     cap is anywhere near full, and "which game was that" stops being answerable by scrolling.
+     The pager buttons opt out of the global button height — they are list chrome, not actions. */
+  .pager{display:flex;align-items:center;gap:var(--ui-detail-padding) var(--ui-shell-gap);flex-wrap:wrap;
+         padding:var(--ui-detail-padding) var(--ui-shell-padding);border-top:1px solid #22303c}
+  .pager .pin{font-size:var(--ui-detail-small);color:var(--mut)}
+  .pager .pgs{display:flex;gap:4px;flex-wrap:wrap}
+  .pager button{min-height:0;padding:4px 10px;font-size:var(--ui-detail-small);background:#2a3441;
+                border-radius:var(--ui-detail-radius)}
+  .pager button.on{background:var(--blue);color:#fff}
+  .pager button:disabled{opacity:.4;cursor:not-allowed}
+
+  /* 0.3.1: the archive list is a column-first grid — 15 cards per column, as many
+     columns as fit the container; the window width decides the page size (15 × cols). */
+  .archive-grid{display:grid;grid-auto-flow:column;grid-template-rows:repeat(15,auto);
+                grid-auto-columns:1fr;gap:16px;overflow-x:auto;padding-bottom:6px}
+  /* 0.3.5 §2.3: the card is twice as tall and its contents 1.2× — the list is scanned, not
+     read, and at the old density a name plus two metadata lines inside ~45px was the part
+     that was actually hard to read. 15 cards per column is unchanged, so a column is now
+     ~1800px and fewer columns fit; that is the intended trade. */
+  .archive-grid .acard{border:1px solid #22303c;border-radius:var(--ui-detail-radius);
+                background:#0d1117;padding:var(--ui-detail-padding) 14px;
+                min-height:120px;font-size:calc(var(--ui-detail-font) * 1.2)}
+  .archive-grid .acard .nm{font-size:calc(var(--ui-detail-font) * 1.2)}
+  .archive-grid .acard .meta{font-size:calc(var(--ui-detail-small) * 1.2)}
+  /* The serial number and the tag chips sit inside the same card, so they scale with it —
+     left at 13px next to a 16.8px name they read as an oversight rather than a hierarchy.
+     (.dno is scaled on its own rule further down, where its box size lives.) */
+  .archive-grid .acard .cat{font-size:calc(var(--ui-detail-small) * 1.2)}
+  /* The leading serial number makes the column-first ordering legible: card 16 sits in
+     the second column, not below card 1, so without a number the order reads as random. */
+  /* 0.3.5 §2.3: the box grows with the text it holds (see .archive-grid .acard above). */
+  .archive-grid .dno{display:inline-flex;align-items:center;justify-content:center;
+                min-width:26px;height:26px;margin-right:10px;flex:none;
+                background:#0d1117;border:1px solid var(--line);border-radius:6px;
+                font-size:calc(var(--ui-detail-small) * 1.2);color:var(--mut)}
+  /* 0.3.4 二.2 批量选择：勾选框 + 选中态。选中态必须一眼可辨，否则批量删除点下去前
+     操作者无法确认自己到底勾了哪几个。 */
+  .acard .tick{flex:none;font-size:15px;line-height:1;color:var(--mut);user-select:none}
+  .acard .tick.on{color:var(--blue)}
+  .archive-grid.bulk .acard.sel{border-color:var(--blue);background:#152036}
+  .archive-grid.bulk .acard.sel .nm{color:#cfe0ff}
+  /* The manual-AI mark column. Clicking toggles the operator's own verdict on a step;
+     distinct colour from the engine's "可疑" badge so the two are never confused. */
+  td.ma{cursor:pointer;user-select:none}
+  td.ma .ma-on{color:#e74c3c;font-weight:600}
+  td.ma .ma-off{color:var(--mut);opacity:.7}
+  td.ma:hover .ma-off{color:var(--txt);opacity:1}
+
+  /* ---- 0.3.3 样本库 ---- */
+  /* 人工标注列 (§2.2): one button per label, multi-select, the label is the button's
+     data-label so the handler never has to map a glyph back to a name. Each label gets
+     its own "on" colour — ✓/✗/AI/冲/? are four different kinds of claim and reading them
+     as one blue block would lose that. */
+  td.annotations{white-space:nowrap}
+  .ann-btn{min-height:0;padding:2px 7px;margin:0 3px 0 0;font-size:var(--ui-detail-small);
+           background:#2a3441;color:var(--mut);border-radius:5px;border:1px solid transparent;line-height:1.6}
+  .ann-btn:hover{color:var(--txt);background:#38455a}
+  .ann-btn.on{background:#1d4ed8;color:#fff;border-color:#5b8cff}
+  .ann-btn.on[data-label="判断错误"]{background:#7a2a2a;border-color:#c06060}
+  .ann-btn.on[data-label="无用冲四"]{background:#8a5a10;border-color:#d0a050}
+  .ann-btn.on[data-label="可疑"]{background:#6b5416;border-color:#c0a040}
+  /* 0.3.5 §3.1. The two new labels get their own colours for the same reason the first four
+     have them: 豁免 is a positive confirmation and 冲四 is a neutral description, and neither
+     should read as the blue "this step was judged correct" default. */
+  .ann-btn.on[data-label="豁免"]{background:#245c39;border-color:#4ec97b}
+  .ann-btn.on[data-label="冲四"]{background:#7a4a2a;border-color:#d0a050}
+  /* The per-step note row, revealed by clicking anywhere on the step row (§2.2). */
+  tr.step-note>td{padding:6px 10px;text-align:left;background:#141a22}
+  tr.step-note textarea{height:46px;font-size:var(--ui-detail-small)}
+  tr.step-note .snote-hint{color:var(--mut);font-size:var(--ui-detail-small)}
+  /* 标签 (§1.6): a chip is a toggle. Preset and custom chips are visually distinct so a
+     user-created tag never looks like part of the fixed vocabulary. */
+  .tagchip{display:inline-block;padding:3px 12px;margin:3px 5px 3px 0;border-radius:12px;
+           border:1px solid #3d5a80;background:#16233d;color:#8fb6ff;
+           font-size:var(--ui-detail-small);cursor:pointer;user-select:none}
+  .tagchip:hover{border-color:#5b8cff}
+  .tagchip.on{background:#1d4ed8;color:#fff;border-color:#5b8cff}
+  .tagchip.custom{border-color:#6b5416;background:#2a2113;color:#e0c060}
+  .tagchip.custom.on{background:#8a5a10;color:#fff}
+  /* 0.3.3 C: the feature-library match badge — purple, deliberately unlike both the
+     engine's red 可疑 and the operator's blue 人工标记. */
+  .badge.b-sim{background:#7a2a6b;color:#fff}
+  /* The learning before/after table. Two numeric columns with a signed delta. */
+  .ltable td,.ltable th{padding:5px 12px;text-align:left;white-space:nowrap}
+  .ltable td.num{text-align:right;font-family:Consolas,monospace}
+  .ltable .up{color:var(--red)} .ltable .down{color:var(--green)} .ltable .same{color:var(--mut)}
+  .lbox{background:#0d1117;border:1px solid var(--line);border-radius:var(--ui-detail-radius);
+        padding:var(--ui-detail-padding) 14px;margin-top:var(--ui-detail-padding)}
+  .lbox b{color:var(--txt)}
+  /* 学习结果 summary cards */
+  .lcards{display:flex;gap:var(--ui-shell-gap);flex-wrap:wrap;margin-top:var(--ui-detail-padding)}
+  .lcard{flex:1;min-width:150px;background:#0d1117;border:1px solid var(--line);
+         border-radius:var(--ui-detail-radius);padding:var(--ui-detail-padding);text-align:center}
+  .lcard .big{font-size:30px;font-weight:700}
+  .lcard .lab{font-size:var(--ui-detail-small);color:var(--mut);margin-top:3px}
+
+  /* ---- context menu ---- */
+  .ctx{position:fixed;z-index:9999;background:#1f2733;border:1px solid var(--line);border-radius:var(--ui-shell-radius);padding:6px;min-width:250px;box-shadow:0 8px 26px rgba(0,0,0,.6);font-size:var(--ui-detail-font)}
+  .ctx .it{padding:10px 16px;border-radius:var(--ui-detail-radius);cursor:pointer;display:flex;gap:14px;align-items:center;white-space:nowrap}
+  .ctx .it:hover{background:#2f3b4c}
+  .ctx .it.danger{color:#ff8c7f}
+  .ctx .sep{height:1px;background:var(--line);margin:6px 4px}
+  .ctx .ti{padding:6px 16px 10px;color:var(--mut);font-size:var(--ui-detail-small);letter-spacing:.4px}
+  .ctx .it .k{margin-left:auto;color:var(--mut);font-size:var(--ui-detail-small)}
+
+  /* ---- modal ---- */
+  .mask{position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9998;display:flex;align-items:center;justify-content:center}
+  .modal{background:var(--panel);border:1px solid var(--line);border-radius:var(--ui-shell-radius);min-width:560px;max-width:860px;max-height:82vh;overflow:auto;box-shadow:0 16px 48px rgba(0,0,0,.7)}
+  .modal h3{margin:0;padding:16px 24px;font-size:var(--ui-detail-large);border-bottom:1px solid var(--line);font-weight:500}
+  .modal .bd{padding:24px}
+  .modal .ft{padding:16px 24px;border-top:1px solid var(--line);display:flex;gap:14px;justify-content:flex-end}
+  .modal input[type=text]{width:100%;font-size:var(--ui-detail-font);padding:10px}
+  .modal button{font-size:var(--ui-detail-font);padding:0 22px;min-height:var(--ui-shell-btn-height);border-radius:var(--ui-shell-radius)}
+  .crow{display:flex;align-items:center;gap:14px;padding:10px 0;border-bottom:1px solid #22303c;font-size:var(--ui-detail-font)}
+  .crow .cn{flex:1}
+
+  /* ---- detail ---- */
+  .dhead{display:flex;flex-wrap:wrap;gap:12px 26px;align-items:baseline}
+  .dhead .t{font-size:var(--ui-detail-large);font-weight:600}
+  .dhead .s{font-size:var(--ui-detail-small);color:var(--mut)}
+  /* 数据完整性提示. A mid-join game is complete ON THE BOARD but partial in the DATA, and
+     every figure below is read differently because of it — so it sits above them, not as
+     one more row inside the metrics table. */
+  .warnbox{background:#2a2113;border:1px solid #6b5416;border-left:5px solid var(--yellow);
+           border-radius:var(--ui-detail-radius);padding:var(--ui-detail-padding) var(--ui-shell-padding);
+           margin-top:16px;font-size:var(--ui-detail-font);line-height:1.7}
+  .warnbox b{display:block;color:var(--yellow);font-size:var(--ui-detail-large);margin-bottom:4px}
+  /* 0.3.1 活四停止 banner: blue, distinct from the yellow data-incompleteness box. */
+  .warnbox.term{border-color:#2c4a7a;border-left-color:var(--blue);background:#16233d}
+  .warnbox.term b{color:#7fb0ff}
+  .dgrid{display:flex;gap:var(--ui-shell-gap);align-items:flex-start;flex-wrap:wrap;margin-top:var(--ui-detail-padding)}
+  /* The board column may shrink — its canvas is max-width:100% — so the info column keeps
+     its width and the board gives way. The alternative (info pushed onto its own row) buries
+     指标汇总 below the fold on a 1280-wide window. */
+  .dboard{flex:0 1 auto;min-width:0;display:flex;flex-direction:column;gap:var(--ui-detail-padding)}
+  .dinfo{flex:1 1 340px;min-width:340px;display:flex;flex-direction:column;gap:var(--ui-shell-gap)}
+  /* the board's own legend, doubling as the hover readout under the canvas */
+  #dBoardTip{min-height:1.6em}
+
+  /* Printing the replay detail: the shell scale overflows a page, the sticky-header scroll
+     boxes clip the table, the nav buttons are noise on paper, and the light-on-dark palette
+     prints as nothing at all (light text on white paper) — so print gets its own, smaller,
+     inverted variable set. */
+  @media print{
+    header,.nav,.navbtn,.btn-row,.ctx,.mask,.filters-bar button{display:none !important}
+    :root{--ui-shell-padding:8px;--ui-shell-title:14px;--ui-shell-gap:8px;--ui-shell-nav:11px;
+          --ui-detail-font:11px;--ui-detail-small:10px;--ui-detail-large:14px;
+          --ui-detail-padding:4px;--ui-detail-radius:4px;
+          --bg:#fff;--panel:#fff;--line:#bbb;--txt:#111;--mut:#555}
+    body{background:#fff;color:#111;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+    .scroll{max-height:none;overflow:visible}
+    .warnbox{background:#fff;border-color:#ccc;border-left-color:#a08000}
+    .warnbox b{color:#7a6200}
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>五子棋 AI 反作弊检测器 <span class="sub">查看器 · Rapfi(WASM)</span></h1>
+  <div class="nav">
+    <button class="navbtn active" data-view="detect">检测</button>
+    <button class="navbtn" data-view="replay">回放</button>
+    <!-- 0.3.3 §1.2: the sample library sits between the archive list and the settings, so
+         the nav reads left-to-right in the order a game is actually worked through:
+         detect it, replay it, curate it, configure. -->
+    <button class="navbtn" data-view="samples">样本库</button>
+    <button class="navbtn" data-view="settings">设置</button>
+  </div>
+  <!-- 0.3.5 §3.2: one control for the four step tables' columns. It lives in the header
+       because the preference is global — the same fifteen columns in the same order. -->
+  <button class="sec" id="colBtn" title="显示 / 隐藏步骤明细的列（四张表共用）">列 ▾</button>
+  <span id="status">就绪</span>
+</header>
+<div class="colmenu hidden" id="colMenu"></div>
+
+<div class="wrap">
+
+  <!-- ======================= 检测 ======================= -->
+  <section class="view active" id="view-detect">
+    <div class="main-row">
+      <div class="left-col">
+        <div class="panel">
+          <h2>棋盘</h2>
+          <canvas id="board" width="520" height="520"></canvas>
+          <div id="boardInfo" class="hint" style="text-align:center;margin-top:6px"></div>
+        </div>
+        <div class="panel">
+          <h2>步骤操作</h2>
+          <div class="step-bar">
+            <button class="sec" id="startBtn" title="回到开局">⏮</button>
+            <button class="sec" id="prev">◀</button>
+            <input type="range" id="slider" min="0" max="0" value="0">
+            <button class="sec" id="next">▶</button>
+            <button class="sec" id="endBtn" title="到末手">⏭</button>
+            <span style="color:var(--mut);font-size:12px">回到</span>
+            <input type="number" id="jumpStep" min="0" style="width:60px" value="0">
+            <span style="color:var(--mut);font-size:12px">步</span>
+            <button class="sec" id="truncateHere" title="丢弃光标之后的所有手（可撤销）">截断到光标</button>
+            <button class="sec" id="undoChange" title="恢复到上一次改动之前" disabled>撤销改动</button>
+            <button id="pauseBtn" disabled>⏸ 暂停</button>
+          </div>
+          <div class="hint" style="margin-top:6px">
+            落子即续谱：点空点落子，点已有子把光标移过去，右键=悔一手。
+            把光标移到中间再点空点，就从此处打出变体——原后续会变为半透明预览，可用「撤销改动」找回。
+            检测完成后棋盘依然可以直接改，不必清空重打。
+          </div>
+        </div>
+      </div>
+
+      <div class="right-col">
+        <div class="panel">
+          <div class="tabs">
+            <div class="tab active" data-mode="global">全局检测</div>
+            <div class="tab" data-mode="stepwise">逐步检测</div>
+          </div>
+          <h2>评估结果</h2>
+          <div class="score" id="scores"><div class="hint">分析后显示</div></div>
+          <div id="summary" class="hint" style="margin-top:8px">—</div>
+          <div class="contrib" id="contrib" style="margin-top:8px"></div>
+          <div id="progress"><div id="bar"></div></div>
+          <div id="pmsg" class="hint" style="margin-top:4px"></div>
+          <div class="btn-row" style="margin-top:10px">
+            <button class="sec" id="saveArchive">存为存档</button>
+            <span class="hint">分析完成后会自动存档；这里可以再存一份手动标记的副本。</span>
+          </div>
+        </div>
+
+        <div class="panel">
+          <h2>棋谱代码</h2>
+          <textarea id="input" placeholder="分享串 / JSON"></textarea>
+        </div>
+
+        <div class="panel">
+          <div class="tabs">
+            <div class="tab active" data-panel="detail">详细检测面板</div>
+            <div class="tab" data-panel="ai">AI 思考面板</div>
+          </div>
+
+          <div class="tabpane active" id="pane-detail">
+            <div class="btn-row" style="margin-bottom:8px">
+              <button class="sec" id="s1">样本:双方AI</button>
+              <button class="sec" id="s2">样本:双方人类</button>
+              <button class="sec" id="s3">样本:白棋=AI</button>
+              <button class="sec" id="undoBoard">悔一手</button>
+              <button class="danger" id="clearAll">清空</button>
+            </div>
+            <div class="btn-row" style="line-height:2.2">
+              <label>被怀疑方
+                <select id="suspect">
+                  <option value="both">黑白同步</option>
+                  <option value="B">仅黑方</option>
+                  <option value="W">仅白方</option>
+                </select>
+              </label>
+              <label>规则<select id="rule">
+                <option value="0">自由</option>
+                <option value="1">标准</option>
+                <option value="2">连珠</option>
+              </select></label>
+              <label>检测思考ms<input type="number" id="thinkMs" value="2000" style="width:70px"></label>
+              <label>开局排除<input type="number" id="openCut" value="8" style="width:50px"></label>
+              <button class="sec" id="applySettings">用当前设置</button>
+            </div>
+            <div class="btn-row" style="margin-top:8px">
+              <button id="run">开始分析（全局）</button>
+              <button class="sec" id="expJson">导出JSON</button>
+              <button class="sec" id="expCsv">导出CSV</button>
+              <button class="sec" id="expPrint">打印/PDF</button>
+            </div>
+          </div>
+
+          <div class="tabpane" id="pane-ai">
+            <div class="btn-row" style="line-height:2.2;margin-bottom:8px">
+              <label>AI思考ms<input type="number" id="aiThinkMs" value="2000" style="width:70px"></label>
+              <label>AI候选数<input type="number" id="aiNbest" value="1" min="1" max="32" style="width:60px"></label>
+              <button id="aiThink">AI思考</button>
+            </div>
+            <div class="hint">AI 思考结果会直接落为一枚半透明蓝圈「AI 参考手」，不计入检测；点它即转为你的实际手。</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel" style="margin-top:12px">
+      <h2>步骤细明界面</h2>
+      <div class="scroll"><table id="tbl">
+        <thead><tr>
+          <th>#</th><th>方</th><th>实际</th><th>最佳</th><th>前5候选(胜率%)</th>
+          <th>T1</th><th>T3</th><th>T5</th><th>胜率差</th><th>妙手</th><th>将败</th><th>被迫防守</th><th>耗时ms</th><th>标记</th><th>人工标记</th>
+        </tr></thead>
+        <tbody></tbody>
+      </table></div>
+    </div>
+  </section>
+
+  <!-- ======================= 回放 ======================= -->
+  <section class="view storage-view" id="view-replay">
+    <div id="replayList">
+      <div class="panel">
+        <div class="filters-bar">
+          <h2 style="margin:0">存档列表</h2>
+          <span class="hint" id="listCount">—</span>
+          <span class="sp"></span>
+          <span class="fchat" id="fchat"></span>
+          <button class="sec" id="toggleFilters">筛选 ▾</button>
+          <button class="sec" id="resetFilters" disabled>重置筛选</button>
+          <!-- 0.3.5 §3.3: same interaction model as the sample library's 批量 mode. -->
+          <button class="sec" id="aBulkToggle" title="多选存档后批量删除 / 分类 / 重命名 / 导出">批量 ▾</button>
+          <!-- Needs no selection — it backs up the (filtered) library, so it lives here
+               rather than inside the bulk bar, which is hidden until 批量 is on. -->
+          <button class="sec" id="aExportAll" title="导出当前筛选结果（无筛选时即全部存档）为 JSON">全量导出</button>
+        </div>
+        <div class="btn-row hidden" id="aBulkBar" style="margin-top:10px;line-height:2.2">
+          <span class="hint" id="aBulkCount">已选 0 个</span>
+          <button class="sec" id="aBulkAllPage">全选本页</button>
+          <button class="sec" id="aBulkInvert">反选本页</button>
+          <button class="sec" id="aBulkNone">清空选择</button>
+          <span class="sp" style="flex:1"></span>
+          <button class="sec" id="aBulkRename">批量重命名</button>
+          <button class="sec" id="aBulkCat">批量分类</button>
+          <button class="sec" id="aBulkExport">批量导出</button>
+          <button class="sec" id="aBulkImport">批量导入</button>
+          <button class="danger" id="aBulkDel">批量删除</button>
+          <input type="file" id="aBulkFile" accept=".json,application/json" class="hidden">
+        </div>
+        <div class="fgrid hidden" id="filterGrid">
+          <div class="fcell">
+            <label>AI 率</label>
+            <div class="fx">
+              <select id="fRisk">
+                <option value="">全部</option>
+                <option value="90:">≥90</option>
+                <option value="70:89">70–89</option>
+                <option value="50:69">50–69</option>
+                <option value="30:49">30–49</option>
+                <option value=":29">&lt;30</option>
+                <option value="custom">自定义…</option>
+              </select>
+            </div>
+            <div class="fx hidden" id="fRiskCustom">
+              <input type="number" class="num" id="fRiskMin" placeholder="min" min="0" max="100">
+              <span class="hint">–</span>
+              <input type="number" class="num" id="fRiskMax" placeholder="max" min="0" max="100">
+            </div>
+            <div class="fx">
+              <select id="fRiskField">
+                <option value="max">口径：max(黑白)</option>
+                <option value="any">任一超过</option>
+                <option value="black">黑方超过</option>
+                <option value="white">白方超过</option>
+              </select>
+            </div>
+          </div>
+          <div class="fcell">
+            <label>步数</label>
+            <div class="fx">
+              <select id="fMoves">
+                <option value="">全部</option>
+                <option value="60:">≥60</option>
+                <option value="32:59">32–59</option>
+                <option value=":31">&lt;32</option>
+                <option value="custom">自定义…</option>
+              </select>
+            </div>
+            <div class="fx hidden" id="fMovesCustom">
+              <input type="number" class="num" id="fMovesMin" placeholder="min" min="0">
+              <span class="hint">–</span>
+              <input type="number" class="num" id="fMovesMax" placeholder="max" min="0">
+            </div>
+          </div>
+          <div class="fcell">
+            <label>时间段</label>
+            <div class="fx">
+              <select id="fAge">
+                <option value="">全部</option>
+                <option value="10min">&lt;10min</option>
+                <option value="1h">&lt;1h</option>
+                <option value="12h">&lt;12h</option>
+                <option value="1d">&lt;1d</option>
+                <option value="1w">&lt;1w</option>
+                <option value="old">&gt;1w</option>
+                <option value="custom">自定义…</option>
+              </select>
+            </div>
+            <div class="fx hidden" id="fAgeCustom">
+              <input type="datetime-local" id="fAgeFrom">
+              <span class="hint">–</span>
+              <input type="datetime-local" id="fAgeTo">
+            </div>
+          </div>
+          <div class="fcell">
+            <label>分类</label>
+            <div class="fx"><select id="fCategory"><option value="">全部</option></select></div>
+          </div>
+          <div class="fcell">
+            <label>开局</label>
+            <div class="fx">
+              <!-- Filled from GMOpening.TREE (openings.js) so the 26 names exist in exactly
+                   one place: 全部 / 大类（全部直止·全部斜止）/ 具体开局 / 未识别. -->
+              <select id="fOpening"><option value="">全部</option></select>
+            </div>
+          </div>
+          <div class="fcell">
+            <label>模式</label>
+            <div class="fx">
+              <select id="fMode">
+                <option value="all">全部</option>
+                <option value="global">全局</option>
+                <option value="stepwise">逐步</option>
+              </select>
+            </div>
+          </div>
+          <div class="fcell">
+            <label>提前终止</label>
+            <div class="fx">
+              <!-- 0.3.1 活四停止: 'yes' = 检测因活四提前终止的局, 'no' = 跑到真实结束的完整局. -->
+              <select id="fTerm">
+                <option value="">全部</option>
+                <option value="yes">活四终止</option>
+                <option value="no">完整对局</option>
+              </select>
+            </div>
+          </div>
+          <div class="fcell">
+            <label>规则</label>
+            <div class="fx">
+              <select id="fRule">
+                <option value="all">全部</option>
+                <option value="freestyle">Freestyle</option>
+                <option value="renju">Renju</option>
+              </select>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel alist">
+        <div class="ahead">
+          <span style="width:8px"></span>
+          <span style="flex:1">存档</span>
+          <span class="h" data-sort="risk">AI率 <span class="ar"></span></span>
+          <span class="h" data-sort="moves">步数 <span class="ar"></span></span>
+          <!-- 0.3.0: the default is newest-first. It is the order the operator actually
+               wants when opening the list ("the game I just played"), and the other two
+               keys stay one click away on the same headers. -->
+          <span class="h on" data-sort="time">时间 <span class="ar">▼</span></span>
+        </div>
+        <div id="cards"></div>
+        <div class="pager hidden" id="pager">
+          <button class="sec" id="pgPrev">◀ 上一页</button>
+          <span class="pgs" id="pgNums"></span>
+          <button class="sec" id="pgNext">下一页 ▶</button>
+          <span class="pin" id="pgInfo"></span>
+        </div>
+      </div>
+    </div>
+
+    <div id="replayDetail" class="hidden">
+      <div class="panel">
+        <div class="btn-row" style="margin-bottom:10px">
+          <button class="sec" id="backToList">◀ 返回列表</button>
+          <span class="sp" style="flex:1"></span>
+          <button class="sec" id="dExpJson">导出JSON</button>
+          <button class="sec" id="dExpCsv">导出CSV</button>
+          <button class="sec" id="dExpPrint">打印/PDF</button>
+        </div>
+        <div class="dhead">
+          <span class="t" id="dTitle">—</span>
+          <!-- 开局: hidden entirely when the game could not be identified (未识别 opens
+               nothing, it just leaves the badge out) — see 0.3.0 §1.6. -->
+          <span class="badge b-open hidden" id="dOpening"></span>
+          <span class="s" id="dSub">—</span>
+        </div>
+      </div>
+
+      <div class="warnbox hidden" id="dWarn"></div>
+      <div class="warnbox term hidden" id="dTerm"></div>
+
+      <div class="panel" style="margin-top:12px">
+        <h2>风险分</h2>
+        <div class="score" id="dScores"></div>
+        <div id="dSummary" class="hint" style="margin-top:10px">—</div>
+      </div>
+
+      <div class="dgrid">
+        <div class="panel dboard">
+          <h2>棋盘回放</h2>
+          <canvas id="dBoard" class="ro" width="520" height="520"></canvas>
+          <div class="step-bar">
+            <button class="sec" id="dStart">⏮</button>
+            <button class="sec" id="dPrev">◀</button>
+            <input type="range" id="dSlider" min="0" max="0" value="0">
+            <button class="sec" id="dNext">▶</button>
+            <button class="sec" id="dEnd">⏭</button>
+            <span class="hint">回到</span>
+            <input type="number" id="dJump" min="0" style="width:60px" value="0">
+            <span class="hint">步</span>
+          </div>
+          <div id="dBoardInfo" class="hint"></div>
+          <div id="dBoardTip" class="hint"></div>
+        </div>
+
+        <div class="dinfo">
+          <div class="panel">
+            <h2>指标汇总</h2>
+            <div id="dMetrics">—</div>
+          </div>
+          <div class="panel">
+            <h2>贡献分解</h2>
+            <div id="dContrib" class="contrib">—</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel" style="margin-top:12px">
+        <h2>步骤明细</h2>
+        <div class="scroll"><table id="dTbl">
+          <thead><tr>
+            <th>#</th><th>方</th><th>实际</th><th>最佳</th><th>前5候选(胜率%)</th>
+            <th>T1</th><th>T3</th><th>T5</th><th>胜率差</th><th>妙手</th><th>将败</th><th>被迫防守</th><th>耗时ms</th><th>标记</th><th>人工标记</th>
+          </tr></thead>
+          <tbody></tbody>
+        </table></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ======================= 样本库 ======================= -->
+  <!-- 0.3.3 §1. A curated set the operator builds by hand (import a record, or play it out
+       on the board), analyses with the same engine, annotates step by step, tags, and
+       saves. Deliberately a sibling of 回放, not a mode of it: an archive is what the
+       collector caught, a sample is what the operator decided to keep. -->
+  <section class="view" id="view-samples">
+
+    <!-- ---------- 列表 ---------- -->
+    <div id="sampleList">
+      <div class="panel">
+        <div class="filters-bar">
+          <h2 style="margin:0">样本库</h2>
+          <span class="hint" id="sListCount">—</span>
+          <span class="sp"></span>
+          <span class="fchat" id="sfchat"></span>
+          <button class="sec" id="sToggleFilters">筛选 ▾</button>
+          <button class="sec" id="sResetFilters" disabled>重置筛选</button>
+          <button class="sec" id="sBulkToggle" title="多选样本后批量删除 / 导出 / 导入 / 改标签">批量 ▾</button>
+          <button id="sNew">＋ 新建样本</button>
+        </div>
+        <div class="btn-row hidden" id="sBulkBar" style="margin-top:10px;line-height:2.2">
+          <span class="hint" id="sBulkCount">已选 0 个</span>
+          <button class="sec" id="sBulkAllPage">全选本页</button>
+          <button class="sec" id="sBulkInvert">反选本页</button>
+          <button class="sec" id="sBulkNone">清空选择</button>
+          <span class="sp" style="flex:1"></span>
+          <button class="sec" id="sBulkTag">批量改标签</button>
+          <button class="sec" id="sBulkExport">批量导出</button>
+          <button class="sec" id="sBulkImport">批量导入</button>
+          <button class="danger" id="sBulkDel">批量删除</button>
+          <input type="file" id="sBulkFile" accept=".json,application/json" class="hidden">
+        </div>
+        <div class="fgrid hidden" id="sFilterGrid">
+          <div class="fcell">
+            <label>标签</label>
+            <div class="fx"><select id="sfTag"><option value="">全部</option></select></div>
+          </div>
+          <div class="fcell">
+            <label>规则</label>
+            <div class="fx"><select id="sfRule">
+              <option value="all">全部</option>
+              <option value="freestyle">Freestyle</option>
+              <option value="renju">Renju</option>
+            </select></div>
+          </div>
+          <div class="fcell">
+            <label>有无标注</label>
+            <div class="fx"><select id="sfAnn">
+              <option value="">全部</option>
+              <option value="yes">已标注</option>
+              <option value="no">未标注</option>
+            </select></div>
+          </div>
+          <div class="fcell">
+            <label>时间段</label>
+            <div class="fx"><select id="sfAge">
+              <option value="">全部</option>
+              <option value="10min">&lt;10min</option>
+              <option value="1h">&lt;1h</option>
+              <option value="12h">&lt;12h</option>
+              <option value="1d">&lt;1d</option>
+              <option value="1w">&lt;1w</option>
+              <option value="old">&gt;1w</option>
+            </select></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel alist">
+        <div class="ahead">
+          <span style="width:8px"></span>
+          <span style="flex:1">样本</span>
+          <span class="h" data-ssort="version">版本 <span class="ar"></span></span>
+          <span class="h" data-ssort="moves">手数 <span class="ar"></span></span>
+          <span class="h on" data-ssort="time">更新时间 <span class="ar">▼</span></span>
+        </div>
+        <div id="sampleCards"></div>
+        <div class="pager hidden" id="sPager">
+          <button class="sec" id="sPgPrev">◀ 上一页</button>
+          <span class="pgs" id="sPgNums"></span>
+          <button class="sec" id="sPgNext">下一页 ▶</button>
+          <span class="pin" id="sPgInfo"></span>
+        </div>
+      </div>
+
+      <div class="panel" style="margin-top:12px">
+        <h2>样本驱动的学习</h2>
+        <div class="hint">
+          Rapfi 是固定权重 WASM，无法微调。「学习」发生在检测器的<b>后处理层</b>：<br>
+          <b>A 阈值</b> 用「判断准确 / 错误」等标注网格搜索最优判定线；
+          <b>B 权重</b> 用 AUC 调整风险分各分项权重；
+          <b>C 特征库</b> 把「AI 步骤」的特征向量建成指纹库，检测时做相似度匹配。<br>
+          标签影响权重：「标准样本」×1.5、「存疑样本」×0.5；「AI 样本」作正样本、「人类样本」作负样本。
+        </div>
+        <div class="hint" id="learnStatus" style="margin-top:8px">—</div>
+        <div class="btn-row" style="margin-top:10px">
+          <button id="btnLearn">重新学习</button>
+          <button class="sec" id="btnResetLearn">重置为默认参数</button>
+          <span class="hint" id="learnHint"></span>
+        </div>
+        <div id="learnResult"></div>
+      </div>
+    </div>
+
+    <!-- ---------- 详情 ---------- -->
+    <div id="sampleDetail" class="hidden">
+      <div class="panel">
+        <div class="btn-row" style="margin-bottom:10px">
+          <button class="sec" id="sBackToList">◀ 返回样本库</button>
+          <span class="sp" style="flex:1"></span>
+          <button class="sec" id="sEditBtn">编辑</button>
+          <button class="sec" id="sExpJson">导出JSON</button>
+          <button class="danger" id="sDelBtn">删除</button>
+        </div>
+        <div class="dhead">
+          <span class="t" id="sTitle">—</span>
+          <span class="badge b-open hidden" id="sOpening"></span>
+          <span class="s" id="sSub">—</span>
+        </div>
+        <div id="sTags" class="hint" style="margin-top:10px"></div>
+        <div id="sNote" class="hint" style="margin-top:6px"></div>
+      </div>
+
+      <div class="panel" style="margin-top:12px">
+        <h2>风险分</h2>
+        <div class="score" id="sScores"></div>
+        <div id="sSummary" class="hint" style="margin-top:10px">—</div>
+      </div>
+
+      <div class="dgrid">
+        <div class="panel dboard">
+          <h2>棋盘回放</h2>
+          <canvas id="sBoard" class="ro" width="520" height="520"></canvas>
+          <div class="step-bar">
+            <button class="sec" id="sStart">⏮</button>
+            <button class="sec" id="sPrev">◀</button>
+            <input type="range" id="sSlider" min="0" max="0" value="0">
+            <button class="sec" id="sNext">▶</button>
+            <button class="sec" id="sEnd">⏭</button>
+            <span class="hint">回到</span>
+            <input type="number" id="sJump" min="0" style="width:60px" value="0">
+            <span class="hint">步</span>
+          </div>
+          <div id="sBoardInfo" class="hint"></div>
+          <div id="sBoardTip" class="hint"></div>
+        </div>
+
+        <div class="dinfo">
+          <div class="panel">
+            <h2>指标汇总</h2>
+            <div id="sMetrics">—</div>
+          </div>
+          <div class="panel">
+            <h2>标注统计</h2>
+            <div id="sAnnStat" class="hint">—</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel" style="margin-top:12px">
+        <h2>步骤明细 · 人工标注</h2>
+        <div class="hint" style="margin-bottom:6px">
+          点按钮给该步打标签（可多选，立即保存并递增 version）；点行号展开可填单步备注。
+        </div>
+        <div class="scroll"><table id="sTbl">
+          <thead><tr>
+            <th>#</th><th>方</th><th>实际</th><th>最佳</th><th>前5候选(胜率%)</th>
+            <th>T1</th><th>T3</th><th>T5</th><th>胜率差</th><th>妙手</th><th>将败</th><th>被迫防守</th><th>耗时ms</th><th>标记</th><th>人工标注</th>
+          </tr></thead>
+          <tbody></tbody>
+        </table></div>
+      </div>
+    </div>
+
+    <!-- ---------- 编辑器（新建 / 编辑） ---------- -->
+    <div id="sampleEditor" class="hidden">
+      <div class="panel">
+        <div class="btn-row" style="margin-bottom:10px">
+          <button class="sec" id="seCancel">◀ 返回样本库</button>
+          <span class="sp" style="flex:1"></span>
+          <span class="hint" id="seStatus">—</span>
+        </div>
+        <div class="dhead">
+          <span class="t" id="seTitle">新建样本</span>
+          <span class="s" id="seSub">步骤 1 导入棋谱 → 步骤 2 AI 分析 → 步骤 3 人工标注 → 步骤 4 备注与标签 → 步骤 5 保存</span>
+        </div>
+      </div>
+
+      <div class="main-row" style="margin-top:12px">
+        <div class="left-col">
+          <div class="panel">
+            <h2>步骤 1 · 棋盘</h2>
+            <canvas id="seBoard" width="520" height="520"></canvas>
+            <div id="seBoardInfo" class="hint" style="text-align:center;margin-top:6px"></div>
+          </div>
+          <div class="panel">
+            <h2>步骤操作</h2>
+            <div class="step-bar">
+              <button class="sec" id="seStart" title="回到开局">⏮</button>
+              <button class="sec" id="sePrev">◀</button>
+              <input type="range" id="seSlider" min="0" max="0" value="0">
+              <button class="sec" id="seNext">▶</button>
+              <button class="sec" id="seEnd" title="到末手">⏭</button>
+              <span style="color:var(--mut);font-size:12px">回到</span>
+              <input type="number" id="seJump" min="0" style="width:60px" value="0">
+              <span style="color:var(--mut);font-size:12px">步</span>
+              <button class="sec" id="seTruncate" title="丢弃光标之后的所有手（可撤销）">截断到光标</button>
+              <button class="sec" id="seUndoChange" title="恢复到上一次改动之前" disabled>撤销改动</button>
+            </div>
+            <div class="btn-row" style="margin-top:8px">
+              <button class="sec" id="seUndo">悔一手</button>
+              <button class="danger" id="seClear">清空</button>
+              <span class="hint">与检测页同一套操作：点空点落子，点已有子把光标移过去，右键=悔一手。</span>
+            </div>
+            <div class="hint" style="margin-top:6px">
+              把光标移到中间再点空点，就从此处打出变体——原后续会变成半透明虚线预览，可用「撤销改动」找回。
+              AI 分析完成后棋盘依然可以直接改，不必清空重打；改动会作废上一次分析结果（标注按手数保留）。
+            </div>
+          </div>
+        </div>
+
+        <div class="right-col">
+          <div class="panel">
+            <h2>步骤 1 · 棋谱代码</h2>
+            <textarea id="seInput" placeholder="分享串 / JSON"></textarea>
+            <div class="hint" id="seInputInfo" style="margin-top:6px">—</div>
+          </div>
+
+          <div class="panel">
+            <h2>步骤 2 · AI 分析</h2>
+            <div class="btn-row" style="line-height:2.2">
+              <label>被怀疑方
+                <select id="seSuspect">
+                  <option value="both">黑白同步</option>
+                  <option value="B">仅黑方</option>
+                  <option value="W">仅白方</option>
+                </select>
+              </label>
+              <label>规则<select id="seRule">
+                <option value="0">自由</option>
+                <option value="1">标准</option>
+                <option value="2">连珠</option>
+              </select></label>
+              <label>检测思考ms<input type="number" id="seThinkMs" value="2000" style="width:70px"></label>
+              <label>开局排除<input type="number" id="seOpenCut" value="8" style="width:50px"></label>
+            </div>
+            <div class="btn-row" style="margin-top:8px">
+              <button id="seRun">AI 分析</button>
+              <span class="hint" id="seRunHint">棋谱不完整时不可分析（至少 5 手）。</span>
+            </div>
+            <div id="seProgress"><div id="seBar"></div></div>
+            <div class="hint" id="sePmsg"></div>
+          </div>
+
+          <div class="panel">
+            <h2>步骤 4 · 备注与标签</h2>
+            <label style="display:block;margin:0 0 6px">名称</label>
+            <input type="text" id="seName" style="width:100%" placeholder="留空则自动命名">
+            <label style="display:block;margin:10px 0 6px">备注（最多 500 字）</label>
+            <textarea id="seNote" maxlength="500" placeholder="开局标准，中盘 AI 特征明显" style="height:80px"></textarea>
+            <label style="display:block;margin:10px 0 6px">标签（多选）</label>
+            <div id="seTags"></div>
+            <div class="btn-row" style="margin-top:8px">
+              <input type="text" id="seNewTag" placeholder="自定义标签" style="width:180px">
+              <button class="sec" id="seAddTag">＋ 添加标签</button>
+            </div>
+          </div>
+
+          <div class="panel">
+            <h2>步骤 5 · 保存</h2>
+            <div class="btn-row">
+              <button id="seSave">保存到样本库</button>
+              <span class="hint" id="seSaveHint">首次保存 version=1；再次保存 version++。</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel" style="margin-top:12px">
+        <h2>步骤 3 · 人工标注（分析完成后可逐步标注）</h2>
+        <div class="hint" style="margin-bottom:6px">
+          分析前为空。点按钮打标签（可多选），点行号展开填单步备注。
+        </div>
+        <div class="scroll"><table id="seTbl">
+          <thead><tr>
+            <th>#</th><th>方</th><th>实际</th><th>最佳</th><th>前5候选(胜率%)</th>
+            <th>T1</th><th>T3</th><th>T5</th><th>胜率差</th><th>妙手</th><th>将败</th><th>被迫防守</th><th>耗时ms</th><th>标记</th><th>人工标注</th>
+          </tr></thead>
+          <tbody></tbody>
+        </table></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ======================= 设置 ======================= -->
+  <section class="view" id="view-settings">
+    <div class="panel" style="max-width:620px">
+      <h2>检测设置（与页面浮层共享同一份存储）</h2>
+      <div class="fgrid" style="grid-template-columns:1fr">
+        <div class="fcell">
+          <label>被怀疑方</label>
+          <div class="fx"><select id="setSuspect">
+            <option value="both">双方</option>
+            <option value="B">黑方</option>
+            <option value="W">白方</option>
+          </select></div>
+        </div>
+        <div class="fcell">
+          <label>分析模式</label>
+          <div class="fx"><select id="setMode">
+            <option value="global">全局分析（对局结束后一次）</option>
+            <option value="stepwise">逐步分析（每落一子）</option>
+          </select></div>
+        </div>
+        <div class="fcell">
+          <label>检测思考时间（ms）</label>
+          <div class="fx"><input type="number" id="setThinkMs" min="500" step="500" style="width:120px"></div>
+        </div>
+        <div class="fcell">
+          <label>AI 思考时间（ms，留空 = 跟随检测思考）</label>
+          <div class="fx"><input type="number" id="setAiThinkMs" min="0" step="100" style="width:120px" placeholder="跟随"></div>
+        </div>
+        <div class="fcell">
+          <label>开局排除手数</label>
+          <div class="fx"><input type="number" id="setOpening" min="0" max="40" style="width:120px"></div>
+        </div>
+        <div class="fcell">
+          <label>引擎线程数（自动 = 半核且不超过 16；多线程构建不可用时固定为 1）</label>
+          <div class="fx"><select id="setThread"></select></div>
+        </div>
+        <div class="fcell">
+          <label>最小存档手数（5–30）</label>
+          <div class="fx">
+            <input type="number" id="setMinMoves" min="5" max="30" style="width:120px">
+            <span class="hint">对局少于这么多手不写存档 —— 短局没有信号，还会把真对局挤出 200 局上限</span>
+          </div>
+        </div>
+        <div class="fcell">
+          <label>对局结束自动分析</label>
+          <div class="fx">
+            <input type="checkbox" id="setAuto">
+            <span class="hint">关闭后对局结束时只采集、不出报告，需手动点「分析当前对局」</span>
+          </div>
+        </div>
+      </div>
+      <div class="btn-row" style="margin-top:14px">
+        <span class="hint" id="setHint">规则由 URL 判断（/renju/），不参与记忆。</span>
+      </div>
+    </div>
+
+    <div class="panel" style="max-width:620px;margin-top:12px">
+      <h2>语言 / Language</h2>
+      <div class="fgrid" style="grid-template-columns:1fr">
+        <div class="fcell">
+          <label>界面语言（同时作用于页面浮层、查看器与复制输出）</label>
+          <div class="fx">
+            <!-- Options are built from GMI18n.LOCALES at boot, not written out here, so the
+                 list and the eight locale tables can never drift apart. -->
+            <select id="setLang"></select>
+            <span class="hint">跟随浏览器时按浏览器界面语言判定；简体 / 繁体按区域自动区分（zh-HK、zh-MO、zh-Hant → 繁體中文）。</span>
+          </div>
+        </div>
+      </div>
+      <div class="btn-row" style="margin-top:10px">
+        <span class="hint">也可以在浏览器工具栏图标上点右键，从「语言」菜单里切换 —— 两条入口写的是同一份设置，改一处两处都会跟着变。</span>
+      </div>
+    </div>
+
+    <div class="panel" style="max-width:620px;margin-top:12px">
+      <h2>存档</h2>
+      <div class="hint" id="setArch">—</div>
+      <div class="btn-row" style="margin-top:10px">
+        <button class="sec danger" id="setClearArchives">清空全部存档</button>
+        <span class="hint">chrome.storage.local 上限 10MB，存档超过 200 局会按时间淘汰最旧的。</span>
+      </div>
+    </div>
+
+    <div class="panel" style="max-width:620px;margin-top:12px">
+      <h2>样本库与学习</h2>
+      <div class="hint" id="setLearn">—</div>
+      <div class="btn-row" style="margin-top:10px">
+        <button class="sec danger" id="setResetLearn">重置学习参数</button>
+        <span class="hint">删除样本不会自动更新学习结果 —— 需回到「样本库」点「重新学习」。</span>
+      </div>
+    </div>
+
+    <div class="panel" style="max-width:620px;margin-top:12px">
+      <h2>关于</h2>
+      <div class="hint">
+        查看器已迁入扩展（原 localhost 网页版退役），三种页面共用同一份设置与存档：<br>
+        页面浮层（gomoku.com 上）→ 采集 + 检测 + 自动存档；<br>
+        本查看器「检测」→ 手动导入棋谱分析；<br>
+        本查看器「回放」→ 浏览全部历史存档。
+      </div>
+    </div>
+  </section>
+
+</div>
+
+<div id="ctx" class="ctx hidden"></div>
+
+<!-- 0.3.6 §1.5 load order: i18n.js first, then the 8 locale tables, then everything else.
+     storage.js / openings.js call T() lazily, but viewer.js reads GMI18n at module scope to
+     decide how to paint, and the static text in this document is swapped by GMI18n.apply()
+     as soon as viewer.js boots. -->
+<script src="i18n.js"></script>
+<script src="locale/zh-CN.js"></script>
+<script src="locale/zh-TW.js"></script>
+<script src="locale/ja.js"></script>
+<script src="locale/ko.js"></script>
+<script src="locale/en.js"></script>
+<script src="locale/ru.js"></script>
+<script src="locale/fr.js"></script>
+<script src="locale/de.js"></script>
+<script src="storage.js"></script>
+<script src="openings.js"></script>
+<script src="app.js"></script>
+<script src="learn.js"></script>
+<script src="viewer.js"></script>
+</body>
+</html>
