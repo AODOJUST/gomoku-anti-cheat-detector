@@ -21,7 +21,14 @@
   var EV_REQ = '__gm_req';
   var EV_RESP = '__gm_resp';
 
-  var VERSION = '0.4.0';
+  // The panel footer's version. Read from the manifest rather than hand-copied: this literal
+  // had to be bumped in step with manifest.json on every release and was missed once, which
+  // is exactly how a footer ends up advertising a version the extension is not. background.js
+  // and viewer.js already read it this way; the fallback only covers the (impossible in a
+  // content script) case of no extension API.
+  var VERSION = (function () {
+    try { return chrome.runtime.getManifest().version; } catch (e) { return '0.4.1'; }
+  })();
 
   // ---------- i18n (0.3.6 §1) ----------
   // `i18n.js` + the eight locale tables are loaded before this file (see manifest.json), so
@@ -94,6 +101,34 @@
 
   function isRenju() { return /\/renju/i.test(location.pathname); }
 
+  // ---------- clock alignment (0.4.1 §三.2) ----------
+  // Two clocks stamp moves: hook.js (MAIN world) stamps every socket move, and this file
+  // stamps the stones it reads off the board. They are two JS worlds of ONE document, so
+  // `performance.now()` should share a time origin and the offset below should be ~0. It is
+  // MEASURED, not assumed: `emit()` dispatches its CustomEvent synchronously, so the gap
+  // between hook's `clockNow` and our own reading is well under a millisecond, and a non-zero
+  // offset is a real disagreement worth correcting (hook used to emit times relative to its
+  // own per-GAME `startedAt`, which is an origin this file has never heard of).
+  //
+  // Everything downstream then works in PAGE time, so `socketRec.moves[].t` and the `t` this
+  // file stamps on a DOM stone are directly comparable rather than merely each internally
+  // consistent.
+  var clockDeltaLogged = false;
+  function alignSocketClock(rec) {
+    if (!rec || typeof rec.clockNow !== 'number' || !rec.moves) return rec;
+    var d = performance.now() - rec.clockNow;
+    if (Math.abs(d) < 0.5) return rec;            // the expected case: one shared time origin
+    if (!clockDeltaLogged) {
+      clockDeltaLogged = true;
+      console.log('[detector] hook 与 content 的 performance.now() 相差 ' + Math.round(d) +
+                  'ms，已按该偏移对齐 socket 时间戳');
+    }
+    for (var i = 0; i < rec.moves.length; i++) {
+      if (typeof rec.moves[i].t === 'number') rec.moves[i].t += d;
+    }
+    return rec;
+  }
+
   // The move list the record is built from.
   //
   // The two collectors are NOT interchangeable, and switching between them wholesale (what
@@ -122,10 +157,14 @@
     return pre.map(unorderedStone).concat(sock, post.map(untimedStone));
   }
 
-  // Both collectors stamp `t` from their own clock (hook.js counts from its own start), so
-  // a merged-in stone cannot carry a timestamp — the interval to its neighbour would be a
-  // difference between two unrelated origins. The interval is dropped and the stone is
-  // reported as order-unknown; `toRecord` then reports null for the gaps either side.
+  // A merged-in stone still cannot carry a timestamp, even though both clocks are now on the
+  // page's origin (see alignSocketClock above). The reason is no longer the clocks, it is the
+  // ORDER: `post` holds stones the board showed but the socket has not reported yet, so
+  // "arrived after the socket's last move" is a premise and not a fact. If the socket simply
+  // never reported one of them, its `t` can land BEFORE its predecessor — and `toRecord`
+  // clamps that to a 0ms interval, which markDesperate reads as an instant move, i.e. as
+  // evidence of an engine. A missing interval is honest; a fabricated 0ms one is a false
+  // accusation. The same applies to `pre`, whose order is unrecoverable outright.
   function unorderedStone(m) {
     return { row: m.row, col: m.col, stone: m.stone, t: null, inferred: true };
   }
@@ -227,6 +266,15 @@
         dropped: dups,
         orderSuspect: issues > 0,
         orderIssues: issues,
+        // 0.4.1 §三.4: ONE word for the whole record, so the operator does not have to
+        // combine 盘面还原 / 手序校验 / 重复坐标 by hand to decide whether to believe the
+        // percentages above them. A single bad thing makes the record suspect, not good:
+        //   suspect  adjacent same-colour stones — the per-side figures rest on a wrong order
+        //   partial  a stone was dropped, or part of the order is unknown (mid-join)
+        //   good     neither
+        // Display-only so far: nothing reads this to change a score. The mirror of
+        // app.js's parseRecord() — the two are the only producers of `meta.quality`.
+        quality: issues ? 'suspect' : ((dups || inferred) ? 'partial' : 'good'),
         // Only the names belong in the record; which route produced them is `nameSource`.
         players: {
           black: names.black || null, white: names.white || null,
@@ -520,7 +568,9 @@
       beginNewGame('新对局开始');
     }
 
-    socketRec = p.data;
+    // 0.4.1 §三.2: put the socket's timestamps on THIS file's clock before they are stored —
+    // one correction at the single ingest point beats every consumer remembering to apply it.
+    socketRec = alignSocketClock(p.data);
 
     if (p.kind === 'reset') {
       ended = false; endedBy = '';
@@ -1007,11 +1057,24 @@
     runningJob = job;
     job.status = '分析中';
     selectedId = job.id;
+    // 0.4.1 §五.4: ONE snapshot, taken here, used by BOTH the engine request below and the
+    // archive written when the run finishes.
+    //
+    // Before this, the request read the live collectors at start (`toRecord(activeMoves())`)
+    // and `archiveFromJob` read them AGAIN after the analysis — which on a live board is
+    // seconds later and several moves further on. The archive then described a different
+    // position from the one the report was computed for: every row's verdict pointed at a hand
+    // the record did not have, and the extra moves were stored unanalysed. GLOBAL/逐步分析 on
+    // a game still in progress is exactly when this happened, and it is the common case.
+    //
+    // A finalize job arrives with its own `_snap` (taken when the game ended, see
+    // finalizeGame); `if (!job._snap)` keeps that one — it is older and therefore righter.
+    // `snapshotGame()` returns null on an empty board, which leaves both fallbacks intact.
+    if (!job._snap) job._snap = snapshotGame();
     paint();
     try {
-      // 0.3.7 §一.1: a finalize job carries the snapshot taken when the game ended; every
-      // other job analyses the live collectors.
-      var snap = job._snap || snapshotGame();
+      // 0.3.7 §一.1: a finalize job carries the snapshot taken when the game ended.
+      var snap = job._snap;
       var record = snap ? snap.record : toRecord(activeMoves());
       if (!record.times.some(function (v) { return v != null; })) {
         job.note = T('panel|无时间数据，降级为固定预算模式');
@@ -2414,7 +2477,11 @@
       if (changes.updateInfo || changes.updateDismissed) refreshUpdateBanner();
       if (!changes.settings) return;
       GMStorage.loadSettings().then(function (v) {
-        var langChanged = v.lang !== S.lang;
+        // 0.4.1 §五.3: same subtlety as the viewer — `saveSetting` resolves with the NEW
+        // settings, so `S` already holds the new `lang` when this broadcast lands and
+        // `v.lang !== S.lang` is false for a change made from this panel's own dropdown.
+        // The applied locale (`LANG`) is the only honest baseline.
+        var langChanged = GMI18n.resolveLang(v.lang) !== LANG;
         S = v;
         if (!root) return;
         // §1.8: a language change invalidates the SHELL, not just the values in it — every

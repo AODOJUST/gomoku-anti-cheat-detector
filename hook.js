@@ -219,12 +219,25 @@
       var m = rec.moves[i];
       out.push({
         row: m.row, col: m.col, stone: m.stone,
-        t: (typeof m.t === 'number') ? Math.round(m.t - rec.startedAt) : null,
+        // 0.4.1 §三.2: the ABSOLUTE performance.now(), not `m.t - rec.startedAt`.
+        //
+        // Two clocks stamp moves: this one, and content.js's own `performance.now()` for the
+        // stones it reads off the board. Subtracting `startedAt` here put the socket's times
+        // on a per-GAME origin (re-created on every reset) while the DOM's stayed on the
+        // page's, so a difference taken across the two was meaningless. Emitting the raw
+        // value puts both on the page's origin, and `clockNow` below lets content.js prove
+        // it rather than assume it.
+        t: (typeof m.t === 'number') ? Math.round(m.t) : null,
         inferred: !!m.inferred,
       });
     }
     return {
       source: 'socket',
+      // When this snapshot was built, on THIS clock. content.js pairs it with its own
+      // `performance.now()` to derive the offset between the two (they are two JS worlds of
+      // one document, so the offset should be ~0 — but "should be" is exactly what a silent
+      // clock disagreement would break).
+      clockNow: Math.round(performance.now()),
       ended: rec.ended,
       end: rec.end,
       endEvent: rec.endEvent || null,

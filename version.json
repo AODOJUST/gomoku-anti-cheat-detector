@@ -1,6 +1,6 @@
 {
-  "version": "0.4.0",
-  "releaseNotes": "0.4.0: 网络自主更新、设置界面排版优化、白棋栏视觉调整",
+  "version": "0.4.1",
+  "releaseNotes": "0.4.1: 重复棋谱不再截断、统一落子时间基准、存档标注数据质量、改语言后界面立即刷新（不再需要重开页面）、分析快照与归档数据一致、样本增长后提示重新学习",
   "downloadUrl": "https://github.com/AODOJUST/gomoku-anti-cheat-detector/archive/refs/heads/main.zip",
   "releaseUrl": "https://github.com/AODOJUST/gomoku-anti-cheat-detector/releases"
 }

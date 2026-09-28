@@ -99,14 +99,25 @@ function parseRecord(text) {
   // through it index by index. Reusing `times` unchanged would desynchronise the two
   // arrays here just as thoroughly as the parse loop above used to.
   const cleanTimes = [];
+  let dups = 0;
   for (let i = 0; i < moves.length; i++) {
     const m = moves[i];
     const k = m[0] + ',' + m[1];
-    if (seen.has(k)) break;
+    // 0.4.1 §三.1: `continue`, not `break` — the same rule content.js's toRecord() has always
+    // followed. A gomoku point is played at most once per game, so a repeated coordinate is
+    // always a capture artefact (a socket replay after a reconnect, or a board render
+    // confirming a stone that already had its own event) and the hands AFTER it are still
+    // real. Breaking threw them all away: one replayed stone in a 60-move record re-imported
+    // as a 12-move stub, and nothing distinguished that from a genuinely short game — the
+    // operator saw a plausible, complete-looking archive of the wrong length.
+    if (seen.has(k)) { dups++; continue; }
     seen.add(k);
     clean.push(m);
     cleanTimes.push(times[i] == null ? null : times[i]);
   }
+  // Counted, not just dropped: `dropped` is what content.js's toRecord() writes for the same
+  // situation, so an imported record and a live one describe their damage the same way.
+  if (dups) meta.dropped = dups;
   // Colour of each stone. Play order alone decides it here (black starts, then strictly
   // alternates) — an explicit `stones` array in the JSON wins when the file carries one,
   // because that is the only trustworthy source once a record may have gaps.
@@ -115,6 +126,16 @@ function parseRecord(text) {
     const given = explicitStones && explicitStones[i];
     stones.push(given === 1 || given === 2 ? given : (i % 2 === 0 ? 1 : 2));
   }
+  // 0.4.1 §三.4: one word for "how much should the numbers built on this record be trusted".
+  // Two moves of one colour in a row cannot happen in gomoku, so a non-zero count means the
+  // capture lost or doubled a stone and the per-side figures rest on a wrong order.
+  //
+  // The mirror of content.js's toRecord() (the only other producer of `meta.quality`) — the
+  // two are kept in step by hand, exactly like defaultThreadNum()/detectedThreads(), because
+  // app.js runs in the offscreen document and never loads storage.js.
+  let issues = 0;
+  for (let i = 1; i < stones.length; i++) if (stones[i] && stones[i] === stones[i - 1]) issues++;
+  meta.quality = issues ? 'suspect' : (dups ? 'partial' : 'good');
   return { moves: clean, stones, times: cleanTimes, meta, sources: clean.map(() => 'player') };
 }
 

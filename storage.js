@@ -1074,6 +1074,24 @@
   // to be tried (and visibly flagged) instead of being blocked.
   var MIN_SAMPLES = 5;
   var LOW_SAMPLES = 20;
+  // 0.4.1 §一.5: how much the sample set has to grow before the operator is told the learned
+  // parameters are worth refreshing. Nothing here trains automatically — 0.3.3 §3.6 is
+  // deliberate about that (adding or deleting a sample must not move the detector's numbers
+  // behind the operator's back) — so a corpus that has quietly doubled is exactly the case
+  // where the numbers on screen are stale and nobody would notice.
+  //
+  // `learnedParams.sampleCount` is already written by learn.js at training time, so this
+  // needs no new field and no new storage key. Pure, so it is unit-testable without a browser
+  // — and shared, so the 学习 panel and the settings page cannot disagree about the drift.
+  var SAMPLE_DRIFT_RATIO = 0.2;
+  function sampleDrift(trainedCount, currentCount) {
+    var was = Number(trainedCount) || 0;
+    var now = Number(currentCount) || 0;
+    // No training run to compare against: the caller shows 尚未学习 instead.
+    if (was <= 0) return { grown: false, pct: 0, was: was, now: now };
+    if (now < was * (1 + SAMPLE_DRIFT_RATIO)) return { grown: false, pct: 0, was: was, now: now };
+    return { grown: true, pct: Math.round((now / was - 1) * 100), was: was, now: now };
+  }
 
   async function loadLearnedParams() {
     var got = null;
@@ -1282,6 +1300,13 @@
       // spectator). A guest game used to be indistinguishable from a broken capture, and
       // detection now depends on it, so it is worth the few bytes.
       identity: (record.meta && record.meta.identity) || null,
+      // 0.4.1 §三.4: how far the record behind these numbers can be trusted — good / partial /
+      // suspect, derived by content.js's toRecord() (or app.js's parseRecord() for an
+      // imported one). Lifted out of `record.meta` for the same reason as `identity`: the
+      // list draws a badge from it without opening the detail, where a game whose move order
+      // is wrong otherwise looks exactly like a clean one. Absent on pre-0.4.1 archives, so
+      // every reader has to cope with null.
+      quality: (record.meta && record.meta.quality) || null,
       // 0.3.1 活四停止: true when detection was cut short by a live four (report.terminal).
       // Used for the "[活四终止]" name suffix and the "提前终止" filter — a game that was
       // stopped early is a different animal from one that ran to a real end.
@@ -1422,6 +1447,8 @@
     DEFAULT_THRESHOLDS: DEFAULT_THRESHOLDS,
     MIN_SAMPLES: MIN_SAMPLES,
     LOW_SAMPLES: LOW_SAMPLES,
+    SAMPLE_DRIFT_RATIO: SAMPLE_DRIFT_RATIO,
+    sampleDrift: sampleDrift,
     loadSettings: loadSettings,
     saveSettings: saveSettings,
     saveSetting: saveSetting,

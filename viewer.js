@@ -44,6 +44,16 @@
   function suspectName(v) {
     return v === 'B' ? T('viewer|黑方') : (v === 'W' ? T('viewer|白方') : T('viewer|双方'));
   }
+  // 0.4.1 §三.4: a record's trustworthiness in one word — see content.js's toRecord() for how
+  // it is derived. Only 0.4.1+ records carry it, so everything older falls back to the same
+  // verdict computed from the fields it does have; that also keeps the list badge and the
+  // detail row from disagreeing about a game. Kept in step with viewer's other mirrors of
+  // app-side rules: `quality` is display-only, nothing here feeds a score.
+  function qualityOf(explicit, orderIssues, unordered, dropped) {
+    if (explicit === 'good' || explicit === 'partial' || explicit === 'suspect') return explicit;
+    if (orderIssues) return 'suspect';
+    return (unordered || dropped) ? 'partial' : 'good';
+  }
 
   function applyLang(setting) {
     LANG = GMI18n.resolveLang(setting);
@@ -87,29 +97,37 @@
   // stay; the engine's working (最佳 / 前5候选 / 胜率差 / 妙手 / 将败 / 被迫防守 / 耗时ms) folds
   // away. `#` is fixed — it is the row's identity, not a column to read, and hiding it would
   // leave the table with no way to say which hand a row is.
-  var STEP_COLS = [
-    { key: 'moveNo',    label: '#',          hide: false, fixed: true },
-    { key: 'side',      label: T('viewer|方'),         hide: false },
-    { key: 'actual',    label: T('viewer|实际'),       hide: false },
-    { key: 'best',      label: T('viewer|最佳'),       hide: true  },
-    { key: 'cands',     label: T('viewer|前5候选'),    hide: true  },
-    { key: 'top1',      label: 'T1',         hide: false },
-    { key: 'top3',      label: 'T3',         hide: false },
-    { key: 'top5',      label: 'T5',         hide: false },
-    { key: 'loss',      label: T('viewer|胜率差'),     hide: true  },
-    { key: 'sharp',     label: T('viewer|妙手'),       hide: true  },
-    { key: 'desperate', label: T('viewer|将败'),       hide: true  },
-    { key: 'forced',    label: T('viewer|被迫防守'),   hide: true  },
-    { key: 'thinkMs',   label: T('viewer|耗时ms'),     hide: true  },
-    { key: 'badge',     label: T('viewer|标记'),       hide: false },
-    { key: 'ann',       label: T('viewer|人工标记'),   hide: false },
-  ];
+  // 0.4.1 §五.3: a FUNCTION, not a module-level array. `T()` is called once per column on
+  // every rebuild now, because a frozen `label` kept whatever language was selected when the
+  // page loaded: switching to English mid-session left the column menu and the fold glyphs'
+  // tooltips in the old language until a reload. The table headers themselves were fine (they
+  // are static HTML and GMI18n.apply() rewrites them), which is exactly what made this one
+  // hard to notice — the menu under the header disagreed with the header.
+  function stepCols() {
+    return [
+      { key: 'moveNo',    label: '#',          hide: false, fixed: true },
+      { key: 'side',      label: T('viewer|方'),         hide: false },
+      { key: 'actual',    label: T('viewer|实际'),       hide: false },
+      { key: 'best',      label: T('viewer|最佳'),       hide: true  },
+      { key: 'cands',     label: T('viewer|前5候选'),    hide: true  },
+      { key: 'top1',      label: 'T1',         hide: false },
+      { key: 'top3',      label: 'T3',         hide: false },
+      { key: 'top5',      label: 'T5',         hide: false },
+      { key: 'loss',      label: T('viewer|胜率差'),     hide: true  },
+      { key: 'sharp',     label: T('viewer|妙手'),       hide: true  },
+      { key: 'desperate', label: T('viewer|将败'),       hide: true  },
+      { key: 'forced',    label: T('viewer|被迫防守'),   hide: true  },
+      { key: 'thinkMs',   label: T('viewer|耗时ms'),     hide: true  },
+      { key: 'badge',     label: T('viewer|标记'),       hide: false },
+      { key: 'ann',       label: T('viewer|人工标记'),   hide: false },
+    ];
+  }
   var STEP_TABLES = ['tbl', 'dTbl', 'sTbl', 'seTbl'];
   var colPrefs = null;      // { key: bool } — persisted, see loadColPrefs
 
   function colDefaults() {
     var d = {};
-    STEP_COLS.forEach(function (c) { d[c.key] = !c.hide; });
+    stepCols().forEach(function (c) { d[c.key] = !c.hide; });
     return d;
   }
   // Callback form on purpose: the rest of this file only ever uses chrome.storage's callback
@@ -120,7 +138,7 @@
       function done(saved) {
         var out = Object.assign({}, def, (saved && typeof saved === 'object') ? saved : {});
         // A stored preference must never be able to hide `#`.
-        STEP_COLS.forEach(function (c) { if (c.fixed) out[c.key] = true; });
+        stepCols().forEach(function (c) { if (c.fixed) out[c.key] = true; });
         colPrefs = out;
         resolve(out);
       }
@@ -148,7 +166,7 @@
       document.head.appendChild(el);
     }
     var css = '';
-    STEP_COLS.forEach(function (c, i) {
+    stepCols().forEach(function (c, i) {
       if (c.fixed || colPrefs[c.key] !== false) return;
       var n = i + 1;
       STEP_TABLES.forEach(function (t) {
@@ -162,7 +180,7 @@
 
   function toggleCol(key) {
     var c = null;
-    STEP_COLS.forEach(function (x) { if (x.key === key) c = x; });
+    stepCols().forEach(function (x) { if (x.key === key) c = x; });
     if (!c || c.fixed) return;
     colPrefs[key] = colPrefs[key] === false;   // hidden -> show, shown -> hide
     saveColPrefs();
@@ -173,22 +191,30 @@
   // anywhere else in the row is already a jump-to-hand gesture in 检测, and making the whole
   // header a hide button would fold a column away every time someone meant to look at a row.
   function buildColToggles() {
+    var cols = stepCols();
     STEP_TABLES.forEach(function (t) {
       var table = $(t);
       if (!table) return;
       table.querySelectorAll('thead th').forEach(function (th, i) {
-        var c = STEP_COLS[i];
-        if (!c || c.fixed || th.querySelector('.col-toggle')) return;
-        var sp = document.createElement('span');
-        sp.className = 'col-toggle';
-        sp.dataset.col = c.key;
-        sp.textContent = '▼';
+        var c = cols[i];
+        if (!c || c.fixed) return;
+        var sp = th.querySelector('.col-toggle');
+        if (!sp) {
+          sp = document.createElement('span');
+          sp.className = 'col-toggle';
+          sp.dataset.col = c.key;
+          sp.textContent = '▼';
+          // Bound once and keyed by `c.key`, which is language-independent — so the handler
+          // never has to be re-registered when the language changes (0.4.1 §五.3).
+          sp.addEventListener('click', function (ev) {
+            ev.stopPropagation();
+            toggleCol(c.key);
+          });
+          th.insertBefore(sp, th.firstChild);
+        }
+        // Re-stamped on every call, not only on creation: this is what makes 语言与显示 →
+        // English retitle the fold glyphs without a reload.
         sp.title = T('viewer|折叠 / 展开「{col}」列', { col: c.label });
-        sp.addEventListener('click', function (ev) {
-          ev.stopPropagation();
-          toggleCol(c.key);
-        });
-        th.insertBefore(sp, th.firstChild);
       });
     });
   }
@@ -199,7 +225,7 @@
     var el = $('colMenu');
     if (!el || !colPrefs) return;
     var h = '<div class="cmh">' + T('viewer|步骤明细列（四张表共用）') + '</div>';
-    STEP_COLS.forEach(function (c) {
+    stepCols().forEach(function (c) {
       var on = c.fixed || colPrefs[c.key] !== false;
       h += '<label class="cmrow' + (c.fixed ? ' fixed' : '') + '">' +
         '<input type="checkbox" data-col="' + c.key + '"' + (on ? ' checked' : '') +
@@ -213,7 +239,7 @@
   }
 
   function setAllCols(show) {
-    STEP_COLS.forEach(function (c) {
+    stepCols().forEach(function (c) {
       colPrefs[c.key] = c.fixed ? true : show;
     });
     saveColPrefs();
@@ -304,6 +330,12 @@
     fillSampleTagFilter();
     renderLearnStatus();
     setPauseLabel();
+    // 0.4.1 §五.3: the fifteen step columns are a JS-built table of contents, so the static
+    // pass above cannot reach them. `buildColToggles` re-stamps the fold glyphs' titles and
+    // `renderColMenu` rebuilds the ▾ menu from scratch — between them the whole column UI
+    // follows the language, which it did not before (the menu kept the load-time language).
+    buildColToggles();
+    renderColMenu();
     // A finished report is re-rendered rather than cleared: switching language mid-review must
     // not cost the operator the analysis they were reading.
     if (report) renderReport(); else resetReport();
@@ -408,8 +440,17 @@
       statCard(lp ? G.beijingTime(lp.trainedAt) : T('viewer|未学习'), T('viewer|学习时间'), true);
     // The one thing the figures above cannot show: whether that learned set is trustworthy.
     var note = $('setLearnNote');
-    var warn = lp && lp.reliable === false
-      ? '<span style="color:var(--yellow)">' + T('viewer|（样本量不足，结果不可靠）') + '</span>' : '';
+    var drift = lp ? G.sampleDrift(lp.sampleCount, smp.length) : { grown: false };
+    var warn = (lp && lp.reliable === false
+      ? '<span style="color:var(--yellow)">' + T('viewer|（样本量不足，结果不可靠）') + '</span>' : '') +
+      // 0.4.1 §一.5 — same rule as the 学习 panel; both go through GMStorage.sampleDrift so
+      // they can never disagree about whether a refresh is due.
+      (drift.grown
+        ? (lp && lp.reliable === false ? ' ' : '') +
+          '<span style="color:var(--yellow)">' +
+          T('viewer|样本已从 {was} 增至 {now}（+{pct}%），建议重新学习。',
+            { was: drift.was, now: drift.now, pct: drift.pct }) + '</span>'
+        : '');
     note.innerHTML = warn;
     note.style.display = warn ? '' : 'none';
     $('setResetLearn').disabled = !lp;
@@ -1597,6 +1638,22 @@
     box.innerHTML = pageList.map(function (a, i) {
       var no = start + i + 1;
       var isDefault = a.name === G.defaultArchiveName(a);
+      // 0.4.1 §三.4: a game whose move order is wrong used to look exactly like a clean one
+      // until it was opened. The badge is the whole point of `quality` — it is the only place
+      // the difference is visible across the library at a glance.
+      var rm = (a.record && a.record.meta) || {};
+      var rp = a.report || {};
+      var qUnordered = rm.unorderedCount != null ? rm.unorderedCount
+        : rm.inferredCount != null ? rm.inferredCount : (rp.prejoinCount || 0);
+      var q = qualityOf(a.quality, rm.orderIssues || (rp.orderIssues || []).length, qUnordered, rm.dropped || 0);
+      // The two labels are chosen with an `if` rather than an inline ternary: the key
+      // extractor (`_tools/keys.cjs`) only recognises a string literal sitting directly inside
+      // a `T(` call, so a key buried in a `?:` never reaches the dictionary and falls back to
+      // the Chinese original in every language. Same trap as 0.3.7's 12 missing strings.
+      var qLabel;
+      if (q === 'suspect') qLabel = T('viewer|数据可疑');
+      else qLabel = T('viewer|数据不全');
+      var qBadge = q === 'good' ? '' : ' · ' + qLabel;
       var meta = (a.blackRisk || 0) + '/' + (a.whiteRisk || 0) + ' · ' + G.modeLabel(a.mode) +
                  ' · ' + T('viewer|{n}手', { n: a.totalMoves || 0 }) +
                  // The opening, when it was identifiable. The archive stores only the code,
@@ -1608,7 +1665,8 @@
                  (a.outcome === 'draw' ? ' · ' + T('viewer|和棋') : '') +
                  (a.terminated ? ' · ' + T('viewer|活四终止') : '') +
                  (a.report && a.report.prejoinCount
-                   ? ' · ' + T('viewer|还原{n}手', { n: a.report.prejoinCount }) : '');
+                   ? ' · ' + T('viewer|还原{n}手', { n: a.report.prejoinCount }) : '') +
+                 qBadge;
       var tick = aBulkMode
         ? '<span class="tick' + (aSelected[a.id] ? ' on' : '') + '" data-tick="1">' +
             (aSelected[a.id] ? '☑' : '☐') + '</span>'
@@ -2144,6 +2202,22 @@
     var unordered = recMeta.unorderedCount != null ? recMeta.unorderedCount
       : recMeta.inferredCount != null ? recMeta.inferredCount
       : (rep.prejoinCount || 0);
+    // 0.4.1 §三.4: the record's own verdict when it has one (0.4.1+), and otherwise derived
+    // from the fields a pre-0.4.1 archive does carry — so an old game gets the same badge the
+    // new one would, instead of silently reading as "complete".
+    var quality = qualityOf(recMeta.quality, recMeta.orderIssues || (rep.orderIssues || []).length,
+                            unordered, recMeta.dropped || 0);
+    var qualVerdict = quality === 'suspect'
+      ? T('viewer|⚠ 异常（{n} 处相邻同色，结论仅供参考）', { n: recMeta.orderIssues || (rep.orderIssues || []).length })
+      : quality === 'partial'
+        // `partial` covers two things — a mid-join prefix whose order is unknown, and stones
+        // the capture had to drop. Only the first has a hand count to report; the second would
+        // read "前 0 手缺失" if it borrowed that sentence, so it gets the short label instead.
+        ? (unordered
+            ? T('viewer|⚠ 不完整（前 {missing} 手缺失，有效样本 {scored} / {total} 手）',
+                { missing: unordered, scored: scored, total: a.totalMoves || 0 })
+            : T('viewer|数据不全'))
+        : T('viewer|完整');
     var facts = [
       [T('viewer|总手数'), T('viewer|{n} 手', { n: a.totalMoves || 0 })],
       [T('viewer|计入手数'), T('viewer|{n} 手', { n: scored })],
@@ -2169,6 +2243,15 @@
       [T('viewer|手序校验'), rep.orderSuspect
         ? T('viewer|⚠ 异常（{n} 处相邻同色，结论仅供参考）', { n: (rep.orderIssues || []).length })
         : T('viewer|正常（黑白交替）')],
+      // 0.4.1 §三.4: the two rows above, said in one word. They are already there, but they are
+      // buried under a dozen other facts and an operator reading only the percentages has no
+      // reason to go looking for them. A summary line at the point where the verdict is read
+      // is the cheapest possible way to make bad data visible.
+      //
+      // Display-only: nothing reads `quality` to move a score. Downgrading the risk when the
+      // record is suspect would silently rewrite a verdict the operator already saw, and the
+      // honest fix for a bad record is to capture a better one.
+      [T('viewer|数据质量'), qualVerdict],
       [T('viewer|时间模式'), rep.hasTime ? T('viewer|真实落子间隔') : T('viewer|固定预算（无时间数据）')],
       [T('viewer|对局结果'), (recMeta.outcome === 'draw' || a.outcome === 'draw') ? T('viewer|和棋（无胜方）')
         : recMeta.winner ? T('viewer|胜方：{name} 方', { name: recMeta.winner })
@@ -3713,6 +3796,15 @@
       ' · ' + T('viewer|样本 {n} 个 · 特征库 {f} 条', { n: lp.sampleCount || 0, f: lp.featureCount || 0 }) +
       (lp.reliable === false
         ? ' · <span style="color:var(--yellow)">' + T('viewer|样本量不足，结果不可靠') + '</span>' : '');
+    // 0.4.1 §一.5: the corpus has grown since the last run. Nothing re-trains on its own
+    // (0.3.3 §3.6), so without this line the operator's only clue that the detector is still
+    // scoring with month-old weights is to remember what 样本数 said last time.
+    var drift = G.sampleDrift(lp.sampleCount, n);
+    if (drift.grown) {
+      $('learnStatus').innerHTML += '<div class="hint" style="color:var(--yellow)">' +
+        T('viewer|样本已从 {was} 增至 {now}（+{pct}%），建议重新学习。',
+          { was: drift.was, now: drift.now, pct: drift.pct }) + '</div>';
+    }
     renderLearnResult(lp);
   }
 
@@ -3819,7 +3911,13 @@
       if (changes.updateInfo || changes.updateDismissed) refreshUpdateBanner();
       if (changes.settings) {
         G.loadSettings().then(function (v) {
-          var langChanged = v.lang !== S.lang;
+          // 0.4.1 §五.3: compare against the locale actually PAINTED (`LANG`), not against the
+          // previous settings object. The 设置 dropdown writes through GMStorage, and
+          // `saveSetting` resolves with the NEW settings, so `S` is already up to date by the
+          // time this broadcast arrives — `v.lang !== S.lang` was therefore always false for a
+          // change made on this very page, which made the viewer's own language switch the one
+          // case that never repainted (the ▾ column menu kept the load-time language).
+          var langChanged = GMI18n.resolveLang(v.lang) !== LANG;
           S = v;
           if (langChanged) { applyLang(S.lang); repaintForLang(); return; }
           // Our own write echoed back: S/syncDetectControls are enough. Re-filling the
