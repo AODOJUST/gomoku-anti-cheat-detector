@@ -65,6 +65,7 @@ chrome.runtime.onInstalled.addListener(function () {
     function (s) { buildLangMenu(s && s.lang); },
     function () { buildLangMenu('auto'); }
   );
+  scheduleUpdateCheck();
 });
 
 chrome.runtime.onStartup.addListener(function () {
@@ -72,6 +73,7 @@ chrome.runtime.onStartup.addListener(function () {
     function (s) { buildLangMenu(s && s.lang); },
     function () { buildLangMenu('auto'); }
   );
+  scheduleUpdateCheck();
 });
 
 chrome.contextMenus.onClicked.addListener(function (info) {
@@ -91,6 +93,113 @@ chrome.storage.onChanged.addListener(function (changes, area) {
     updateMenu(LANG_PREFIX + code, { checked: code === lang });
   });
 });
+
+// ---- 0.4.0 §一: remote update check ----
+// `chrome.runtime.requestUpdateCheck()` is deliberately NOT used: it answers only for
+// Chrome Web Store installs, and this extension is loaded unpacked from a GitHub repository,
+// where it would report "no update" forever. Instead the newest version is read from
+// `version.json` in the repository root (which IS this directory — see storage.js, where the
+// URLs and the version comparison live so both this worker and the viewer share one copy).
+//
+// The fetch is best-effort in every direction: it never throws into a caller, a failure
+// writes nothing, and the only thing the operator sees on a failure is the manual button's
+// own status line.
+var UPDATE_DELAY_MS = 5000;   // §一.3 — let the engine load and the panel paint first
+// §一.6 requires a failed check to be silent and NON-BLOCKING. A network that neither answers
+// nor refuses (a dropped route, a captive portal, a corporate proxy that black-holes the host)
+// leaves `fetch` pending indefinitely — and on the manual path that pins the button at
+// 「检测中…」 forever, which is the opposite of silent. So every request gets a deadline.
+var UPDATE_TIMEOUT_MS = 8000;
+
+function fetchJson(url) {
+  // `cache: 'no-store'` plus a cache-busting query: raw.githubusercontent.com is served
+  // through a CDN with a few minutes of edge caching, and a stale copy of version.json is
+  // exactly the bug this feature exists to avoid.
+  var bust = url + (url.indexOf('?') >= 0 ? '&' : '?') + 't=' + Date.now();
+  var ctl = (typeof AbortController === 'function') ? new AbortController() : null;
+  var timer = setTimeout(function () { if (ctl) ctl.abort(); }, UPDATE_TIMEOUT_MS);
+  var opts = { cache: 'no-store' };
+  if (ctl) opts.signal = ctl.signal;
+  return fetch(bust, opts).then(function (res) {
+    if (!res || !res.ok) throw new Error('HTTP ' + (res && res.status));
+    return res.json();
+  }).then(function (v) {
+    clearTimeout(timer);
+    return v;
+  }, function (e) {
+    clearTimeout(timer);
+    throw e;
+  });
+}
+
+// §一.2's fallback path: the repository's own manifest.json carries a version even when
+// nobody remembered to bump version.json. It has no notes or download link, so those are
+// synthesised from the repository URL rather than left blank in the banner.
+function fromManifest(mf) {
+  return {
+    version: String((mf && mf.version) || ''),
+    releaseNotes: '',
+    downloadUrl: GMStorage.UPDATE_ZIP,
+    releaseUrl: GMStorage.UPDATE_RELEASES,
+  };
+}
+
+function normalizeRemote(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  var version = String(raw.version || '').trim();
+  if (!version) return null;
+  return {
+    version: version,
+    releaseNotes: String(raw.releaseNotes || raw.notes || ''),
+    downloadUrl: String(raw.downloadUrl || GMStorage.UPDATE_ZIP),
+    releaseUrl: String(raw.releaseUrl || raw.url || GMStorage.UPDATE_RELEASES),
+  };
+}
+
+// `force` skips the 12-hour throttle — that is the manual button (§一.3).
+async function checkForUpdate(force) {
+  var current = chrome.runtime.getManifest().version;
+
+  if (!force) {
+    var prev = await GMStorage.loadUpdateInfo();
+    if (prev && prev.checkedAt && (Date.now() - prev.checkedAt) < GMStorage.UPDATE_INTERVAL_MS) {
+      return { ok: true, skipped: true, info: prev };
+    }
+  }
+
+  var remote = null;
+  try {
+    remote = normalizeRemote(await fetchJson(GMStorage.UPDATE_SOURCE));
+  } catch (e) { /* try the fallback below */ }
+  if (!remote) {
+    try { remote = normalizeRemote(fromManifest(await fetchJson(GMStorage.UPDATE_FALLBACK))); }
+    catch (e) { remote = null; }
+  }
+
+  if (!remote) {
+    // §一.6: silent on the automatic path. The manual path gets the reason so the settings
+    // page can say 「检测失败」 instead of appearing to do nothing.
+    return { ok: false, error: 'unreachable', currentVersion: current };
+  }
+
+  var info = {
+    available: GMStorage.compareVersion(remote.version, current) > 0,
+    latestVersion: remote.version,
+    currentVersion: current,
+    releaseNotes: remote.releaseNotes,
+    downloadUrl: remote.downloadUrl,
+    releaseUrl: remote.releaseUrl,
+    checkedAt: Date.now(),
+  };
+  await GMStorage.saveUpdateInfo(info);
+  return { ok: true, info: info };
+}
+
+function scheduleUpdateCheck() {
+  // 5s is far inside the service worker's idle window, so the timer fires even though a
+  // bare setTimeout does not by itself keep the worker alive.
+  setTimeout(function () { checkForUpdate(false).catch(function () {}); }, UPDATE_DELAY_MS);
+}
 
 var creating = null;
 
@@ -161,6 +270,16 @@ chrome.action.onClicked.addListener(function (tab) {
 
 chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
   if (!msg || typeof msg.type !== 'string') return;
+
+  // 0.4.0 §一.3 — the settings page's「检测更新」button. Routed through the worker rather than
+  // fetched in the page so there is exactly one implementation of the check, and so the
+  // result lands in `updateInfo` for the banner to pick up on every other surface.
+  if (msg.type === 'gm-check-update') {
+    checkForUpdate(true)
+      .then(function (r) { sendResponse(r); })
+      .catch(function (e) { sendResponse({ ok: false, error: String((e && e.message) || e) }); });
+    return true;
+  }
 
   if (msg.type === 'gm-open-viewer') {
     openViewer()

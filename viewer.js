@@ -292,6 +292,11 @@
     GMI18n.apply(document);
     fillLangSelect();
     fillThreadSelect();
+    // §一.4: the banner and the settings page's status line are built in JS, so they carry no
+    // `__gmKey` and the static pass above cannot reach them.
+    fillVersionRow();
+    paintUpdStatus();
+    refreshUpdateBanner();
     syncDetectControls();
     fillSettingsForm();
     fillOpeningFilter();
@@ -373,28 +378,141 @@
     aiThinkDirty = (S.aiThinkMs != null);
   }
 
+  // 0.4.0 §2.3: one figure per card. `big` may be a number, a formatted figure or a date —
+  // the `sm` modifier keeps a date from being shouted at 22px inside a 160px card.
+  function statCard(big, label, small) {
+    return '<div class="stat-card"><div class="big' + (small ? ' sm' : '') + '">' +
+      esc(String(big)) + '</div><div class="k">' + esc(label) + '</div></div>';
+  }
+
   async function renderSettings() {
     fillSettingsForm();
+    fillVersionRow();
     var list = await G.loadArchives();
     var bytes = 0;
     try { bytes = JSON.stringify(list).length; } catch (e) {}
-    $('setArch').textContent = T('viewer|共 {n} / {max} 局，约 {kb} KB{oldest}', {
-      n: list.length, max: G.MAX_ARCHIVES, kb: (bytes / 1024).toFixed(1),
-      oldest: list.length ? T('viewer|（最早 {t}）', { t: G.beijingTime(list[list.length - 1].createdAt) }) : '',
-    });
+    $('setArch').innerHTML =
+      statCard(list.length, T('viewer|存档局数')) +
+      statCard(G.MAX_ARCHIVES, T('viewer|上限')) +
+      statCard((bytes / 1024).toFixed(1) + ' KB', T('viewer|占用')) +
+      statCard(list.length ? G.beijingTime(list[list.length - 1].createdAt) : '—',
+               T('viewer|最早存档'), true);
     // 0.3.3 §3.6: the learned parameters are reported here as well as in the sample library,
     // because this is the tab an operator opens to ask "what is the detector actually using".
     var smp = await G.loadSamples();
     var lp = await G.loadLearnedParams();
-    $('setLearn').innerHTML = T('viewer|样本 {n} 个 · ', { n: smp.length }) +
-      (lp
-        ? T('viewer|已学习：{t}，样本 {n} 个，特征库 {f} 条', {
-            t: G.beijingTime(lp.trainedAt), n: (lp.sampleCount || 0), f: (lp.featureCount || 0),
-          }) +
-          (lp.reliable === false
-            ? ' <span style="color:var(--yellow)">' + T('viewer|（样本量不足，结果不可靠）') + '</span>' : '')
-        : T('viewer|尚未学习 —— 检测使用 0.3.1 默认阈值与权重'));
+    $('setLearn').innerHTML =
+      statCard(smp.length, T('viewer|样本数')) +
+      statCard(lp ? (lp.sampleCount || 0) : '—', T('viewer|学习样本')) +
+      statCard(lp ? (lp.featureCount || 0) : '—', T('viewer|特征库')) +
+      statCard(lp ? G.beijingTime(lp.trainedAt) : T('viewer|未学习'), T('viewer|学习时间'), true);
+    // The one thing the figures above cannot show: whether that learned set is trustworthy.
+    var note = $('setLearnNote');
+    var warn = lp && lp.reliable === false
+      ? '<span style="color:var(--yellow)">' + T('viewer|（样本量不足，结果不可靠）') + '</span>' : '';
+    note.innerHTML = warn;
+    note.style.display = warn ? '' : 'none';
     $('setResetLearn').disabled = !lp;
+  }
+
+  // =====================================================================
+  // 0.4.0 §一: self-update — the banner and the manual check
+  // =====================================================================
+  // The CHECK itself lives entirely in background.js (see storage.js for why
+  // `chrome.runtime.requestUpdateCheck()` cannot be used, and for the version comparison).
+  // This page only reads the stored result and, for the button, asks the worker to re-run it.
+  var updInfo = null;     // the update the banner is currently showing (null = none)
+  // The manual check's outcome, kept as a KEY rather than as rendered text: a language switch
+  // has to be able to repaint it, and re-rendering a stale sentence would be worse than '—'.
+  var updStatus = null;
+
+  function localVersion() {
+    try { return chrome.runtime.getManifest().version; } catch (e) { return ''; }
+  }
+
+  function fillVersionRow() {
+    var el = $('setVer');
+    if (el) el.textContent = 'v' + localVersion();
+    var btn = $('setCheckUpd');
+    if (btn) btn.textContent = T('update.check');
+  }
+
+  function paintUpdStatus() {
+    var el = $('setUpdHint');
+    if (el) el.textContent = updStatus ? T(updStatus.key, updStatus.vars) : '—';
+  }
+  function setUpdStatus(key, vars) {
+    updStatus = key ? { key: key, vars: vars || null } : null;
+    paintUpdStatus();
+  }
+
+  function renderUpdateBanner(info) {
+    updInfo = info || null;
+    var el = $('updBan');
+    if (!el) return;
+    if (!updInfo) { el.classList.add('hidden'); el.innerHTML = ''; return; }
+    el.innerHTML =
+      '<span class="bt">' + esc(T('update.available', { v: updInfo.latestVersion })) + '</span>' +
+      '<span class="sp"></span>' +
+      '<span class="blk" data-upd="open">' + esc(T('update.view')) + '</span>' +
+      '<span class="blk" data-upd="dismiss">' + esc(T('update.dismiss')) + '</span>';
+    el.classList.remove('hidden');
+  }
+
+  // The automatic path: honours the 7-day「暂不更新」. The manual button deliberately does
+  // not — asking for the check is itself a decision to be told the answer.
+  function refreshUpdateBanner() {
+    return G.pendingUpdate().then(
+      function (info) { renderUpdateBanner(info); },
+      function () { renderUpdateBanner(null); });
+  }
+
+  function openUpdatePage() {
+    var url = (updInfo && (updInfo.releaseUrl || updInfo.downloadUrl)) || G.UPDATE_RELEASES;
+    try { window.open(url, '_blank', 'noopener'); } catch (e) { /* popup blocked */ }
+  }
+
+  function dismissUpdateBanner() {
+    if (!updInfo) return;
+    var v = updInfo.latestVersion;
+    // Hide first, persist after: the click has to feel instant.
+    renderUpdateBanner(null);
+    G.dismissUpdate(v).catch(function () {});
+  }
+
+  if ($('updBan')) {
+    $('updBan').addEventListener('click', function (ev) {
+      var b = ev.target && ev.target.closest ? ev.target.closest('[data-upd]') : null;
+      if (!b) return;
+      var what = b.getAttribute('data-upd');
+      if (what === 'open') openUpdatePage();
+      else if (what === 'dismiss') dismissUpdateBanner();
+    });
+  }
+
+  if ($('setCheckUpd')) {
+    $('setCheckUpd').onclick = function () {
+      var btn = $('setCheckUpd');
+      btn.disabled = true;
+      setUpdStatus('update.checking');
+      chrome.runtime.sendMessage({ type: 'gm-check-update' }, function (res) {
+        btn.disabled = false;
+        if (chrome.runtime.lastError || !res || !res.ok) { setUpdStatus('update.failed'); return; }
+        var info = res.info || null;
+        if (info && info.available) {
+          setUpdStatus('update.found', { v: info.latestVersion });
+          renderUpdateBanner(info);
+        } else {
+          setUpdStatus('update.upToDate', { v: (info && info.currentVersion) || localVersion() });
+        }
+      });
+    };
+  }
+
+  // §二.2: 列折叠偏好 is a second DOOR to the header's 「列 ▾」 popup, not a second copy of it
+  // — the popup positions itself from the real button's rect, which only exists in the header.
+  if ($('setColPref')) {
+    $('setColPref').onclick = function () { var b = $('colBtn'); if (b) b.click(); };
   }
 
   // 改动即写: a `change` event only fires on blur/Enter, so a user who types a number
@@ -3695,6 +3813,10 @@
   if (chrome.storage && chrome.storage.onChanged) {
     chrome.storage.onChanged.addListener(function (changes, area) {
       if (area !== 'local') return;
+      // 0.4.0 §一.4 — the worker's 12-hourly check writes `updateInfo` while this page is
+      // open, and 「暂不更新」 in the panel writes `updateDismissed`. Either has to reach this
+      // banner without a reload.
+      if (changes.updateInfo || changes.updateDismissed) refreshUpdateBanner();
       if (changes.settings) {
         G.loadSettings().then(function (v) {
           var langChanged = v.lang !== S.lang;
@@ -3791,5 +3913,10 @@
     fillSampleTagFilter();
     renderLearnStatus();
     setStatus(T('viewer|就绪 · 存档 {a} 局 · 样本 {s} 个', { a: list.length, s: samples.length }));
+    // 0.4.0 §一.4 — the settings page's version/update controls, and whatever the last check
+    // left in storage. This never triggers a check of its own; only the worker and the
+    // 「检测更新」 button do that.
+    fillVersionRow();
+    refreshUpdateBanner();
   })();
 })();

@@ -47,6 +47,12 @@
   var OVERLAY_KEY = 'overlayState';
   var SAMPLES_KEY = 'samples';
   var LEARNED_KEY = 'learnedParams';
+  // 0.4.0 §一.3: the result of the last remote version check, and the「暂不更新」record.
+  // The two are separate keys on purpose — `updateInfo` is overwritten by EVERY check, so a
+  // dismissal stored inside it would be wiped by the next 12-hourly poll and the banner the
+  // operator just closed would come back.
+  var UPDATE_KEY = 'updateInfo';
+  var UPDATE_DISMISS_KEY = 'updateDismissed';
   var MAX_ARCHIVES = 200;
   // Samples carry a full record + report + annotations each — bigger per item than an
   // archive — so the cap is lower. The 10MB chrome.storage.local budget is shared with
@@ -231,6 +237,94 @@
   }
 
   function overlayDefaults() { return Object.assign({}, DEFAULT_OVERLAY); }
+
+  // ---------- 0.4.0 §一: remote update check ----------
+  // Why not `chrome.runtime.requestUpdateCheck()`: that API only sees extensions installed
+  // from the Chrome Web Store. This one is loaded unpacked from a GitHub repository, so it
+  // always answers "no update" — the check has to be built out of a fetch of a version file.
+  //
+  // The repository root IS the extension directory (unpacked install), so `version.json`
+  // lives next to `manifest.json` and is served over raw.githubusercontent.com. Everything
+  // in this section is pure or storage-only: the fetch itself lives in background.js (the
+  // service worker owns network access) and the banner lives in content.js / viewer.js.
+  var UPDATE_REPO = 'https://github.com/AODOJUST/gomoku-anti-cheat-detector';
+  var UPDATE_SOURCE = UPDATE_REPO.replace('github.com', 'raw.githubusercontent.com') + '/main/version.json';
+  // §一.2 allows falling back to the repository's own manifest.json, which carries the version
+  // even if nobody remembered to bump version.json. It has no release notes or download URL,
+  // so those are synthesised from the repository URL.
+  var UPDATE_FALLBACK = UPDATE_REPO.replace('github.com', 'raw.githubusercontent.com') + '/main/manifest.json';
+  var UPDATE_RELEASES = UPDATE_REPO + '/releases';
+  var UPDATE_ZIP = UPDATE_REPO + '/archive/refs/heads/main.zip';
+  var UPDATE_INTERVAL_MS = 12 * 60 * 60 * 1000;      // §一.3 — auto-check at most once every 12h
+  var UPDATE_DISMISS_MS = 7 * 24 * 60 * 60 * 1000;   // §一.4 — 「暂不更新」silences this version 7 days
+
+  // §一.2. Segment by segment, numerically, missing segments read as 0 — so `1.0` and `1.0.0`
+  // are equal and `0.4.0 > 0.3.7`. Anything non-numeric in a segment degrades to 0 rather
+  // than to NaN: a NaN comparison is false against everything, which would silently report
+  // "up to date" for a version string with a suffix in it (`0.4.0-beta`).
+  function compareVersion(a, b) {
+    var pa = String(a == null ? '' : a).split('.');
+    var pb = String(b == null ? '' : b).split('.');
+    var len = Math.max(pa.length, pb.length);
+    for (var i = 0; i < len; i++) {
+      var va = parseInt(pa[i], 10); if (!isFinite(va)) va = 0;
+      var vb = parseInt(pb[i], 10); if (!isFinite(vb)) vb = 0;
+      if (va > vb) return 1;
+      if (va < vb) return -1;
+    }
+    return 0;
+  }
+
+  async function loadUpdateInfo() {
+    var got = null;
+    try { got = await api().get(UPDATE_KEY); } catch (e) { got = null; }
+    var raw = got && got[UPDATE_KEY];
+    return (raw && typeof raw === 'object') ? raw : null;
+  }
+
+  function saveUpdateInfo(info) {
+    return enqueue(async function () {
+      var put = {}; put[UPDATE_KEY] = info;
+      try { await api().set(put); } catch (e) {}
+      return info;
+    });
+  }
+
+  async function loadUpdateDismissed() {
+    var got = null;
+    try { got = await api().get(UPDATE_DISMISS_KEY); } catch (e) { got = null; }
+    var raw = got && got[UPDATE_DISMISS_KEY];
+    return (raw && typeof raw === 'object') ? raw : null;
+  }
+
+  // Mutes exactly ONE version. A later release re-arms the banner without the operator having
+  // to remember that they waved off an older one.
+  function dismissUpdate(version, now) {
+    return enqueue(async function () {
+      var rec = { version: String(version == null ? '' : version), until: (now || Date.now()) + UPDATE_DISMISS_MS };
+      var put = {}; put[UPDATE_DISMISS_KEY] = rec;
+      try { await api().set(put); } catch (e) {}
+      return rec;
+    });
+  }
+
+  // Pure predicate so the tests can pin the window without touching the clock.
+  function isUpdateDismissed(dismissed, latestVersion, now) {
+    if (!dismissed || latestVersion == null) return false;
+    if (String(dismissed.version) !== String(latestVersion)) return false;
+    return (dismissed.until || 0) > (now || Date.now());
+  }
+
+  // The one call the two banners make: "is there an update worth showing right now?".
+  // Returns the info object, or null when there is nothing (no update / already dismissed /
+  // never checked). Never throws — a banner must not be able to break the host page.
+  async function pendingUpdate(now) {
+    var info = await loadUpdateInfo();
+    if (!info || !info.available) return null;
+    var dis = await loadUpdateDismissed();
+    if (isUpdateDismissed(dis, info.latestVersion, now)) return null;
+    return info;
+  }
 
   // ---------- archives ----------
   async function loadArchives() {
@@ -1342,6 +1436,21 @@
     loadOverlay: loadOverlay,
     saveOverlay: saveOverlay,
     overlayDefaults: overlayDefaults,
+    // ---- 0.4.0 §一 remote update check ----
+    UPDATE_REPO: UPDATE_REPO,
+    UPDATE_SOURCE: UPDATE_SOURCE,
+    UPDATE_FALLBACK: UPDATE_FALLBACK,
+    UPDATE_RELEASES: UPDATE_RELEASES,
+    UPDATE_ZIP: UPDATE_ZIP,
+    UPDATE_INTERVAL_MS: UPDATE_INTERVAL_MS,
+    UPDATE_DISMISS_MS: UPDATE_DISMISS_MS,
+    compareVersion: compareVersion,
+    loadUpdateInfo: loadUpdateInfo,
+    saveUpdateInfo: saveUpdateInfo,
+    loadUpdateDismissed: loadUpdateDismissed,
+    dismissUpdate: dismissUpdate,
+    isUpdateDismissed: isUpdateDismissed,
+    pendingUpdate: pendingUpdate,
     loadArchives: loadArchives,
     saveArchive: saveArchive,
     deleteArchive: deleteArchive,

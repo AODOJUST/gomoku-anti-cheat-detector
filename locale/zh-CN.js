@@ -171,4 +171,16 @@ GMI18n.register('zh-CN', {
   'lang.fr': 'Français',
   'lang.de': 'Deutsch',
 
+  // ---- 网络自主更新 (0.4.0 §一). 更新横幅、设置页的「检测更新」按钮与它的三种结果。
+  // 版本号走 {v}；releaseNotes 直接显示 version.json 的原文，故意不翻译（它随每次发布变）。
+  'update.available': '发现新版本 v{v}',
+  'update.view': '查看详情',
+  'update.dismiss': '暂不更新',
+  'update.check': '检测更新',
+  'update.checking': '检测中…',
+  'update.upToDate': '已是最新版本（v{v}）',
+  'update.found': '发现新版本 v{v}，可前往下载',
+  'update.failed': '检测失败（网络不可用或仓库不可达）',
+  'update.current': '当前版本 v{v}',
+
 });

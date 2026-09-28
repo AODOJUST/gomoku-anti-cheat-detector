@@ -21,7 +21,7 @@
   var EV_REQ = '__gm_req';
   var EV_RESP = '__gm_resp';
 
-  var VERSION = '0.3.7';
+  var VERSION = '0.4.0';
 
   // ---------- i18n (0.3.6 §1) ----------
   // `i18n.js` + the eight locale tables are loaded before this file (see manifest.json), so
@@ -1310,6 +1310,21 @@
     '.gm{background:#161b22;border:1px solid #2a3441;border-radius:10px;box-shadow:0 10px 34px rgba(0,0,0,.55);overflow:hidden;display:flex;flex-direction:column;max-height:var(--gm-max);position:relative}',
     // Resized: the height is explicit, so the box fills it and .body does the scrolling.
     ':host(.sized) .gm{height:100%}',
+    // 0.4.0 §一.4 更新横幅。它在**流内**（没有 position:fixed/absolute），所以是把整个面板
+    // 向下推而不是盖住——「不遮挡其他 UI 和按键」是规格里的关键约束。
+    // 尺寸上必须配对：`.gm` 的上限是 `--gm-max`，横幅吃掉多少就从里面减掉多少（`--gm-ban`），
+    // 否则一块 86vh 的面板再加一条横幅会一起顶出视口。
+    '.gmban{display:none;align-items:center;gap:8px;padding:7px 10px;margin-bottom:8px;',
+    'background:#16233d;border:1px solid #2f4b8f;border-radius:10px;font-size:12px;color:#cfe0ff}',
+    ':host(.upd) .gmban{display:flex}',
+    // 缩略态（只显示评估值）和图标态（48×48）都没有位置放横幅，也不该被它撑大。
+    ':host(.mg) .gmban,:host(.cp) .gmban{display:none}',
+    ':host(.upd) .gm{max-height:calc(var(--gm-max) - var(--gm-ban,0px))}',
+    '.gmban .bi{font-weight:700;color:#7aa2ff;flex:none}',
+    '.gmban .bt{font-weight:600;color:#e6edf3}',
+    '.gmban .sp{flex:1}',
+    '.gmban .blk{color:#7aa2ff;cursor:pointer;white-space:nowrap;flex:none}',
+    '.gmban .blk:hover{text-decoration:underline}',
     // Minimised: no chrome at all, just the 48x48 shield restored by a click.
     ':host(.mg) .gm{display:none}',
     '.mface{display:none;width:48px;height:48px;border-radius:12px;background:#161b22;border:1px solid #2a3441;',
@@ -1408,6 +1423,13 @@
   // `root.innerHTML` leaves them intact. Everything the operator reads goes through T().
   function shellHtml() {
     return '<div class="mface" title="' + esc(T('panel|展开检测器（点击恢复，按住可拖动）')) + '">🛡</div>' +
+      // 0.4.0 §一.4 — 流式更新横幅，位置在 `--gm-max` 之上、`.gm` 之外（见上面的 CSS 注释）。
+      '<div class="gmban">' +
+        '<span class="bi" aria-hidden="true">↑</span>' +
+        '<span class="bt" data-slot="updtext"></span><span class="sp"></span>' +
+        '<span class="blk" data-act="upd-open">' + esc(T('update.view')) + '</span>' +
+        '<span class="blk" data-act="upd-dismiss">' + esc(T('update.dismiss')) + '</span>' +
+      '</div>' +
       '<div class="gm">' +
         '<div class="hd" title="' + esc(T('panel|按住此处拖动面板到任意位置')) + '">' +
           '<span aria-hidden="true" style="color:#6e7b8a;font-size:12px;line-height:1">⠿</span>' +
@@ -1455,9 +1477,62 @@
     els.cpW = root.querySelector('[data-cp=w]');
     els.cpBar = root.querySelector('.cpbar>i');
     els.copy = root.querySelector('[data-act=copy]');
+    els.updText = root.querySelector('[data-slot=updtext]');
     if (root.host) root.host.setAttribute('lang', LANG);
     attachMiniHandlers();
     paintCopyButton();
+    // Re-render happens on a language change too, and the banner's text (and therefore its
+    // height, and therefore `--gm-ban`) moves with it.
+    applyBanner();
+  }
+
+  // ---------- 0.4.0 §一.4: the update banner ----------
+  // `updateInfo` is the last check the service worker stored (null = nothing to show, or
+  // nothing checked yet). The banner is only meaningful on the full panel — the compact and
+  // mini faces have nowhere to put it — so `applyBanner()` gates on `ovState.state` as well
+  // as on the info, and the CSS hides it again if the state moves after the fact.
+  var updateInfo = null;
+
+  function applyBanner() {
+    if (!root) return;
+    var el = root.querySelector('.gmban');
+    var show = !!(updateInfo && el) && ovState.state === 'normal';
+    if (host) host.classList.toggle('upd', show);
+    if (!show) {
+      // Zeroing the reservation is what lets the panel grow back to the full --gm-max.
+      if (host) host.style.removeProperty('--gm-ban');
+      return;
+    }
+    els.updText.textContent = T('update.available', { v: updateInfo.latestVersion });
+    // Measured, not hard-coded: the strip is one line in Chinese and can wrap in Russian,
+    // and a wrong number here either clips the panel or leaves a gap under it.
+    var h = el.offsetHeight || 0;
+    if (h) host.style.setProperty('--gm-ban', h + 'px');
+  }
+
+  // Reads the two storage records through the shared helper and repaints. Never rejects:
+  // a failed update lookup must not be able to take the panel down with it.
+  function refreshUpdateBanner() {
+    return GMStorage.pendingUpdate().then(function (info) {
+      updateInfo = info || null;
+      applyBanner();
+    }, function () { updateInfo = null; applyBanner(); });
+  }
+
+  function openUpdatePage() {
+    var url = (updateInfo && (updateInfo.releaseUrl || updateInfo.downloadUrl)) ||
+              GMStorage.UPDATE_RELEASES;
+    try { window.open(url, '_blank', 'noopener'); } catch (e) { /* popup blocked */ }
+  }
+
+  function dismissBanner() {
+    if (!updateInfo) return;
+    var v = updateInfo.latestVersion;
+    // Hide first, persist after: the click has to feel instant, and the write only has to
+    // land before the next 12-hourly check.
+    updateInfo = null;
+    applyBanner();
+    GMStorage.dismissUpdate(v).catch(function () {});
   }
 
   function build() {
@@ -1497,6 +1572,8 @@
       if (act === 'restore') { setOverlayState('normal'); return; }
       if (act === 'resize') return;   // handled by mousedown below, not by click
       if (act === 'open-viewer') { openViewer(); return; }
+      if (act === 'upd-open') { openUpdatePage(); return; }
+      if (act === 'upd-dismiss') { dismissBanner(); return; }
       if (act === 'copy') { copyResult(); return; }
       if (act === 'toggle-more') { moreOpen = !moreOpen; paintControls(); return; }
       if (act === 'analyze') { manualAnalyze(); return; }
@@ -1595,6 +1672,7 @@
       host.style.width = OV_MINI + 'px';
       host.style.height = OV_MINI + 'px';
       placeBox(OV_MINI, OV_MINI);
+      applyBanner();
       return;
     }
     if (st === 'compact') {
@@ -1604,6 +1682,7 @@
       host.style.width = OV_COMPACT_W + 'px';
       host.style.height = OV_COMPACT_H + 'px';
       placeBox(OV_COMPACT_W, OV_COMPACT_H);
+      applyBanner();   // §一.4 — the strip has no room here; drop the reservation too
       return;
     }
     // normal: the full panel, resizeable, anchored as stored.
@@ -1617,6 +1696,9 @@
       host.classList.remove('sized');
       host.style.setProperty('--gm-max', '86vh');
     }
+    // Back to the full panel: re-reserve the strip's height (it was released by the
+    // mini/compact branches above and by applyBanner's own `show === false` path).
+    applyBanner();
     placeBox(ovState.width, ovState.height > 0 ? ovState.height : host.offsetHeight);
   }
 
@@ -2325,7 +2407,12 @@
   // re-render would replace the input under their cursor.
   if (chrome.storage && chrome.storage.onChanged) {
     chrome.storage.onChanged.addListener(function (changes, area) {
-      if (area !== 'local' || !changes.settings) return;
+      if (area !== 'local') return;
+      // 0.4.0 §一.4 — the service worker's 12-hourly check writes `updateInfo` while this tab
+      // is already open, and「暂不更新」in another tab writes `updateDismissed`. Either one
+      // has to reach this panel without a reload.
+      if (changes.updateInfo || changes.updateDismissed) refreshUpdateBanner();
+      if (!changes.settings) return;
       GMStorage.loadSettings().then(function (v) {
         var langChanged = v.lang !== S.lang;
         S = v;
@@ -2350,6 +2437,9 @@
     // of flashing at the default one.
     loadOverlayState();
     paint();
+    // 0.4.0 §一.4 — reads whatever the last check left behind; it never triggers a check of
+    // its own (only the service worker and the viewer's button do that).
+    refreshUpdateBanner();
   }
   loadSettings().then(function () {
     if (document.body) boot();

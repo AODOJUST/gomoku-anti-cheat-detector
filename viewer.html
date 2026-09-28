@@ -104,13 +104,17 @@
      own colour because their colour IS their meaning (唯一手 / 将败 / 豁免 / 疑AI指纹 …),
      and repainting them black or white would erase the distinction. */
   #tbl tbody tr.side-B td,#dTbl tbody tr.side-B td,#sTbl tbody tr.side-B td,#seTbl tbody tr.side-B td{background:#111;color:#fff}
-  #tbl tbody tr.side-W td,#dTbl tbody tr.side-W td,#sTbl tbody tr.side-W td,#seTbl tbody tr.side-W td{background:#f5f5f5;color:#000}
+  /* 0.4.0 §三.2. #f5f5f5 is 96% white and glares on the dark panel over a long review, so the
+     white-side wash moves to #DCDCDC (220,220,220) — still clearly lighter than the #111
+     black row opposite it, but no longer the brightest thing on the screen. Change the two
+     `td.side-*` badge rules below in step, or the 方 cell would keep the old value. */
+  #tbl tbody tr.side-W td,#dTbl tbody tr.side-W td,#sTbl tbody tr.side-W td,#seTbl tbody tr.side-W td{background:#DCDCDC;color:#000}
   /* 可疑 is a TINT, not a replacement: the row rule above outranks this one on `background`,
      so an inset overlay is used to lay the red wash over whichever side colour is there
      instead of erasing it. (At equal specificity, a plain background here would lose.) */
   tr.flagged td{background:rgba(231,76,60,.12);box-shadow:inset 0 0 0 9999px rgba(231,76,60,.14)}
   td.side-B{background:#111;color:#fff;font-weight:600;border-radius:4px}
-  td.side-W{background:#f5f5f5;color:#000;font-weight:600;border-radius:4px}
+  td.side-W{background:#DCDCDC;color:#000;font-weight:600;border-radius:4px}
   /* The 人工标记 placeholder is --mut (#8b98a5) grey, which reads on the dark panel but
      disappears on a white row — the one place the new row colour needed a companion rule. */
   tr.side-W td.ma .ma-off{color:#5c6773}
@@ -179,6 +183,46 @@
   .fcell .fx{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
   .fcell select,.fcell input{flex:1;min-width:0}
   .fcell input.num{flex:0 0 120px;width:120px}
+  /* ---- 0.4.0 §二: the SETTINGS page's grid ----
+     `.fgrid` above is the filter grid (replay / samples) and is deliberately left alone; the
+     settings page needs a different shape — labelled groups whose items flow into as many
+     columns as the window affords. `auto-fill` + `minmax` is what makes that automatic, and
+     `min(100%, 300px)` rather than a bare 300px is what lets a narrow window collapse to a
+     single column instead of overflowing it. The two media queries pin the ends of §2.2's
+     table (narrow -> 1, wide -> 4) so the count cannot drift on an ultrawide monitor. */
+  .set-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,300px),1fr));
+            gap:14px 20px;margin-top:var(--ui-detail-padding);align-items:start}
+  .set-item{display:flex;flex-direction:column;gap:5px;min-width:0}
+  .set-item>label{margin:0;font-size:var(--ui-detail-small);color:var(--mut)}
+  .set-item .fx{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+  .set-item select,.set-item input{flex:1;min-width:0}
+  .set-item .set-val{font-family:Consolas,monospace;font-size:var(--ui-detail-font);color:var(--txt)}
+  /* The groups are a stack of full-width panels; the COLUMN COUNT is decided by the grid
+     inside them, not by capping the panel, which is what the old 620px column did. */
+  .set-panel{margin-top:12px}
+  .set-panel:first-child{margin-top:0}
+  @media (max-width:1023px){ .set-grid{grid-template-columns:repeat(auto-fill,minmax(min(100%,260px),1fr))} }
+  @media (max-width:639px){ .set-grid{grid-template-columns:1fr} }
+  @media (min-width:1441px){ .set-grid{grid-template-columns:repeat(4,minmax(0,1fr))} }
+  /* §2.3: statistics as cards. `.card` above is the DETECT score card and carries a coloured
+     level class; these are plain figures, so they get their own pair of names. */
+  .stat-cards{display:flex;gap:12px;flex-wrap:wrap}
+  .stat-card{flex:1 1 160px;background:#0d1117;border:1px solid var(--line);
+             border-radius:var(--ui-detail-radius);padding:12px;text-align:center}
+  .stat-card .big{font-size:22px;font-weight:600;color:var(--txt);font-variant-numeric:tabular-nums}
+  .stat-card .big.sm{font-size:var(--ui-detail-font);font-weight:500;font-variant-numeric:normal}
+  .stat-card .k{font-size:var(--ui-detail-small);color:var(--mut);margin-top:3px}
+  /* ---- 0.4.0 §一.4: the viewer's update banner ----
+     §一.4 puts it「导航栏下方、.wrap 之上」and requires a FLOW layout — it pushes the page
+     down instead of covering it, so nothing underneath becomes unclickable. */
+  .updban{display:flex;align-items:center;gap:12px;flex-wrap:wrap;
+          padding:10px var(--ui-shell-padding);background:#16233d;
+          border-bottom:1px solid #2f4b8f;font-size:var(--ui-detail-small);color:#cfe0ff}
+  .updban.hidden{display:none}
+  .updban .bt{color:var(--txt);font-weight:600}
+  .updban .sp{flex:1}
+  .updban .blk{color:#7aa2ff;cursor:pointer;white-space:nowrap}
+  .updban .blk:hover{text-decoration:underline}
   .alist{margin-top:var(--ui-detail-padding)}
   /* 0.3.5 §2.2: this sticks in the VIEWPORT (its panel has no overflow), so once the header
      went sticky it would have parked underneath it. --header-h is measured from the real
@@ -378,6 +422,11 @@
   <span id="status">就绪</span>
 </header>
 <div class="colmenu hidden" id="colMenu"></div>
+
+<!-- 0.4.0 §一.4 — the update banner sits between the navigation bar and `.wrap`, in the page
+     flow (never fixed/absolute), so it pushes the content down rather than covering it.
+     Filled and shown by viewer.js once GMStorage.pendingUpdate() reports something. -->
+<div class="updban hidden" id="updBan"></div>
 
 <div class="wrap">
 
@@ -1026,11 +1075,14 @@
   </section>
 
   <!-- ======================= 设置 ======================= -->
+  <!-- 0.4.0 §二: the panels are now semantic GROUPS rather than one 620px column, and each
+       group's items flow into as many columns as the window affords (see .set-grid above).
+       The old single-column layout used 1-2 of every 5 available slots on a wide screen. -->
   <section class="view" id="view-settings">
-    <div class="panel" style="max-width:620px">
+    <div class="panel set-panel">
       <h2>检测设置（与页面浮层共享同一份存储）</h2>
-      <div class="fgrid" style="grid-template-columns:1fr">
-        <div class="fcell">
+      <div class="set-grid">
+        <div class="set-item">
           <label>被怀疑方</label>
           <div class="fx"><select id="setSuspect">
             <option value="both">双方</option>
@@ -1038,42 +1090,24 @@
             <option value="W">白方</option>
           </select></div>
         </div>
-        <div class="fcell">
+        <div class="set-item">
           <label>分析模式</label>
           <div class="fx"><select id="setMode">
             <option value="global">全局分析（对局结束后一次）</option>
             <option value="stepwise">逐步分析（每落一子）</option>
           </select></div>
         </div>
-        <div class="fcell">
+        <div class="set-item">
           <label>检测思考时间（ms）</label>
-          <div class="fx"><input type="number" id="setThinkMs" min="500" step="500" style="width:120px"></div>
+          <div class="fx"><input type="number" id="setThinkMs" min="500" step="500"></div>
         </div>
-        <div class="fcell">
+        <div class="set-item">
           <label>AI 思考时间（ms，留空 = 跟随检测思考）</label>
-          <div class="fx"><input type="number" id="setAiThinkMs" min="0" step="100" style="width:120px" placeholder="跟随"></div>
+          <div class="fx"><input type="number" id="setAiThinkMs" min="0" step="100" placeholder="跟随"></div>
         </div>
-        <div class="fcell">
+        <div class="set-item">
           <label>开局排除手数</label>
-          <div class="fx"><input type="number" id="setOpening" min="0" max="40" style="width:120px"></div>
-        </div>
-        <div class="fcell">
-          <label>引擎线程数（自动 = 半核且不超过 16；多线程构建不可用时固定为 1）</label>
-          <div class="fx"><select id="setThread"></select></div>
-        </div>
-        <div class="fcell">
-          <label>最小存档手数（5–30）</label>
-          <div class="fx">
-            <input type="number" id="setMinMoves" min="5" max="30" style="width:120px">
-            <span class="hint">对局少于这么多手不写存档 —— 短局没有信号，还会把真对局挤出 200 局上限</span>
-          </div>
-        </div>
-        <div class="fcell">
-          <label>对局结束自动分析</label>
-          <div class="fx">
-            <input type="checkbox" id="setAuto">
-            <span class="hint">关闭后对局结束时只采集、不出报告，需手动点「分析当前对局」</span>
-          </div>
+          <div class="fx"><input type="number" id="setOpening" min="0" max="40"></div>
         </div>
       </div>
       <div class="btn-row" style="margin-top:14px">
@@ -1081,10 +1115,34 @@
       </div>
     </div>
 
-    <div class="panel" style="max-width:620px;margin-top:12px">
-      <h2>语言 / Language</h2>
-      <div class="fgrid" style="grid-template-columns:1fr">
-        <div class="fcell">
+    <div class="panel set-panel">
+      <h2>引擎设置</h2>
+      <div class="set-grid">
+        <div class="set-item">
+          <label>引擎线程数（自动 = 半核且不超过 16；多线程构建不可用时固定为 1）</label>
+          <div class="fx"><select id="setThread"></select></div>
+        </div>
+        <div class="set-item">
+          <label>最小存档手数（5–30）</label>
+          <div class="fx">
+            <input type="number" id="setMinMoves" min="5" max="30">
+            <span class="hint">对局少于这么多手不写存档 —— 短局没有信号，还会把真对局挤出 200 局上限</span>
+          </div>
+        </div>
+        <div class="set-item">
+          <label>对局结束自动分析</label>
+          <div class="fx">
+            <input type="checkbox" id="setAuto">
+            <span class="hint">关闭后对局结束时只采集、不出报告，需手动点「分析当前对局」</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel set-panel">
+      <h2>语言与显示</h2>
+      <div class="set-grid">
+        <div class="set-item">
           <label>界面语言（同时作用于页面浮层、查看器与复制输出）</label>
           <div class="fx">
             <!-- Options are built from GMI18n.LOCALES at boot, not written out here, so the
@@ -1093,33 +1151,53 @@
             <span class="hint">跟随浏览器时按浏览器界面语言判定；简体 / 繁体按区域自动区分（zh-HK、zh-MO、zh-Hant → 繁體中文）。</span>
           </div>
         </div>
+        <div class="set-item">
+          <label>列折叠偏好</label>
+          <div class="fx">
+            <!-- One control for the four step tables; the menu itself still opens under the
+                 header's 「列 ▾」 button, so there is a single implementation of the popup. -->
+            <button class="sec" id="setColPref">打开列显示设置</button>
+            <span class="hint">显示 / 隐藏步骤明细的列（四张表共用）</span>
+          </div>
+        </div>
       </div>
       <div class="btn-row" style="margin-top:10px">
         <span class="hint">也可以在浏览器工具栏图标上点右键，从「语言」菜单里切换 —— 两条入口写的是同一份设置，改一处两处都会跟着变。</span>
       </div>
     </div>
 
-    <div class="panel" style="max-width:620px;margin-top:12px">
-      <h2>存档</h2>
-      <div class="hint" id="setArch">—</div>
+    <div class="panel set-panel">
+      <h2>存档与样本</h2>
+      <!-- §2.3: statistics as side-by-side cards instead of one long sentence — the numbers
+           are the point, and a wrapped paragraph buries them. Filled by renderSettings(). -->
+      <div class="stat-cards" id="setArch"></div>
       <div class="btn-row" style="margin-top:10px">
         <button class="sec danger" id="setClearArchives">清空全部存档</button>
         <span class="hint">chrome.storage.local 上限 10MB，存档超过 200 局会按时间淘汰最旧的。</span>
       </div>
-    </div>
-
-    <div class="panel" style="max-width:620px;margin-top:12px">
-      <h2>样本库与学习</h2>
-      <div class="hint" id="setLearn">—</div>
+      <div class="stat-cards" id="setLearn" style="margin-top:14px"></div>
+      <div class="hint" id="setLearnNote" style="margin-top:8px">—</div>
       <div class="btn-row" style="margin-top:10px">
         <button class="sec danger" id="setResetLearn">重置学习参数</button>
         <span class="hint">删除样本不会自动更新学习结果 —— 需回到「样本库」点「重新学习」。</span>
       </div>
     </div>
 
-    <div class="panel" style="max-width:620px;margin-top:12px">
+    <div class="panel set-panel">
       <h2>关于</h2>
-      <div class="hint">
+      <div class="set-grid">
+        <div class="set-item">
+          <label>当前版本</label>
+          <div class="fx">
+            <span class="set-val" id="setVer">—</span>
+            <!-- Text is written by viewer.js through the update.check key, so this button and
+                 the panel's banner word the same action identically. -->
+            <button class="sec" id="setCheckUpd"></button>
+            <span class="hint" id="setUpdHint">—</span>
+          </div>
+        </div>
+      </div>
+      <div class="hint" style="margin-top:12px">
         查看器已迁入扩展（原 localhost 网页版退役），三种页面共用同一份设置与存档：<br>
         页面浮层（gomoku.com 上）→ 采集 + 检测 + 自动存档；<br>
         本查看器「检测」→ 手动导入棋谱分析；<br>
