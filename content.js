@@ -61,6 +61,22 @@
     }
   }
 
+  // 0.4.7 §三.1 — the panel's colour scheme. The panel is a Shadow DOM subtree, so it cannot
+  // use the viewer's `:root` variables: the theme attribute goes on the SHADOW HOST and the
+  // panel's own CSS defines its palette per attribute value (see the STYLE blocks below).
+  //
+  // `auto` is left on the host as-is rather than resolved to light/dark here: the CSS carries a
+  // `@media (prefers-color-scheme: light)` rule for `[data-theme=auto]`, and resolving it in JS
+  // would need a matchMedia listener in the content script to stay correct when the OS theme
+  // changes. Letting CSS do it means the panel follows the system with no listener at all.
+  //
+  // `theme` is passed through GMStorage.clampTheme so an unknown value can never be written
+  // onto the host (which would match no rule and silently render the light palette).
+  function applyTheme(setting) {
+    if (!root || !root.host) return;
+    root.host.setAttribute('data-theme', GMStorage.clampTheme(setting));
+  }
+
   // ---------- settings (persisted, shared with viewer.html) ----------
   var S = GMStorage.defaults();
   var moreOpen = false;
@@ -1304,6 +1320,12 @@
       job.status = '失败';
       job.error = String((e && e.message) || e);
     } finally {
+      // 0.4.7 §2.2: a finished job never sits below 99 whatever path it took here. The
+      // percentage is only meaningful while a run is advancing, and leaving a failed run at
+      // 43% made the compact face read like work in progress that had stalled — the same
+      // "stuck at 99%" complaint, one branch over. `job.report` is what the panel actually
+      // shows once `running()` is false; this just keeps the two consistent.
+      if (job.status !== '已完成') job.progress = Math.max(job.progress || 0, 99);
       runningJob = null;
       paint();
       pump();
@@ -1430,12 +1452,17 @@
     var job = liveJob;
     liveJob = null;
     job._busy = false;
+    // 0.4.7 §2.2: set BEFORE the await, and unconditionally. The old code only reached
+    // `job.progress = 100` inside the `resp.ok` branch, so a failed finish (an offscreen round
+    // trip that timed out, a channel that closed) left the job at whatever the last hand
+    // scored — and §2.2's report was a compact face stuck at 99%. A job that has stopped
+    // reporting progress must never claim to be mid-way, whatever happened to the request.
+    job.progress = 100;
     try {
       var resp = await askOffscreen({ type: 'gm-step-finish', jobId: job.id }, 3);
       if (resp.ok) {
         job.report = resp.report;
         job.status = '已完成';
-        job.progress = 100;
         await archiveFromJob(job);
       } else { job.status = '失败'; job.error = resp.error || ''; }
     } catch (e) {
@@ -1600,14 +1627,34 @@
     //    would render left-to-right under Arabic and every logical property above would be a
     //    no-op.
     ':host{all:initial;position:fixed;top:12px;inset-inline-end:12px;width:580px;--gm-max:86vh;z-index:2147483647;display:block;',
-    'font:13px/1.5 "Segoe UI","Microsoft YaHei",sans-serif;color:#e6edf3}',
+    'font:13px/1.5 "Segoe UI","Microsoft YaHei",sans-serif;color:var(--gm-txt)}',
     // These two must come AFTER the `font:…}` above, which is what closes the `:host{` block —
     // the rule is split across two array entries, so anything inserted between them lands INSIDE
     // `:host{ … }` as a bogus declaration and takes the rest of the block down with it.
     ':host([dir="rtl"]){direction:rtl}',
     ':host([dir="ltr"]){direction:ltr}',
+    // 0.4.7 §三.1 — the panel's palette, as variables so the theme attribute can swap it. The
+    // dark values are the ones 0.4.6 shipped hard-coded, so an operator on the default `auto`
+    // setting with a dark OS sees a byte-identical panel. `--gm-txt` / `--gm-mut` are named
+    // with the prefix because `:host{all:initial}` gives the subtree no inherited custom
+    // properties of its own, and a bare `--txt` would collide with nothing but read as if it
+    // were the viewer's.
+    //
+    // `data-theme="light"` is the explicit override; `data-theme="auto"` gets the dark set
+    // from the media query below. Both are declared AFTER the `:host` block above for the same
+    // reason the two `dir` rules are: these are `:host([...])` selectors, and putting them
+    // inside the split `:host{` block would make them bogus declarations.
+    ':host{--gm-bg:#161b22;--gm-panel:#1a2029;--gm-head:#1a2029;--gm-line:#2a3441;--gm-line-soft:#22303c;',
+    '--gm-txt:#e6edf3;--gm-txt-2:#c8d2dc;--gm-mut:#9aa7b4;--gm-dim:#6e7b8a;--gm-off:#4a5563;',
+    '--gm-lk:#7aa2ff;--gm-in:#0d1117;--gm-bar:#0d1117}',
+    ':host([data-theme="light"]){--gm-bg:#ffffff;--gm-panel:#f5f5f5;--gm-head:#ececec;--gm-line:#d0d0d0;',
+    '--gm-line-soft:#e0e0e0;--gm-txt:#1a1a1a;--gm-txt-2:#333333;--gm-mut:#555555;--gm-dim:#6b6b6b;',
+    '--gm-off:#aaaaaa;--gm-lk:#2a4bd7;--gm-in:#f0f0f0;--gm-bar:#e2e2e2}',
+    '@media (prefers-color-scheme: light){:host([data-theme="auto"]){--gm-bg:#ffffff;--gm-panel:#f5f5f5;',
+    '--gm-head:#ececec;--gm-line:#d0d0d0;--gm-line-soft:#e0e0e0;--gm-txt:#1a1a1a;--gm-txt-2:#333333;',
+    '--gm-mut:#555555;--gm-dim:#6b6b6b;--gm-off:#aaaaaa;--gm-lk:#2a4bd7;--gm-in:#f0f0f0;--gm-bar:#e2e2e2}}',
     '*{box-sizing:border-box}',
-    '.gm{background:#161b22;border:1px solid #2a3441;border-radius:10px;box-shadow:0 10px 34px rgba(0,0,0,.55);overflow:hidden;display:flex;flex-direction:column;max-height:var(--gm-max);position:relative}',
+    '.gm{background:var(--gm-bg);border:1px solid var(--gm-line);border-radius:10px;box-shadow:0 10px 34px rgba(0,0,0,.55);overflow:hidden;display:flex;flex-direction:column;max-height:var(--gm-max);position:relative}',
     // Resized: the height is explicit, so the box fills it and .body does the scrolling.
     ':host(.sized) .gm{height:100%}',
     // 0.4.0 §一.4 更新横幅。它在**流内**（没有 position:fixed/absolute），所以是把整个面板
@@ -1620,40 +1667,40 @@
     // 缩略态（只显示评估值）和图标态（48×48）都没有位置放横幅，也不该被它撑大。
     ':host(.mg) .gmban,:host(.cp) .gmban{display:none}',
     ':host(.upd) .gm{max-height:calc(var(--gm-max) - var(--gm-ban,0px))}',
-    '.gmban .bi{font-weight:700;color:#7aa2ff;flex:none}',
-    '.gmban .bt{font-weight:600;color:#e6edf3}',
+    '.gmban .bi{font-weight:700;color:var(--gm-lk);flex:none}',
+    '.gmban .bt{font-weight:600;color:var(--gm-txt)}',
     '.gmban .sp{flex:1}',
-    '.gmban .blk{color:#7aa2ff;cursor:pointer;white-space:nowrap;flex:none}',
+    '.gmban .blk{color:var(--gm-lk);cursor:pointer;white-space:nowrap;flex:none}',
     '.gmban .blk:hover{text-decoration:underline}',
     // Minimised: no chrome at all, just the 48x48 shield restored by a click.
     ':host(.mg) .gm{display:none}',
-    '.mface{display:none;width:48px;height:48px;border-radius:12px;background:#161b22;border:1px solid #2a3441;',
-    'box-shadow:0 6px 20px rgba(0,0,0,.5);color:#e6edf3;font-size:24px;line-height:46px;text-align:center;cursor:pointer}',
+    '.mface{display:none;width:48px;height:48px;border-radius:12px;background:var(--gm-bg);border:1px solid var(--gm-line);',
+    'box-shadow:0 6px 20px rgba(0,0,0,.5);color:var(--gm-txt);font-size:24px;line-height:46px;text-align:center;cursor:pointer}',
     '.mface:hover{border-color:#3c5ee7}',
     ':host(.mg) .mface{display:block}',
     // 0.3.1 缩略态：只显示评估值，点击任意处恢复完整面板。不带按钮、状态文字或进度条。
     ':host(.cp) .gm{display:none}',
     ':host(.cp) .gmcp{display:block}',
-    '.gmcp{display:none;background:#161b22;border:1px solid #2a3441;border-radius:10px;box-shadow:0 10px 34px rgba(0,0,0,.55);overflow:hidden;cursor:grab;user-select:none;touch-action:none}',
+    '.gmcp{display:none;background:var(--gm-bg);border:1px solid var(--gm-line);border-radius:10px;box-shadow:0 10px 34px rgba(0,0,0,.55);overflow:hidden;cursor:grab;user-select:none;touch-action:none}',
     ':host(.dragging) .gmcp{box-shadow:0 14px 40px rgba(0,0,0,.7);border-color:#3c5ee7}',
     '.gmcp .cprow{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:7px 12px}',
-    '.gmcp .cpk{font-size:12px;color:#9aa7b4}',
+    '.gmcp .cpk{font-size:12px;color:var(--gm-mut)}',
     '.gmcp .cpv{font-size:22px;font-weight:600;font-variant-numeric:tabular-nums;line-height:1.1}',
-    '.gmcp .cpbar{height:4px;background:#0d1117;margin:0 12px 8px}',
+    '.gmcp .cpbar{height:4px;background:var(--gm-in);margin:0 12px 8px}',
     '.gmcp .cpbar>i{display:block;height:100%;background:#3c5ee7;width:0}',
     // The shrink icon is a tap target (restore); a press that travels drags it instead.
     ':host(.mg) .mface{cursor:pointer}',
-    '.hd{display:flex;align-items:center;gap:8px;padding:8px 10px;background:#1a2029;border-bottom:1px solid #2a3441;',
+    '.hd{display:flex;align-items:center;gap:8px;padding:8px 10px;background:var(--gm-panel);border-bottom:1px solid var(--gm-line);',
     'cursor:move;user-select:none;touch-action:none}',
     ':host(.dragging) .gm{box-shadow:0 14px 40px rgba(0,0,0,.7);border-color:#3c5ee7}',
     '.hd b{font-weight:500;font-size:13px}',
     '.hd .sp{flex:1}',
-    '.hd .lk{color:#7aa2ff;cursor:pointer;font-size:12px}',
+    '.hd .lk{color:var(--gm-lk);cursor:pointer;font-size:12px}',
     '.hd .lk:hover{text-decoration:underline}',
     // 0.3.6 §2.1: 📋 is greyed out with no report to copy. It stays clickable so the click can
     // explain WHY it is greyed out (the footer says 「尚无分析结果」) instead of silently doing
     // nothing — a dead button with no feedback is the worse failure mode.
-    '.hd .lk[data-copy-state=off]{color:#4a5563;opacity:.6}',
+    '.hd .lk[data-copy-state=off]{color:var(--gm-off);opacity:.6}',
     '.hd .lk[data-copy-state=off]:hover{text-decoration:none}',
     '.hd .lk[data-copy-state=partial]{color:#f1c40f}',
     // Buttons inside the drag bar must not look draggable.
@@ -1665,91 +1712,91 @@
     // positioned from the button's rect at open time — which is also what lets it survive a drag
     // while open. It keeps the panel's dark palette: the panel is a page overlay with its own
     // theme, deliberately independent of the browser/IDE theme behind it.
-    '.hd .lk.on{color:#e6edf3}',
+    '.hd .lk.on{color:var(--gm-txt)}',
     '.ctx{position:fixed;z-index:5;display:none;min-width:196px;max-height:70vh;overflow:auto;',
-    'padding:4px;border:1px solid #2a3441;border-radius:6px;background:#1a2029;',
+    'padding:4px;border:1px solid var(--gm-line);border-radius:6px;background:var(--gm-panel);',
     'box-shadow:0 8px 26px rgba(0,0,0,.5);font-size:12px}',
     '.ctx.show{display:block}',
     '.ctx .it{display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:4px;',
-    'color:#c9d4e2;cursor:pointer;white-space:nowrap}',
+    'color:var(--gm-txt-2);cursor:pointer;white-space:nowrap}',
     '.ctx .it:hover{background:#243040}',
-    '.ctx .it .ck{flex:0 0 12px;color:#7aa2ff}',
-    '.ctx .it[aria-checked=true]{color:#e6edf3}',
-    '.x{color:#8b98a5;cursor:pointer;font-size:15px;line-height:1;padding:2px 4px}',
-    '.x:hover{color:#e6edf3}',
-    '.mn{color:#8b98a5;cursor:pointer;font-size:15px;line-height:1;padding:2px 6px}',
-    '.mn:hover{color:#e6edf3}',
-    '.rz{position:absolute;right:0;bottom:0;width:16px;height:16px;cursor:nwse-resize;color:#6e7b8a;',
+    '.ctx .it .ck{flex:0 0 12px;color:var(--gm-lk)}',
+    '.ctx .it[aria-checked=true]{color:var(--gm-txt)}',
+    '.x{color:var(--gm-dim);cursor:pointer;font-size:15px;line-height:1;padding:2px 4px}',
+    '.x:hover{color:var(--gm-txt)}',
+    '.mn{color:var(--gm-dim);cursor:pointer;font-size:15px;line-height:1;padding:2px 6px}',
+    '.mn:hover{color:var(--gm-txt)}',
+    '.rz{position:absolute;right:0;bottom:0;width:16px;height:16px;cursor:nwse-resize;color:var(--gm-dim);',
     'font-size:13px;line-height:16px;text-align:center;user-select:none;touch-action:none}',
-    '.rz:hover{color:#e6edf3}',
+    '.rz:hover{color:var(--gm-txt)}',
     '.body{overflow:auto;padding:10px;display:flex;flex-direction:column;gap:10px}',
-    '.sec{border:1px solid #2a3441;border-radius:8px;background:#1a2029}',
-    '.sec>h3{margin:0;padding:6px 10px;font-weight:500;font-size:11px;letter-spacing:.4px;color:#8b98a5;border-bottom:1px solid #22303c}',
+    '.sec{border:1px solid var(--gm-line);border-radius:8px;background:var(--gm-panel)}',
+    '.sec>h3{margin:0;padding:6px 10px;font-weight:500;font-size:11px;letter-spacing:.4px;color:var(--gm-dim);border-bottom:1px solid var(--gm-line-soft)}',
     '.sec>.in{padding:9px 10px}',
-    '.stats{display:flex;flex-wrap:wrap;gap:6px 14px;font-size:12px;color:#9aa7b4;margin-bottom:8px}',
-    '.stats b{color:#e6edf3;font-weight:500}',
+    '.stats{display:flex;flex-wrap:wrap;gap:6px 14px;font-size:12px;color:var(--gm-mut);margin-bottom:8px}',
+    '.stats b{color:var(--gm-txt);font-weight:500}',
     // Permanent marker for a mid-game join — it changes how every number below should be
     // read, so it lives in the status line rather than in a note further down.
     '.warn{color:#f1c40f;border:1px solid #6b5411;background:#2a2410;border-radius:9px;padding:1px 7px;font-size:11px}',
-    '.src{color:#6e7b8a;font-size:10px;border:1px solid #2a3441;border-radius:8px;padding:0 6px}',
-    '.bar{height:5px;background:#0d1117;border-radius:3px;overflow:hidden;margin:2px 0 9px}',
+    '.src{color:var(--gm-dim);font-size:10px;border:1px solid var(--gm-line);border-radius:8px;padding:0 6px}',
+    '.bar{height:5px;background:var(--gm-in);border-radius:3px;overflow:hidden;margin:2px 0 9px}',
     '.bar>i{display:block;height:100%;background:#3c5ee7;width:0}',
     '.cards{display:grid;grid-template-columns:repeat(4,1fr);gap:7px}',
-    '.card{background:#0d1117;border:1px solid #22303c;border-radius:7px;padding:7px 6px;text-align:center}',
+    '.card{background:var(--gm-in);border:1px solid var(--gm-line-soft);border-radius:7px;padding:7px 6px;text-align:center}',
     '.card .v{font-size:19px;font-weight:500;line-height:1.25}',
-    '.card .k{font-size:10px;color:#8b98a5;margin-top:1px}',
-    '.card .s{font-size:10px;color:#6e7b8a}',
+    '.card .k{font-size:10px;color:var(--gm-dim);margin-top:1px}',
+    '.card .s{font-size:10px;color:var(--gm-dim)}',
     '.cols{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:10px;align-items:start}',
     '.q{max-height:190px;overflow:auto}',
-    '.qi{padding:6px 9px;border-bottom:1px solid #22303c;cursor:pointer;display:flex;gap:6px;align-items:center;font-size:12px}',
+    '.qi{padding:6px 9px;border-bottom:1px solid var(--gm-line-soft);cursor:pointer;display:flex;gap:6px;align-items:center;font-size:12px}',
     '.qi:last-child{border-bottom:0}',
     '.qi:hover{background:#202834}',
-    '.qi.on{background:#22303c}',
-    '.qi .no{color:#6e7b8a;min-width:20px;flex:none}',
+    '.qi.on{background:var(--gm-line-soft)}',
+    '.qi .no{color:var(--gm-dim);min-width:20px;flex:none}',
     '.qi .nm{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
-    '.qi .rk{color:#9aa7b4;font-size:11px;flex:none}',
+    '.qi .rk{color:var(--gm-mut);font-size:11px;flex:none}',
     '.tag{font-size:10px;padding:1px 5px;border-radius:9px;border:1px solid transparent;white-space:nowrap;flex:none}',
-    '.t-wait{color:#8b98a5;border-color:#39434f}',
-    '.t-run{color:#7aa2ff;border-color:#2f4b8f;background:#16233d}',
+    '.t-wait{color:var(--gm-dim);border-color:#39434f}',
+    '.t-run{color:var(--gm-lk);border-color:#2f4b8f;background:#16233d}',
     '.t-done{color:#4ec97b;border-color:#245c39;background:#12291c}',
     '.t-stop{color:#f1c40f;border-color:#6b5411;background:#2a2410}',
     '.t-fail{color:#e74c3c;border-color:#6e2b24;background:#2b1614}',
-    '.emp{color:#6e7b8a;font-size:12px;padding:8px 10px}',
+    '.emp{color:var(--gm-dim);font-size:12px;padding:8px 10px}',
     '.row{display:flex;align-items:center;gap:8px;margin-bottom:8px}',
-    '.row label{width:74px;color:#9aa7b4;font-size:12px;flex:none}',
-    'select{flex:1;background:#0d1117;color:#e6edf3;border:1px solid #2a3441;border-radius:6px;padding:4px 6px;font:inherit;font-size:12px}',
-    'input[type=number]{width:84px;background:#0d1117;color:#e6edf3;border:1px solid #2a3441;border-radius:6px;padding:4px 6px;font:inherit;font-size:12px}',
+    '.row label{width:74px;color:var(--gm-mut);font-size:12px;flex:none}',
+    'select{flex:1;background:var(--gm-in);color:var(--gm-txt);border:1px solid var(--gm-line);border-radius:6px;padding:4px 6px;font:inherit;font-size:12px}',
+    'input[type=number]{width:84px;background:var(--gm-in);color:var(--gm-txt);border:1px solid var(--gm-line);border-radius:6px;padding:4px 6px;font:inherit;font-size:12px}',
     'input[type=checkbox]{accent-color:#3c5ee7}',
-    '.more{margin-top:2px;border-top:1px solid #22303c;padding-top:8px}',
+    '.more{margin-top:2px;border-top:1px solid var(--gm-line-soft);padding-top:8px}',
     '.more .row label{width:74px}',
     '.btns{display:flex;flex-wrap:wrap;gap:6px;margin-top:2px}',
-    'button{font:inherit;font-size:12px;border:0;border-radius:6px;padding:5px 11px;cursor:pointer;background:#2a3441;color:#e6edf3}',
+    'button{font:inherit;font-size:12px;border:0;border-radius:6px;padding:5px 11px;cursor:pointer;background:var(--gm-line);color:var(--gm-txt)}',
     'button:hover{background:#33404f}',
     'button.p{background:#3c5ee7;color:#fff}',
     'button.p:hover{background:#4a6cf0}',
     'button:disabled{opacity:.45;cursor:default}',
-    '.ft{padding:5px 10px;border-top:1px solid #2a3441;color:#6e7b8a;font-size:10px;display:flex;gap:10px}',
+    '.ft{padding:5px 10px;border-top:1px solid var(--gm-line);color:var(--gm-dim);font-size:10px;display:flex;gap:10px}',
     '.note{color:#f1c40f;font-size:11px;margin-top:6px}',
     // ---- 0.4.4 §12/§14: the 提问记录 / 声明确认 panel ----
     // It sits between `.body` and `.ft` inside the same 580px column, so it inherits the panel's
     // width and scrolls with the rest rather than floating.
-    '.cpnl{border-top:1px solid #2a3441;max-height:210px;overflow:auto}',
-    '.cpnl .chd{padding:6px 10px;color:#c8d2dc;font-size:12px;display:flex;align-items:center;border-bottom:1px solid #22303c}',
+    '.cpnl{border-top:1px solid var(--gm-line);max-height:210px;overflow:auto}',
+    '.cpnl .chd{padding:6px 10px;color:var(--gm-txt-2);font-size:12px;display:flex;align-items:center;border-bottom:1px solid var(--gm-line-soft)}',
     '.cpnl .chd .sp,.cpnl .cft .sp{flex:1}',
-    '.cpnl .cbody{padding:8px 10px;color:#c8d2dc;font-size:11px;line-height:1.5}',
-    '.cpnl .ctext{margin-top:6px;padding:6px 8px;background:#0f151b;border:1px solid #22303c;border-radius:3px;color:#9aa7b4;font-size:11px}',
+    '.cpnl .cbody{padding:8px 10px;color:var(--gm-txt-2);font-size:11px;line-height:1.5}',
+    '.cpnl .ctext{margin-top:6px;padding:6px 8px;background:var(--gm-in);border:1px solid var(--gm-line-soft);border-radius:3px;color:var(--gm-mut);font-size:11px}',
     '.cpnl .cr{display:flex;gap:8px;align-items:flex-start;padding:6px 10px;border-bottom:1px solid #1b2530;font-size:11px}',
-    '.cpnl .cq{color:#9aa7b4;flex:0 0 46%}',
-    '.cpnl .ca{color:#c8d2dc;flex:1;word-break:break-word}',
-    '.cpnl .cv{flex:0 0 auto;color:#6e7b8a}',
+    '.cpnl .cq{color:var(--gm-mut);flex:0 0 46%}',
+    '.cpnl .ca{color:var(--gm-txt-2);flex:1;word-break:break-word}',
+    '.cpnl .cv{flex:0 0 auto;color:var(--gm-dim)}',
     '.cpnl .cv.up{color:#e74c3c}',
     '.cpnl .cv.dn{color:#2ecc71}',
-    '.cpnl .cempty{padding:10px;color:#6e7b8a;font-size:11px}',
+    '.cpnl .cempty{padding:10px;color:var(--gm-dim);font-size:11px}',
     // §7.3 — a failed send, kept on screen after the footer's 5 seconds have gone.
     '.cpnl .cwarn{padding:6px 10px;color:#e8a33d;font-size:11px;line-height:1.5;border-top:1px solid #3a2f1c}',
-    '.cpnl .cft{padding:6px 10px;color:#6e7b8a;font-size:11px;display:flex;align-items:center;gap:8px}',
-    '.cpnl .cft .lk{color:#7aa2ff;cursor:pointer}',
-    '.hd .lk[data-ask-state=off]{color:#4a5563;cursor:default}',
+    '.cpnl .cft{padding:6px 10px;color:var(--gm-dim);font-size:11px;display:flex;align-items:center;gap:8px}',
+    '.cpnl .cft .lk{color:var(--gm-lk);cursor:pointer}',
+    '.hd .lk[data-ask-state=off]{color:var(--gm-off);cursor:default}',
     '.ok{color:#4ec97b;font-size:11px;margin-top:6px}',
     '.err{color:#e74c3c;font-size:11px;margin-top:6px;word-break:break-all}',
   ].join('');
@@ -2518,10 +2565,10 @@
 
     var rep = cur && (cur.report || cur.summary);
     h += '<div class="cards">' +
-      card(T('panel|黑方'), rep && rep.black, '#e6edf3', null, 'B') +
-      card(T('panel|白方'), rep && rep.white, '#e6edf3', null, 'W') +
-      card(T('panel|豁免'), rep ? String(rep.forcedCount || 0) : '—', '#9aa7b4', T('panel|冲四强制应手')) +
-      card(T('panel|时间模式'), rep ? (rep.hasTime ? T('panel|真实间隔') : T('panel|固定预算')) : '—', '#9aa7b4',
+      card(T('panel|黑方'), rep && rep.black, CARD_TXT, null, 'B') +
+      card(T('panel|白方'), rep && rep.white, CARD_TXT, null, 'W') +
+      card(T('panel|豁免'), rep ? String(rep.forcedCount || 0) : '—', CARD_MUT, T('panel|冲四强制应手')) +
+      card(T('panel|时间模式'), rep ? (rep.hasTime ? T('panel|真实间隔') : T('panel|固定预算')) : '—', CARD_MUT,
            GMStorage.modeLabel(S.mode)) +
       '</div>';
     // Every one of these may carry an app.js / offscreen.js error code, so they all go
@@ -2576,8 +2623,9 @@
   // `side` is optional and only meaningful for the two risk cards: 0.4.4 §13's chat adjustment
   // is folded in here, at the display, because `agg.risk` is Rapfi's own measurement and must
   // stay untouched (see the §七~§十四 note above).
+  var CARD_TXT = 'var(--gm-txt)', CARD_MUT = 'var(--gm-mut)', CARD_DIM = 'var(--gm-dim)';
   function card(k, agg, color, sub, side) {
-    if (!agg) return '<div class="card"><div class="v" style="color:#6e7b8a">—</div><div class="k">' + esc(k) + '</div></div>';
+    if (!agg) return '<div class="card"><div class="v" style="color:' + CARD_DIM + '">—</div><div class="k">' + esc(k) + '</div></div>';
     if (typeof agg === 'string') {
       return '<div class="card"><div class="v" style="color:' + color + ';font-size:13px">' + esc(agg) + '</div>' +
              '<div class="k">' + esc(k) + '</div>' + (sub ? '<div class="s">' + esc(sub) + '</div>' : '') + '</div>';
@@ -2692,14 +2740,27 @@
   // 0.3.1: the eval-only (compact) panel shows just the two risk numbers, updating live.
   // While a job runs it shows the progress percentage instead; otherwise the black/white risk
   // to one decimal (via `chatAdjusted` → `fmtRisk`), or "—" before the first analysis.
+  //
+  // 0.4.7 §2.2: the order of the two branches was the bug. `running()` returns `liveJob` while
+  // it exists, and a live session that just hit a real live four sets `_terminal` and calls
+  // liveFinish() — but liveFinish() has to await an offscreen round trip before it nulls
+  // `liveJob` and sets progress to 100. In that window `running()` is still truthy and its
+  // `progress` is whatever the last scored hand left it at (99, or lower), so the compact face
+  // showed a percentage for a job that had already stopped. A stopped job is checked FIRST now.
+  //
+  // The three stop states are tested rather than one: `_terminal` (this session hit a live
+  // four / 四三杀), '已完成', and '已中止' / '失败'. A job in any of them has nothing left to
+  // report as progress, and the operator wants the number it produced instead.
   function paintCompact() {
     if (!root || !els.cpB) return;
     var cur = running() || findJob(selectedId) || jobs[jobs.length - 1] || null;
     var rep = cur && (cur.report || cur.summary);
-    if (running()) {
+    var stopped = !!(cur && (cur._terminal || cur.status === '已完成' ||
+                             cur.status === '已中止' || cur.status === '失败'));
+    if (running() && !stopped) {
       var p = Math.round((running().progress || 0));
       els.cpB.textContent = p + '%';
-      els.cpW.textContent = '分析中';
+      els.cpW.textContent = T('panel|分析中');
       if (els.cpBar) els.cpBar.style.width = p + '%';
     } else if (rep) {
       els.cpB.textContent = rep.black ? chatAdjusted('B', rep.black.risk) : '—';
@@ -3772,6 +3833,10 @@
         // they just switched language on, and skipping the rebuild would leave half the panel
         // in the old language until the next move.
         if (langChanged) { applyLang(S.lang); renderShell(); paint(); return; }
+        // §三.1: the theme is a pure attribute swap on the host, so it needs no shell rebuild —
+        // but it does have to beat the `root.activeElement` guard below, because a theme change
+        // made from the viewer (or another tab) should land even while this panel has focus.
+        applyTheme(S.theme);
         if (root.activeElement) paintStatus(); else paint();
       });
     });
@@ -3781,6 +3846,10 @@
     // Before build(): shellHtml() reads T(), so the locale must be resolved first or the very
     // first paint flashes Chinese before the listener can correct it.
     applyLang(S.lang);
+    // §三.1 — must run before build(): the palette variables are declared on `:host`, which
+    // exists from the first `attachShadow`, and setting the attribute after the first paint
+    // would flash the dark palette at an operator who chose light.
+    applyTheme(S.theme);
     build();
     // Geometry comes from storage, so the panel appears at the remembered size instead
     // of flashing at the default one.

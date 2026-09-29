@@ -40,6 +40,15 @@
   // keys that could drift apart.
   function sideTag(side) { return side === 'B' ? T('viewer|黑') : T('viewer|白'); }
   function sideName(side) { return side === 'B' ? T('viewer|黑方') : T('viewer|白方'); }
+  // 0.4.7 §5.4 — which contribution keys the panel spells out rather than showing as a slug.
+  // The VALUE is the model's stable key and the LOOKUP is `T('learn.weight.' + k)`, i.e. exactly
+  // the same runtime key `learn.js` renders its own weight table with (see _tools/i18n-extra.js).
+  // A second label map here would be the "same answer in two places" failure this project has
+  // already paid for twice, so this set is deliberately only a MEMBERSHIP list, not a label table.
+  var CONTRIB_TXT = {
+    top1: 1, acpl: 1, sharp: 1, out: 1, desperate: 1, time: 1,
+    evasion: 1, winBlunder: 1, uselessFour: 1,
+  };
   // 被怀疑方 is three-valued and the same ternary was spelled out four times.
   function suspectName(v) {
     return v === 'B' ? T('viewer|黑方') : (v === 'W' ? T('viewer|白方') : T('viewer|双方'));
@@ -149,6 +158,40 @@
     // rewrote it — nothing else to do here.
   }
 
+  // ---- 0.4.7 §三.1 主题 ----
+  // We are the page's document, so the attribute goes on <html> — unlike content.js, which
+  // has to put it on a Shadow Host because the host page's <html> is the game's, not ours.
+  //
+  // `auto` is written to the DOM verbatim and left to CSS. `<html>` is the only element that
+  // exists before the stylesheet is parsed, so resolving `auto` in JS would mean the very
+  // first paint has the wrong palette (the attribute would not be there yet) and the operator
+  // sees a flash of light on a dark machine — or the reverse. The media query has no such gap.
+  function applyTheme(setting) {
+    var t = G.clampTheme(setting);
+    document.documentElement.setAttribute('data-theme', t);
+    return t;
+  }
+
+  // ---- 0.4.7 §三.2 透明度 ----
+  // Two alphas out of ONE number, by design (see the CSS block for why they differ):
+  //   level 100 → background alpha 1.00, widgets 1.00   (off, byte-identical to 0.4.6)
+  //   level  50 → background alpha 0.50, widgets 0.90
+  //   level   0 → background alpha 0.00, widgets 0.80   (the readability floor)
+  // A single linear 0→1 alpha for everything would let the slider reach 0 on the widgets too,
+  // which is an invisible window with live buttons on it.
+  function widgetOpacity(level) { return 0.80 + 0.20 * (level / 100); }
+  function bgAlpha(level) { return level / 100; }
+
+  function applyOpacity(setting) {
+    var o = G.normalizeOpacity(setting);
+    var on = !!o.enabled;
+    var root = document.documentElement;
+    root.classList.toggle('gm-transparent', on);
+    root.style.setProperty('--gm-bg-alpha', String(bgAlpha(o.level)));
+    root.style.setProperty('--gm-widget-alpha', String(widgetOpacity(o.level)));
+    return o;
+  }
+
   function esc(s) {
     return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) {
       return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c];
@@ -196,7 +239,7 @@
       { key: 'side',      label: T('viewer|方'),         hide: false },
       { key: 'actual',    label: T('viewer|实际'),       hide: false },
       { key: 'best',      label: T('viewer|最佳'),       hide: true  },
-      { key: 'cands',     label: T('viewer|前5候选'),    hide: true  },
+      { key: 'cands',     label: T('viewer|候选（前5/8）'), hide: true  },
       { key: 'top1',      label: 'T1',         hide: false },
       { key: 'top3',      label: 'T3',         hide: false },
       { key: 'top5',      label: 'T5',         hide: false },
@@ -479,7 +522,62 @@
     setField($('setLang'), S.lang || 'auto');
     $('setAuto').checked = !!S.autoAnalyze;      // a checkbox has no half-edited state
     $('setChatAuto').checked = !!S.chatAuto;     // 0.4.4 §七/§八 master switch, default off
+    fillOpacityForm();
     fillLlmForm();
+  }
+
+  // ---- 0.4.7 §三.1: the theme dropdown ----
+  // Built from GMStorage.THEMES, same reasoning as the language and thread lists: the option
+  // set and the value clamp are two halves of one fact, and writing the options out in
+  // viewer.html would be the second copy that drifts.
+  // The three labels are literal `T()` calls rather than a `code -> key` map read by `T(map[t])`.
+  // A runtime lookup is invisible to `_tools/keys.cjs` (it sees only the SHAPE), so those keys
+  // would have to be declared a second time in i18n-extra.js — and a key that exists in exactly
+  // one of the two places is how a language ends up printing a raw slug. As literals the
+  // extractor finds them, `gen-locale` emits them, and there is nothing left to keep in step.
+  var THEME_LABEL = {
+    light: T('viewer|浅色'),
+    dark: T('viewer|深色'),
+    auto: T('viewer|跟随系统'),
+  };
+
+  function fillThemeSelect() {
+    var sel = $('setTheme');
+    if (!sel) return;
+    sel.innerHTML = G.THEMES.map(function (t) {
+      return '<option value="' + esc(t) + '">' + esc(THEME_LABEL[t] || t) + '</option>';
+    }).join('');
+    // These four nodes are built in viewer.html, so the static i18n pass would normally tag
+    // them — but they are `id`-bearing labels the JS already knows by name, and tagging them
+    // here keeps the 主题/透明度 block self-contained rather than split across two files.
+    setTxt('setThemeLabel', T('viewer|主题'));
+    setTxt('setThemeHint', T('viewer|跟随系统时由浏览器/操作系统决定；浅色与深色为强制覆盖。'));
+    setTxt('setOpacityLabel', T('viewer|透明度模式'));
+    setTxt('setOpacityHint', T('viewer|启用透明度模式') + ' · ' +
+      T('viewer|仅作用于本查看器窗口，不改变页面浮层。浏览器扩展窗口无法真正透出桌面，这里的「透明」是相对浏览器的底色而言。'));
+    setTxt('setOpacityLevelLabel', T('viewer|透明度'));
+  }
+
+  function setTxt(id, v) {
+    var el = $(id);
+    if (el) el.textContent = v;
+  }
+
+  // ---- 0.4.7 §三.2: the opacity controls ----
+  // The level readout is deliberately worded as a DEFINITION, not a percentage: 「100% = 完全不
+  // 透明；0% = 底层全透明，功能部件 80%」. A bare "透明度 60%" would be read as "60% see-through"
+  // by half the operators and "60% opaque" by the other half — and the widget floor means
+  // neither reading is even right.
+  function fillOpacityForm() {
+    var o = G.normalizeOpacity(S.opacity);
+    var en = $('setOpacityEnabled'), lv = $('setOpacityLevel'), val = $('setOpacityVal');
+    if (en) en.checked = !!o.enabled;
+    if (lv) { lv.value = String(o.level); lv.disabled = !o.enabled; }
+    if (val) val.textContent = T('viewer|100% = 完全不透明；0% = 底层全透明，功能部件 80%');
+    setTxt('setOpacityLabel', T('viewer|透明度模式'));
+    setTxt('setOpacityHint', T('viewer|启用透明度模式') + ' · ' +
+      T('viewer|仅作用于本查看器窗口，不改变页面浮层。浏览器扩展窗口无法真正透出桌面，这里的「透明」是相对浏览器的底色而言。'));
+    setTxt('setOpacityLevelLabel', T('viewer|透明度'));
   }
 
   // ---- 0.4.4 §十六: the LLM API panel ----
@@ -769,6 +867,44 @@
       h.textContent = T('viewer|规则由 URL 判断（/renju/），不参与记忆。');
     }, 1800);
   }
+
+  // ---- 0.4.7 §三.2 ----
+  // Same reason as bindLlmFields: the value written is a freshly-built object, so
+  // `bindSetting`'s `v === last` dedupe could never fire and the two controls would race each
+  // other's writes. The commit is unconditional and rides `G.saveSetting` so it is still on
+  // GMStorage's serialised chain.
+  function bindOpacityControls() {
+    var en = $('setOpacityEnabled'), lv = $('setOpacityLevel'), val = $('setOpacityVal');
+    if (!en || !lv) return;
+    var timer = null;
+
+    function commit() {
+      if (timer) { clearTimeout(timer); timer = null; }
+      // Read BOTH fields every time. Writing only the one that changed would drop the other
+      // back to its default on the next load, because `saveSetting` replaces the whole value.
+      var next = G.normalizeOpacity({ enabled: !!en.checked, level: parseInt(lv.value, 10) });
+      lastSelfWrite = Date.now();
+      applyOpacity(next);
+      lv.disabled = !next.enabled;
+      G.saveSetting('opacity', next).then(function (s) {
+        S = s;
+        fillOpacityForm();
+        flashSaved();
+      });
+    }
+
+    en.addEventListener('change', commit);
+    // `input` while dragging repaints immediately so the operator can SEE the level they are
+    // choosing, but the write waits 250 ms — a range drag fires this event dozens of times and
+    // every one of them would otherwise be a storage round-trip.
+    lv.addEventListener('input', function () {
+      applyOpacity({ enabled: !!en.checked, level: parseInt(lv.value, 10) });
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(commit, 250);
+    });
+    lv.addEventListener('change', commit);
+    if (val) val.textContent = T('viewer|100% = 完全不透明；0% = 底层全透明，功能部件 80%');
+  }
   bindSetting($('setSuspect'), 'suspect', function (e) { return e.value; });
   bindSetting($('setMode'), 'mode', function (e) { return e.value; });
   bindSetting($('setThinkMs'), 'thinkMs', function (e) { return Math.max(500, parseInt(e.value, 10) || 2000); });
@@ -792,6 +928,19 @@
   // storage.onChanged broadcast (§1.8), which is also what keeps the toolbar menu's checkmark
   // and this dropdown from disagreeing when the change was made on the other entry point.
   bindSetting($('setLang'), 'lang', function (e) { return e.value; });
+  // 0.4.7 §三.1 — the theme is applied IN THE SAME TURN as it is written, not only from the
+  // storage.onChanged broadcast. The broadcast does arrive (the write goes through GMStorage),
+  // but it is a round-trip through the settings area, and a theme that lands a frame late is a
+  // visible flash of the old palette on every dropdown change.
+  //
+  // `applyTheme` reads the value back off the storage layer's own clamp rather than trusting
+  // `e.value`: the dropdown is built from GMStorage.THEMES, but the storage layer is what
+  // decides, and an attribute that matches no CSS rule renders the LIGHT palette with no error
+  // anywhere — a failure mode this project has hit and does not want twice.
+  bindSetting($('setTheme'), 'theme', function (e) { return applyTheme(e.value); });
+  // §三.2 — the checkbox and the slider are two fields of ONE object, so neither can ride
+  // `bindSetting` (which dedupes a scalar). Both commit the whole `opacity` object.
+  bindOpacityControls();
   bindLlmFields();
 
   // §十八 — the host permission is `optional_host_permissions`, so it must be requested from a
@@ -1551,7 +1700,11 @@
   // and so the two strings are reached as the `viewer|` keys §4.5 names.
   function renderSegLegends() {
     var html = '<span class="seg-key seg-high"></span>' + T('viewer|段：全程 Top5 内') +
-               '<span class="seg-key seg-low"></span>' + T('viewer|段：含出 Top5');
+               '<span class="seg-key seg-low"></span>' + T('viewer|段：含出 Top5') +
+               // 0.4.7 §1.4 — the candidate columns hold 8 entries once a search was given more
+               // than 6 s, and a reader who does not know that will read a missing Top6-8 as
+               // "the engine found nothing there" rather than "this run did not ask".
+               ' · ' + T('viewer|TOP8 扩展（思考 > 6s）');
     ['segLegDetect', 'segLegDetail', 'segLegSample', 'segLegEditor'].forEach(function (id) {
       var el = $(id);
       if (el) el.innerHTML = html;
@@ -1973,6 +2126,31 @@
     if (!a || a.winBlunderCount == null) return '—';
     return T('viewer|{n}次', { n: a.winBlunderCount || 0 });
   }
+  // 0.4.7 §1.1 — the 冲四序列 breakdown, read straight out of the report. `side` omitted means
+  // "both sides together", which is what the total row under 冲四序列 wants. `—` again means the
+  // archive predates the field: `fourRuns` is absent on every 0.4.6-and-earlier record, and
+  // printing `0次` there would claim a clean scan that never ran.
+  //
+  // Two shapes on purpose: `frRunNum` returns the NUMBER (for the total, which needs to say 段)
+  // and `frRun` wraps it as `{n}次` (for the three per-class rows). Returning the formatted
+  // string from one function and interpolating it into a second template produced "3次 段".
+  function frRunNum(rep, kind) {
+    var n = 0, seen = false;
+    [rep.black, rep.white].forEach(function (a) {
+      if (!a || !a.fourRuns) return;
+      seen = true;
+      n += a.fourRuns[kind] || 0;
+    });
+    return seen ? n : 0;
+  }
+  function frAny(rep) {
+    return [rep.black, rep.white].some(function (a) { return a && a.fourRuns; });
+  }
+  function frRun(rep, kind, side) {
+    if (!frAny(rep)) return '—';
+    var a = rep[side];
+    return T('viewer|{n}次', { n: (a && a.fourRuns ? a.fourRuns[kind] : 0) || 0 });
+  }
 
   function summaryTableHtml(rep, opts) {
     rep = rep || {};
@@ -1988,6 +2166,19 @@
       '<tr><td>' + T('viewer|将败冲四') + '</td><td>' + desCount(rep.black) + '</td><td>' + desCount(rep.white) + '</td></tr>' +
       '<tr><td>' + T('viewer|回避手') + '</td><td>' + evCount(rep.black) + '</td><td>' + evCount(rep.white) + '</td></tr>' +
       '<tr><td>' + T('viewer|将胜乱下') + '</td><td>' + wbCount(rep.black) + '</td><td>' + wbCount(rep.white) + '</td></tr>' +
+      // 0.4.7 §1.1 — the four-run breakdown, one row per class. Sitting next to 将败冲四 is the
+      // point: a 「无用冲四」 is what a 将败冲四 looks like when it repeats, and the two rows
+      // together are how an operator sees the difference. VCF / 防御性 are reported for symmetry
+      // even though only 无用 moves the score — a column of zeros under two labels is the
+      // clearest possible statement that those two are not being punished.
+      // The total is a RUN count, so it uses the 段 noun rather than repeating the three
+      // per-class 次 counts — `frRun` returns a formatted `{n}次` STRING, which is why this row
+      // cannot just wrap it in another template (it would read "3次 段").
+      '<tr><td>' + T('viewer|冲四序列') + '</td><td colspan="2">' + T('viewer|{n} 段',
+        { n: frRunNum(rep, 'vcf') + frRunNum(rep, 'defensive') + frRunNum(rep, 'useless') }) + '</td></tr>' +
+      '<tr><td>' + T('viewer|VCF') + '</td><td>' + frRun(rep, 'vcf', 'black') + '</td><td>' + frRun(rep, 'vcf', 'white') + '</td></tr>' +
+      '<tr><td>' + T('viewer|防御性冲四') + '</td><td>' + frRun(rep, 'defensive', 'black') + '</td><td>' + frRun(rep, 'defensive', 'white') + '</td></tr>' +
+      '<tr><td>' + T('viewer|无用冲四') + '</td><td>' + frRun(rep, 'useless', 'black') + '</td><td>' + frRun(rep, 'useless', 'white') + '</td></tr>' +
       (opts.sim ? ('<tr><td>' + T('viewer|AI 指纹命中') + '</td><td>' + simCount(rep.black) + '</td><td>' + simCount(rep.white) + '</td></tr>') : '') +
       '<tr><td>' + T('viewer|时间模式') + '</td><td colspan="2">' + (rep.hasTime ? T('viewer|真实间隔') : T('viewer|固定预算')) + '</td></tr>' +
       '<tr><td>' + T('viewer|冲四豁免') + '</td><td colspan="2">' + T('viewer|{n} 手', { n: rep.forcedCount || 0 }) + '</td></tr>' +
@@ -2854,8 +3045,15 @@
       var tw = x.time ? '<div>' + T('viewer|时间：均值 {mean}ms · 标准差 {std}ms · 与损失相关 {corr}', {
         mean: Math.round(x.time.meanT), std: Math.round(x.time.stdT), corr: x.time.corrLoss.toFixed(2),
       }) + '</div>' : '';
+      // The keys are the risk model's stable identifiers (`top1`, `uselessFour`, …), which is
+      // what `learn.js` looks its labels up by — but a raw camelCase slug in the panel is not
+      // readable. `CONTRIB_TXT` maps the ones the viewer shows to their canonical Chinese, and
+      // anything unmapped falls back to the slug rather than being hidden: a component that
+      // silently vanishes from the breakdown is worse than one with an ugly name.
       return '<div style="margin-bottom:6px"><b>' + sideName(x.side) + '</b> ' +
-        Object.keys(c).map(function (k) { return k + ' ' + c[k].toFixed(1); }).join(' · ') +
+        Object.keys(c).map(function (k) {
+          return (CONTRIB_TXT[k] ? T('learn.weight.' + k) : k) + ' ' + c[k].toFixed(1);
+        }).join(' · ') +
         tw + '</div>';
     }).join('');
     // #dMetrics sat at its placeholder ("—") forever: the per-metric numbers live in the
@@ -2904,6 +3102,30 @@
       if (ca.side) chatRow.push([T('viewer|调整对象'), ca.side === 'B' ? T('panel|黑方') : T('panel|白方')]);
       if (ca.how) chatRow.push([T('viewer|发送者识别'), TO('senderHow', ca.how)]);
     }
+    // 0.4.7 §5.4 — 冲四序列. The §1.1 pass classifies every run of ≥2 consecutive same-side fours
+    // into VCF / 防御性 / 无用, and only 无用 moves the score. Reported here rather than buried in
+    // the contributions map because the three counts are what the operator needs to tell "this
+    // side had a winning four sequence" from "this side wasted fours and lost" — a distinction
+    // the risk number alone cannot express (a VCF run contributes exactly 0).
+    //
+    // Only shown when at least one run exists: an archive whose game never had two consecutive
+    // fours would otherwise carry a row reading 「0 · 0 · 0」 on every single record.
+    var fourRow = [];
+    var fr = {};
+    [rep.black, rep.white].forEach(function (x) {
+      if (x && x.fourRuns) {
+        fr.vcf = (fr.vcf || 0) + (x.fourRuns.vcf || 0);
+        fr.defensive = (fr.defensive || 0) + (x.fourRuns.defensive || 0);
+        fr.useless = (fr.useless || 0) + (x.fourRuns.useless || 0);
+      }
+    });
+    if (fr.vcf || fr.defensive || fr.useless) {
+      // One line, and only the three numbers: the per-side breakdown sits one panel below in
+      // the summary table, and repeating 「无用冲四 3 段」 here would print the same fact twice
+      // on a screen the operator reads at a glance.
+      fourRow.push([T('viewer|冲四序列'),
+        T('viewer|VCF {v} · 防御性 {d} · 无用 {u}', { v: fr.vcf || 0, d: fr.defensive || 0, u: fr.useless || 0 })]);
+    }
     var facts = [
       [T('viewer|总手数'), T('viewer|{n} 手', { n: a.totalMoves || 0 })],
       [T('viewer|计入手数'), T('viewer|{n} 手', { n: scored })],
@@ -2912,6 +3134,7 @@
       [T('viewer|盘面还原'), T('viewer|{n} 手', { n: unordered }) +
         (unordered ? T('viewer|（手序未知，不计分）') : '')],
       [T('viewer|开局'), opLabel || T('viewer|未识别')],
+    ].concat(fourRow, [
       // 注册 / 游客 / 观战. A capture fact, not a game fact: it explains why the other
       // rows read the way they do (a spectator has no "self", a guest game can end without
       // the usual end channels).
@@ -2971,7 +3194,7 @@
       }[recMeta.nameSource]
         || '—'],
       [T('viewer|数据来源'), srcLabel || recMeta.source || '—'],
-    ].concat(chatRow);
+    ]).concat(chatRow);
     $('dMetrics').innerHTML = '<table class="facts">' + facts.map(function (kv) {
       var warn = String(kv[1]).charAt(0) === '⚠';
       var cls = warn ? ' class="warn"' : (kv[0] === T('viewer|人工标记') ? ' class="ma-row"' : '');
@@ -4660,6 +4883,23 @@
   $('btnResetLearn').onclick = function () { resetLearn(); };
   $('setResetLearn').onclick = function () { resetLearn(); };
 
+  // 0.4.7 §三.1 — `auto` is resolved by CSS, so an OS theme flip needs no JS at all to
+  // REPAINT. The listener is here for a different reason: the theme dropdown's hint text
+  // (and anything else that wants to NAME the resolved theme) has to be told, and a media
+  // query change is the only moment at which the answer changes. It is registered
+  // unconditionally so a switch to `auto` later still gets it.
+  if (window.matchMedia) {
+    var mqDark = window.matchMedia('(prefers-color-scheme: dark)');
+    var onScheme = function () {
+      // Nothing to recompute in the palette — that is the stylesheet's job. The value is
+      // re-applied anyway because it is cheap and idempotent, and because a future editor
+      // who adds a JS-side dependency on the resolved theme will find the hook already here.
+      applyOpacity(S.opacity);
+    };
+    if (mqDark.addEventListener) mqDark.addEventListener('change', onScheme);
+    else if (mqDark.addListener) mqDark.addListener(onScheme);   // Safari < 14
+  }
+
   // =====================================================================
   // cross-page sync
   // =====================================================================
@@ -4684,6 +4924,13 @@
           var langChanged = GMI18n.resolveLang(v.lang) !== LANG;
           S = v;
           if (langChanged) { applyLang(S.lang); repaintForLang(); return; }
+          // 0.4.7 §三.1/§三.2 — these two are NOT part of the `self` short-circuit below. A
+          // theme or opacity change made in the in-page panel arrives here as a foreign write,
+          // and even our own echo has to re-apply: the applyTheme/applyOpacity calls in the
+          // bindings read the clamp's OUTPUT, but a change made in another tab leaves this
+          // document holding the old attribute until something puts it back.
+          applyTheme(S.theme);
+          applyOpacity(S.opacity);
           // Our own write echoed back: S/syncDetectControls are enough. Re-filling the
           // whole form here would reach into whatever box the user moved on to.
           var self = (Date.now() - lastSelfWrite) < 1000;
@@ -4749,8 +4996,14 @@
     // switch from overwriting a player name with a stale static string.
     applyLang(S.lang);
     GMI18n.apply(document);
+    // 0.4.7 §三.1/§三.2 — theme and opacity go on <html> BEFORE the first paint. Both are
+    // attribute/class swaps that the stylesheet resolves on its own, so doing them here costs
+    // nothing and doing them later would flash the wrong palette on load.
+    applyTheme(S.theme);
+    applyOpacity(S.opacity);
     fillLangSelect();
     fillThreadSelect();
+    fillThemeSelect();
     // 0.3.5 §3.2: build the per-column ▼ glyphs first (they are static markup-level), then
     // apply the stored fold state so the first paint already has the right columns hidden —
     // applying it after a render would flash the full fifteen-column table on every load.

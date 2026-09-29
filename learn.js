@@ -39,11 +39,15 @@
   var FALLBACK_WEIGHTS = {
     top1: 0.20, acpl: 0.08, sharp: 0.22, out: 0.27, desperate: 0.08, time: 0.15,
     evasion: 0.06, winBlunder: 0.04,
+    // 0.4.7 §1.1: the useless-four-run surcharge. See app.js BASE_WEIGHTS for the reasoning
+    // behind 0.05 (§1.1 names 0.05 twice and compares it to `desperate`, which is 0.08).
+    uselessFour: 0.05,
   };
   var FALLBACK_THRESHOLDS = {
     // 0.4.3 §1.1: the ramp aTop1 reads. top1Lo/top1Hi stay for a pre-0.4.3 archive and for the
     // `opts.legacyTop1` comparison path, but nothing the detector runs reads them any more.
-    topProxLo: 0.50, topProxHi: 0.90,
+    // 0.4.7 §1.2: Lo 0.50 -> 0.45.
+    topProxLo: 0.45, topProxHi: 0.90,
     top1Lo: 0.72, top1Hi: 0.90,
     acplLo: 0.003, acplHi: 0.015,
     sharpHitLo: 0.65, sharpHitSpan: 0.35,
@@ -54,6 +58,8 @@
     evasionLoss: 0.20, goodLoss: 0.05, evasionMin: 3, evasionReg: 0.35, winningWR: 0.85,
     // 0.4.3 §1.6
     typeAiMin: 75, typeSuspectMin: 55, typeProMin: 45, typeExpertMin: 30,
+    // 0.4.7 §1.1
+    fourVcfWR: 0.90, fourLostWR: 0.10,
   };
 
   // 0.3.3 §3.5. Kept in sync with storage.js (which the viewer reads to gate the button);
@@ -67,13 +73,21 @@
   // own budget rather than normalised together with the six: normalising all eight to 1 would
   // scale the six down to ~0.9 and drop every score by 10%, which is exactly what 0.4.2
   // §2.6 #6 forbids. The two groups are therefore normalised separately, to 1.00 and 0.10.
-  var EVASION_KEYS = ['evasion', 'winBlunder'];
+  //
+  // 0.4.7 §1.1 puts `uselessFour` in the SURCHARGE group too, and for the same reason: it is
+  // added on top of the six, so folding it into the base budget would take a slice out of
+  // Top1/ACPL/… and move every existing score. The surcharge budget is now 0.15 (0.06 + 0.04
+  // + 0.05), read off the defaults by `group()` below, so adding the key here is all the
+  // wiring the learner needs.
+  var EVASION_KEYS = ['evasion', 'winBlunder', 'uselessFour'];
   var WEIGHT_KEYS = BASE_KEYS.concat(EVASION_KEYS);
 
   var WEIGHT_LABEL = {
     top1: 'Top1 吻合', acpl: 'ACPL 均损', sharp: '唯一手', out: 'Top5 之外',
     desperate: '将败冲四', time: '时间规律',
     evasion: '回避手', winBlunder: '将胜乱下',
+    // 0.4.7 §1.1
+    uselessFour: '无用冲四',
   };
   var THRESHOLD_LABEL = {
     topProxLo: '接近度下界', topProxHi: '接近度上界',
@@ -88,6 +102,8 @@
     // 0.4.3 §1.6
     typeAiMin: 'AI 档线', typeSuspectMin: '疑似AI 档线',
     typeProMin: '职业选手 档线', typeExpertMin: '高手玩家 档线',
+    // 0.4.7 §1.1
+    fourVcfWR: '冲四 VCF 胜率线', fourLostWR: '冲四 必败胜率线',
   };
 
   // ---------- small stats helpers ----------
@@ -122,13 +138,18 @@
   }
 
   // 0.4.3 §1.1, mirrored from app.js stepProximity(): how close this hand came to the engine's
-  // first choice. 1.0 = Top1, 0.75 = Top2-3, 0.55 = Top4-5, 0 = further down. Both 0.3.1 terms
+  // first choice. 0.4.7 §1.2 makes it three tiers — 1.0 = Top1, 0.80 = Top2-5, 0.50 = Top6-8
+  // (only reachable on a >6s hand, see app.js nbestFor), 0 = further down. Both 0.3.1 terms
   // that used to read a binary top-1 hit read this now, which is what stops a side that keeps
   // landing on Top2-T5 from scoring as if it had no engine agreement at all.
+  //
+  // THE MIRROR RULE: this must stay identical to app.js's copy. The two are tested against
+  // each other (verify-047) precisely because a silent divergence here would mean the learner
+  // trains weights for a formula the detector does not run.
   function proximity(s) {
     if (s.top1) return 1.0;
-    if (s.top3) return 0.75;
-    if (s.top5) return 0.55;
+    if (s.top5) return 0.80;
+    if (s.top8) return 0.50;
     return 0;
   }
 
@@ -474,15 +495,41 @@
     var aEvasion = clamp(ev.count / 5, 0, 1) * 0.5 +
                    ev.regularity * clamp(ev.count / 4, 0, 1) * 0.5;
     var aWinBlunder = clamp(ev.winBlunders / 3, 0, 1);
+    // 0.4.7 §1.1, mirrored from app.js sideAggregate(): the useless-four surcharge. Counted as
+    // RUNS, not hands, so this has to walk the side's sequence and count transitions rather
+    // than filter. Read off `fourRuns.useless` where the report carries it (0.4.7+), otherwise
+    // derived from the per-step flags an older archive does have — the same "read both shapes"
+    // rule the rest of this file follows.
+    var uselessRuns = countFourRuns(steps, 'useless');
+    var aUselessFour = clamp(uselessRuns / 2, 0, 1);
     return {
       top1: aTop1, acpl: aAcpl, sharp: aSharp, out: aOut, desperate: aDesperate, time: aTime,
-      evasion: aEvasion, winBlunder: aWinBlunder,
+      evasion: aEvasion, winBlunder: aWinBlunder, uselessFour: aUselessFour,
       // raw, un-ramped aggregates — the ramp anchors are learned from these
       n: steps.length, rawTop1: top1, rawTopProx: topProx, rawLoss: meanLoss,
       rawSharpHit: sharpHit, rawOutTop5: outTop5,
       hasSharp: sharp.length >= 3,
       evasionCount: ev.count, evasionRegularity: ev.regularity, winBlunderCount: ev.winBlunders,
+      uselessFourCount: steps.filter(function (x) { return x.fourKind === 'useless'; }).length,
+      uselessFourRuns: uselessRuns,
     };
+  }
+
+  // 0.4.7 §1.1: how many useless-four RUNS this sequence contains. The per-step flags carry
+  // the run's LENGTH (`fourRun`), so a run is counted where its length differs from the
+  // previous hand's; a non-four hand resets the comparison to 0, which is what separates two
+  // adjacent same-length runs. An archive written before 0.4.7 has neither field, so this
+  // returns 0 for it and the term is exactly 0 — the same "old corpus trains the same way"
+  // property the evasion filter above has.
+  function countFourRuns(steps, kind) {
+    var n = 0, prev = 0;
+    for (var i = 0; i < steps.length; i++) {
+      var x = steps[i];
+      var len = (x.fourKind === kind && isFinite(x.fourRun)) ? x.fourRun : 0;
+      if (len && len !== prev) n++;
+      prev = len;
+    }
+    return n;
   }
 
   // Per (sample, side) sub-scores split by the sample's role. Shared by optimizeWeights,
@@ -756,7 +803,9 @@
                         // 0.4.2 §4.3
                         'evasionLoss', 'goodLoss', 'evasionMin', 'evasionReg', 'winningWR',
                         // 0.4.3 §1.6
-                        'typeAiMin', 'typeSuspectMin', 'typeProMin', 'typeExpertMin'];
+                        'typeAiMin', 'typeSuspectMin', 'typeProMin', 'typeExpertMin',
+                        // 0.4.7 §1.1
+                        'fourVcfWR', 'fourLostWR'];
 
   function diffThresholds(before, after) {
     return THRESHOLD_KEYS.map(function (k) {

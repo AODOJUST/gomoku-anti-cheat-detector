@@ -5,8 +5,24 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>五子棋 AI 反作弊检测器 · 查看器</title>
 <style>
+  /* ---- 0.4.7 §三.1 主题 · §三.2 透明度 ----
+     0.4.6 and earlier shipped ONE palette, hard-coded dark. 0.4.7 makes the palette
+     attribute-driven: `:root` now carries the LIGHT set (because that is what `auto`
+     resolves to on the majority of machines, and `:root` is the only rule that applies
+     before JS has run), `[data-theme="dark"]` overrides it, and an operator on `auto`
+     with a dark OS gets the dark set from the media query below.
+
+     `--bg-rgb` / `--panel-rgb` exist only for §三.2: transparency needs to write an
+     alpha onto the surface colours, and you cannot append an alpha to `#161b22`. The
+     hex and rgb forms are therefore kept in lockstep by hand — **change both**.
+
+     The board/stone colours below (--red/--green/--yellow/--blue/--orange) are NOT
+     themed: they are the app's data ink (win=red per the CN convention, loss=green,
+     risk bands), and re-tinting them per theme would change what a figure MEANS. */
   :root{
-    --bg:#0f1419; --panel:#1a2029; --line:#2a3441; --txt:#e6edf3; --mut:#8b98a5;
+    --bg:#ffffff; --bg-rgb:255,255,255;
+    --panel:#f5f5f5; --panel-rgb:245,245,245;
+    --line:#d0d0d0; --txt:#1a1a1a; --mut:#555555;
     --red:#e74c3c; --green:#2ecc71; --yellow:#f1c40f; --blue:#3c5ee7; --orange:#e67e22;
 
     /* ---- one UI scale for the whole viewer ----
@@ -43,6 +59,54 @@
     --ui-detail-padding:9px;      /* 原 8px  ×1.2 ×0.85 */
     --ui-detail-radius:7px;       /* 原 6px  ×1.2 ×0.85 */
   }
+  /* §三.1 — the explicit dark override. Same six surface colours, restated; the data ink
+     above is untouched. These are the exact values 0.4.6 shipped as the only palette, so an
+     operator who picks 「深色」 gets a byte-identical result to the version they came from. */
+  :root[data-theme="dark"]{
+    --bg:#0f1419; --bg-rgb:15,20,25;
+    --panel:#1a2029; --panel-rgb:26,32,41;
+    --line:#2a3441; --txt:#e6edf3; --mut:#8b98a5;
+  }
+  /* `auto` is the default and the OS decides. The LIGHT set is already on plain `:root`, so
+     only the dark branch needs a media query — and `:root[data-theme=auto]` keeps it from
+     firing for an operator who explicitly chose 「浅色」 on a dark machine. */
+  @media (prefers-color-scheme: dark){
+    :root[data-theme="auto"]{
+      --bg:#0f1419; --bg-rgb:15,20,25;
+      --panel:#1a2029; --panel-rgb:26,32,41;
+      --line:#2a3441; --txt:#e6edf3; --mut:#8b98a5;
+    }
+  }
+  /* ---- 0.4.7 §三.2 透明度 ----
+     Two independent alphas, set by applyOpacity() from settings.opacity:
+       · the BACKGROUND surfaces breathe, --bg-rgb / --panel-rgb with an alpha; at level 0
+         they go fully transparent so the desktop shows through;
+       · the FUNCTIONAL widgets (cards, tables, controls — everything that carries text you
+         have to READ) stop at 0.80. An operator who drags the slider to 0 gets a translucent
+         window, never an invisible one: a panel you cannot find the close button on is a
+         bug, not a feature.
+
+     `html{background:transparent}` is what makes the root actually see-through — without it
+     the canvas paints its own opaque colour behind everything and the alpha below is moot.
+     It is unconditional: when transparency is off, `body` paints the opaque `--bg` anyway.
+
+     NOTE this cannot show the real desktop. A `chrome-extension://` window is composited by
+     the browser and has no per-window alpha channel, so "transparent" here means "transparent
+     against whatever the browser paints behind the page". The settings UI says so. */
+  html{background:transparent}
+  html.gm-transparent, html.gm-transparent body{background:rgba(var(--bg-rgb),var(--gm-bg-alpha,1))}
+  html.gm-transparent header,
+  html.gm-transparent .panel,
+  html.gm-transparent .card,
+  html.gm-transparent aside,
+  html.gm-transparent .set-group,
+  html.gm-transparent .scroll,
+  html.gm-transparent .archive-grid{background:rgba(var(--panel-rgb),var(--gm-bg-alpha,1))}
+  /* The readability floor. Applied to the CONTENT shells, not to the surfaces above: the
+     point is that text stays legible over a transparent backdrop, so it is the box holding
+     the text that has to keep a solid-enough fill. */
+  html.gm-transparent .gm-opaque{opacity:var(--gm-widget-alpha,1)}
+
   *{box-sizing:border-box}
   /* ---- 0.4.6 §二.2: RTL ----
      Arabic (and any future RTL locale) mirrors the whole shell by flipping `dir` on <html>
@@ -121,18 +185,28 @@
      Badges, annotation buttons and the 人工标记 cell deliberately opt out: they carry their
      own colour because their colour IS their meaning (唯一手 / 将败 / 豁免 / 疑AI指纹 …),
      and repainting them black or white would erase the distinction. */
-  #tbl tbody tr.side-B td,#dTbl tbody tr.side-B td,#sTbl tbody tr.side-B td,#seTbl tbody tr.side-B td{background:#111;color:#fff}
+  /* 0.4.7 §三.1: the side colours are now theme variables. On the dark palette the black row
+     stays #111 and the white row is the 0.4.0 #DCDCDC wash above; on the LIGHT palette the
+     roles have to invert — a #DCDCDC row on a white panel is nearly invisible, and a #111 row
+     would be the only dark object on the page. So light gets #1a1a1a / #e8e8e8, which is the
+     same "clearly separated, neither one glaring" relationship read the other way up. */
+  :root{--side-b-bg:#1a1a1a;--side-b-fg:#f0f0f0;--side-w-bg:#e8e8e8;--side-w-fg:#1a1a1a}
+  :root[data-theme="dark"]{--side-b-bg:#111;--side-b-fg:#fff;--side-w-bg:#DCDCDC;--side-w-fg:#000}
+  @media (prefers-color-scheme: dark){
+    :root[data-theme="auto"]{--side-b-bg:#111;--side-b-fg:#fff;--side-w-bg:#DCDCDC;--side-w-fg:#000}
+  }
+  #tbl tbody tr.side-B td,#dTbl tbody tr.side-B td,#sTbl tbody tr.side-B td,#seTbl tbody tr.side-B td{background:var(--side-b-bg);color:var(--side-b-fg)}
   /* 0.4.0 §三.2. #f5f5f5 is 96% white and glares on the dark panel over a long review, so the
      white-side wash moves to #DCDCDC (220,220,220) — still clearly lighter than the #111
      black row opposite it, but no longer the brightest thing on the screen. Change the two
      `td.side-*` badge rules below in step, or the 方 cell would keep the old value. */
-  #tbl tbody tr.side-W td,#dTbl tbody tr.side-W td,#sTbl tbody tr.side-W td,#seTbl tbody tr.side-W td{background:#DCDCDC;color:#000}
+  #tbl tbody tr.side-W td,#dTbl tbody tr.side-W td,#sTbl tbody tr.side-W td,#seTbl tbody tr.side-W td{background:var(--side-w-bg);color:var(--side-w-fg)}
   /* 可疑 is a TINT, not a replacement: the row rule above outranks this one on `background`,
      so an inset overlay is used to lay the red wash over whichever side colour is there
      instead of erasing it. (At equal specificity, a plain background here would lose.) */
   tr.flagged td{background:rgba(231,76,60,.12);box-shadow:inset 0 0 0 9999px rgba(231,76,60,.14)}
-  td.side-B{background:#111;color:#fff;font-weight:600;border-radius:4px}
-  td.side-W{background:#DCDCDC;color:#000;font-weight:600;border-radius:4px}
+  td.side-B{background:var(--side-b-bg);color:var(--side-b-fg);font-weight:600;border-radius:4px}
+  td.side-W{background:var(--side-w-bg);color:var(--side-w-fg);font-weight:600;border-radius:4px}
   /* The 人工标记 placeholder is --mut (#8b98a5) grey, which reads on the dark panel but
      disappears on a white row — the one place the new row colour needed a companion rule. */
   tr.side-W td.ma .ma-off{color:#5c6773}
@@ -608,7 +682,7 @@
       <div class="hint seg-legend" id="segLegDetect"></div>
       <div class="scroll"><table id="tbl">
         <thead><tr>
-          <th>#</th><th>方</th><th>实际</th><th>最佳</th><th>前5候选(胜率%)</th>
+          <th>#</th><th>方</th><th>实际</th><th>最佳</th><th>候选(前5/8)(胜率%)</th>
           <th>T1</th><th>T3</th><th>T5</th><th>胜率差</th><th>妙手</th><th>将败</th><th>回避</th><th>被迫防守</th><th>耗时ms</th><th>标记</th><th>人工标记</th>
         </tr></thead>
         <tbody></tbody>
@@ -844,7 +918,7 @@
         <div class="hint seg-legend" id="segLegDetail"></div>
         <div class="scroll"><table id="dTbl">
           <thead><tr>
-            <th>#</th><th>方</th><th>实际</th><th>最佳</th><th>前5候选(胜率%)</th>
+            <th>#</th><th>方</th><th>实际</th><th>最佳</th><th>候选(前5/8)(胜率%)</th>
             <th>T1</th><th>T3</th><th>T5</th><th>胜率差</th><th>妙手</th><th>将败</th><th>回避</th><th>被迫防守</th><th>耗时ms</th><th>标记</th><th>人工标记</th>
           </tr></thead>
           <tbody></tbody>
@@ -1021,7 +1095,7 @@
         <div class="hint seg-legend" id="segLegSample"></div>
         <div class="scroll"><table id="sTbl">
           <thead><tr>
-            <th>#</th><th>方</th><th>实际</th><th>最佳</th><th>前5候选(胜率%)</th>
+            <th>#</th><th>方</th><th>实际</th><th>最佳</th><th>候选(前5/8)(胜率%)</th>
             <th>T1</th><th>T3</th><th>T5</th><th>胜率差</th><th>妙手</th><th>将败</th><th>回避</th><th>被迫防守</th><th>耗时ms</th><th>标记</th><th>人工标注</th>
           </tr></thead>
           <tbody></tbody>
@@ -1151,7 +1225,7 @@
         <div class="hint seg-legend" id="segLegEditor"></div>
         <div class="scroll"><table id="seTbl">
           <thead><tr>
-            <th>#</th><th>方</th><th>实际</th><th>最佳</th><th>前5候选(胜率%)</th>
+            <th>#</th><th>方</th><th>实际</th><th>最佳</th><th>候选(前5/8)(胜率%)</th>
             <th>T1</th><th>T3</th><th>T5</th><th>胜率差</th><th>妙手</th><th>将败</th><th>回避</th><th>被迫防守</th><th>耗时ms</th><th>标记</th><th>人工标注</th>
           </tr></thead>
           <tbody></tbody>
@@ -1245,12 +1319,33 @@
           </div>
         </div>
         <div class="set-item">
+          <label id="setThemeLabel">主题</label>
+          <div class="fx">
+            <select id="setTheme"></select>
+            <span class="hint" id="setThemeHint"></span>
+          </div>
+        </div>
+        <div class="set-item">
           <label>列折叠偏好</label>
           <div class="fx">
             <!-- One control for the four step tables; the menu itself still opens under the
                  header's 「列 ▾」 button, so there is a single implementation of the popup. -->
             <button class="sec" id="setColPref">打开列显示设置</button>
             <span class="hint">显示 / 隐藏步骤明细的列（四张表共用）</span>
+          </div>
+        </div>
+        <div class="set-item">
+          <label id="setOpacityLabel">透明度模式</label>
+          <div class="fx">
+            <input type="checkbox" id="setOpacityEnabled">
+            <span class="hint" id="setOpacityHint"></span>
+          </div>
+        </div>
+        <div class="set-item">
+          <label id="setOpacityLevelLabel">透明度</label>
+          <div class="fx">
+            <input type="range" id="setOpacityLevel" min="0" max="100" step="5">
+            <span class="hint" id="setOpacityVal"></span>
           </div>
         </div>
       </div>

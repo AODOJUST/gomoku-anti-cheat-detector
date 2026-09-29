@@ -85,6 +85,16 @@
     // (2026-09-29): 「默认关，首次确认一次」. The §12 「提问」 button is NOT gated by this — it is
     // an explicit click, not something the extension decides to do.
     chatAuto: false,
+    // 0.4.7 §三.1 — the colour scheme. 'auto' follows the OS via prefers-color-scheme, which is
+    // the behaviour the viewer had before there was a setting at all, so it is the default: an
+    // operator who never opens the settings page sees exactly what they saw in 0.4.6.
+    theme: 'auto',
+    // 0.4.7 §三.2 — page translucency. `level` is 0..100 where 100 = fully opaque and 0 = the
+    // background layers are fully transparent (functional widgets floor at opacity 0.80). It
+    // only ever applies to the VIEWER: the in-page panel floats over a game, and a translucent
+    // panel is unreadable. `enabled: false` means every derived value is exactly 1, so an
+    // untouched profile renders byte-identically to 0.4.6.
+    opacity: { enabled: false, level: 100 },
     // 0.4.4 §十六 — the LLM panel. The DEFAULTS live in llm.js (GMLLM.DEFAULTS) because the
     // service worker loads that file too; a second literal here would drift. `llm.js` is loaded
     // before this file (manifest order), so the reference resolves. `{}` in a broken build is
@@ -126,6 +136,30 @@
     var n = parseInt(v, 10);
     if (!isFinite(n)) return DEFAULTS.minArchiveMoves;
     return Math.max(MIN_MOVES_LO, Math.min(MIN_MOVES_HI, n));
+  }
+
+  // ---------- 0.4.7 §三: theme + translucency ----------
+  // The three theme values are the only ones the viewer's CSS has a rule for. Anything else
+  // (an old build's value, a hand-edited profile, a typo) falls back to 'auto', because 'auto'
+  // is what every pre-0.4.7 build behaved as and so is the one answer that cannot surprise
+  // anyone. Two live surfaces read this: viewer.js's applyTheme() and content.js's overlay.
+  var THEMES = ['light', 'dark', 'auto'];
+  function clampTheme(v) {
+    return (typeof v === 'string' && THEMES.indexOf(v) >= 0) ? v : 'auto';
+  }
+
+  // `opacity` is a small object, so it is rebuilt field by field rather than trusted: the
+  // `level` is clamped to 0..100 on whole points, and `enabled` is coerced to a boolean. A
+  // non-object (an old profile has no such key, but a corrupted one might) becomes the
+  // default. Returning a FRESH object every time is deliberate — the caller may hold the
+  // result for a while, and handing back a reference into DEFAULTS would let one file's edit
+  // silently change every other caller's "default".
+  function normalizeOpacity(v) {
+    if (!v || typeof v !== 'object') return { enabled: !!DEFAULTS.opacity.enabled, level: DEFAULTS.opacity.level };
+    var n = parseInt(v.level, 10);
+    if (!isFinite(n)) n = DEFAULTS.opacity.level;
+    n = Math.max(0, Math.min(100, Math.round(n)));
+    return { enabled: !!v.enabled, level: n };
   }
 
   // ---------- storage shim ----------
@@ -177,6 +211,13 @@
     for (var k in DEFAULTS) out[k] = (k in raw) ? raw[k] : DEFAULTS[k];
     out.minArchiveMoves = clampMinMoves(out.minArchiveMoves);
     out.threadNum = clampThreadNum(out.threadNum);
+    // 0.4.7 §三. Both new settings are clamped on the way IN as well as on the way out: a
+    // hand-edited profile is the one input the UI never validates, and `theme` reaching the
+    // DOM as an arbitrary string would match no `[data-theme=…]` rule — i.e. the page would
+    // silently fall back to its light defaults, which is the hardest kind of bug to notice.
+    // Same reasoning as clampMinMoves above.
+    out.theme = clampTheme(out.theme);
+    out.opacity = normalizeOpacity(out.opacity);
     return out;
   }
 
@@ -186,6 +227,8 @@
       if (patch) for (var k in patch) if (k in DEFAULTS) s[k] = patch[k];
       s.minArchiveMoves = clampMinMoves(s.minArchiveMoves);
       s.threadNum = clampThreadNum(s.threadNum);
+      s.theme = clampTheme(s.theme);
+      s.opacity = normalizeOpacity(s.opacity);
       var put = {}; put[SETTINGS_KEY] = s;
       try { await api().set(put); } catch (e) {}
       return s;
@@ -1160,13 +1203,21 @@
   var DEFAULT_WEIGHTS = {
     top1: 0.20, acpl: 0.08, sharp: 0.22, out: 0.27, desperate: 0.08, time: 0.15,
     evasion: 0.06, winBlunder: 0.04,
+    // 0.4.7 §1.1: a run of >=2 consecutive fours played from a lost position. Same status as
+    // the two above — a surcharge on top of the six, not a slice of them. §1.1 says "与
+    // desperate 同级（0.05）"; `desperate` is 0.08, so its parenthetical and its comparison
+    // disagree, and 0.05 is the number it names twice (and the one §五's checklist writes).
+    // It is a brand-new signal with no corpus, so the smaller value is also the safer one.
+    uselessFour: 0.05,
   };
   var DEFAULT_THRESHOLDS = {
     // 0.4.3 §1.1: the ramp aTop1 reads now that it is fed a graded proximity instead of a
     // top-1 rate. `top1Lo`/`top1Hi` below are kept — a pre-0.4.3 archive and the
     // `opts.legacyTop1` comparison path still describe themselves with them — but the
     // detector no longer consumes them.
-    topProxLo: 0.50, topProxHi: 0.90, // aTop1 proximity ramp
+    // 0.4.7 §1.2: Lo moves 0.50 -> 0.45 so the three-tier proximity of stepProximity() is
+    // actually reachable. See app.js BASE_THRESHOLDS for the reasoning.
+    topProxLo: 0.45, topProxHi: 0.90, // aTop1 proximity ramp
     top1Lo: 0.72, top1Hi: 0.90,     // 0.3.1 top-1 ramp, retained for compatibility
     acplLo: 0.003, acplHi: 0.015,   // aAcpl ramp: lower loss is better
     sharpHitLo: 0.65, sharpHitSpan: 0.35,
@@ -1185,6 +1236,11 @@
     // 75 is AI, 74 is 疑似AI. A band is a summary of the risk score, not a second opinion
     // about it: nothing here feeds back into the score.
     typeAiMin: 75, typeSuspectMin: 55, typeProMin: 45, typeExpertMin: 30,
+    // 0.4.7 §1.1: the two win-rate bounds a four run is classified with — the value of the best
+    // move in the position BEFORE the run started. >= fourVcfWR is a conversion (VCF, not
+    // scored); <= fourLostWR is a lost player firing fours that change nothing (scored).
+    // Anything between is 防御性冲四: real, reported, not scored.
+    fourVcfWR: 0.90, fourLostWR: 0.10,
   };
   // 0.3.3 §3.5: below this many samples 重新学习 is disabled outright; below LOW it runs
   // but is labelled unreliable. The two are separate so a 6-sample run is still allowed
@@ -1308,8 +1364,18 @@
       actual: s.actual, actualStr: s.actualStr,
       best: s.best, bestStr: s.bestStr,
       top1: !!s.top1, top3: !!s.top3, top5: !!s.top5, outsideTop5: !!s.outsideTop5,
+      // 0.4.7 §1.4: the sixth-to-eighth candidate tier. Only ever true on a hand whose recorded
+      // thinking time exceeded 6s (see app.js nbestFor), so a pre-0.4.7 archive — which has no
+      // such field — reads as false and grades exactly as it did before.
+      top8: !!s.top8,
       bestWR: s.bestWR, actualWR: s.actualWR, loss: s.loss,
       isSharp: !!s.isSharp, forcedDefense: !!s.forcedDefense, desperate: !!s.desperate,
+      // 0.4.7 §1.1: the four-run classification. Kept per step so the badge survives a reload,
+      // and `prevBestWR` beside it because the archive's own reader may want to re-derive the
+      // kind (the classification is a function of this one number plus the run's extent).
+      fourRun: isFinite(s.fourRun) ? s.fourRun : 0,
+      fourKind: s.fourKind || null,
+      prevBestWR: s.prevBestWR == null ? null : s.prevBestWR,
       // 0.4.2 §2.3: this hand is a deliberate-looking blunder with good hands either side —
       // an evasion. Kept per step so the badge survives a reload and the per-side evasion
       // figures can be recomputed from the archive without re-analysing it.
@@ -1368,6 +1434,17 @@
       W: (typeof mt.W === 'string' && mt.W) ? mt.W : null,
     };
   }
+  // 0.4.7 §1.1: the three run counts. Copied field by field rather than passed through, so a
+  // hand-edited storage blob cannot smuggle extra keys into a shape the viewer walks — and so
+  // the object is never a live alias of the analysis result.
+  function copyFourRuns(v) {
+    v = v || {};
+    return {
+      vcf: isFinite(v.vcf) ? v.vcf : 0,
+      useless: isFinite(v.useless) ? v.useless : 0,
+      defensive: isFinite(v.defensive) ? v.defensive : 0,
+    };
+  }
   // The automatic classification, copied field by field so the archive carries a plain object
   // rather than a reference to the analysis result. `auto` is stored explicitly: it is what
   // tells a later reader that nobody has overridden this yet.
@@ -1380,6 +1457,12 @@
       out[side] = {
         suspect: x.suspect || null, type: x.type, auto: x.auto !== false,
         lowSteps: isFinite(x.lowSteps) ? x.lowSteps : 0,
+        // 0.4.7 §1.3: the shape of the dips, which is what actually decides the label now.
+        // Persisted so the viewer can explain a label ("3 dips, longest 2") instead of only
+        // asserting it, and so a pre-0.4.7 archive (no such fields) reads as 0/0 rather than
+        // as a JSON error.
+        lowRuns: isFinite(x.lowRuns) ? x.lowRuns : 0,
+        lowMax: isFinite(x.lowMax) ? x.lowMax : 0,
       };
     });
     return out;
@@ -1440,6 +1523,12 @@
         evasionCount: a.evasionCount || 0,
         winBlunderCount: a.winBlunderCount || 0,
         evasionRegularity: a.evasionRegularity || 0,
+        // 0.4.7 §1.1: how many of this side's hands carried a useless-four run (one of the
+        // terms the risk score was actually made of) and how many runs of each kind there
+        // were. Both default to 0 so a pre-0.4.7 archive reports the same figures it always
+        // did rather than `undefined` leaking into the detail table.
+        uselessFourCount: a.uselessFourCount || 0,
+        fourRuns: copyFourRuns(a.fourRuns),
         // 0.3.3 C: how many of this side's steps fingerprint-matched a known AI move.
         simCount: a.simCount || 0,
         time: a.time || null,
@@ -1734,6 +1823,12 @@
     clampThreadNum: clampThreadNum,
     THREADS_HI: THREADS_HI,
     detectedThreads: detectedThreads,
+    // 0.4.7 §三: the theme vocabulary and the two sanitisers, exported so the viewer, the
+    // overlay and the tests all normalise through ONE function instead of three copies of
+    // "which strings are allowed".
+    THEMES: THEMES,
+    clampTheme: clampTheme,
+    normalizeOpacity: normalizeOpacity,
     DEFAULT_OVERLAY: DEFAULT_OVERLAY,
     loadOverlay: loadOverlay,
     saveOverlay: saveOverlay,

@@ -174,6 +174,8 @@ GMI18n.register('zh-CN', {
   'learn.weight.out': 'Top5 之外',
   'learn.weight.desperate': '将败冲四',
   'learn.weight.time': '时间规律',
+  // 0.4.7 §1.1 — the third per-item surcharge.
+  'learn.weight.uselessFour': '无用冲四',
 
   'learn.threshold.top1Lo': 'Top1 下界',
   'learn.threshold.top1Hi': 'Top1 上界',
@@ -185,6 +187,9 @@ GMI18n.register('zh-CN', {
   'learn.threshold.riskHigh': '高风险线',
   'learn.threshold.riskMid': '可疑线',
   'learn.threshold.simWeight': '特征库权重',
+  // 0.4.7 §1.1 — the two cuts that split a four-run into VCF / 防御性 / 无用.
+  'learn.threshold.fourVcfWR': '冲四 VCF 胜率线',
+  'learn.threshold.fourLostWR': '冲四 必败胜率线',
 
   'learn.noRoleTags': '没有样本带「AI 样本」「人类样本」「黑方AI」或「白方AI」标签，权重无法调整（阈值与特征库仍已更新）。',
 

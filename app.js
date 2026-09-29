@@ -454,6 +454,25 @@ function orderIssues(record) {
   return out;
 }
 
+// ---------- 0.4.7 §1.4 Top8 扩展 ----------
+// How many candidates to ask the engine for. The default stays five — that is what every
+// previous release used, and the four thresholds and the whole segment geometry are built on
+// Top5 agreement. Above §1.4's 6-second mark the engine is being given long enough that its
+// sixth-to-eighth choices are worth recording, so the request widens.
+//
+// This is deliberately a FUNCTION of the budget rather than a constant, and both analysis
+// paths call it: a record whose hands carry no timing at all (`thinkMs == null`) keeps the
+// old five-candidate behaviour, which is the majority of archives and the reason the change
+// is safe to make.
+//
+// `YXNBEST` accepts any count, so nothing else has to change to ask for eight.
+const NBEST_DEFAULT = 5;
+const NBEST_EXTENDED = 8;
+const THINK_MS_EXTENDED = 6000;
+function nbestFor(thinkMs) {
+  return (thinkMs != null && thinkMs > THINK_MS_EXTENDED) ? NBEST_EXTENDED : NBEST_DEFAULT;
+}
+
 // Fills best / top1..top5 / loss / isSharp / forcedDefense from one engine result.
 function scoreStep(step, res, actual) {
   const cands = res.candidates || [];
@@ -463,11 +482,20 @@ function scoreStep(step, res, actual) {
   const actualCand = cands.find(c => eqCoord(c.move, actual));
   step.best = best;
   step.bestStr = best ? coordToShare(best) : '—';
-  step.cands = cands.slice(0, 5);
-  step.candStrs = cands.slice(0, 5).map(c => coordToShare(c.move) + '(' + (c.winrate != null ? (c.winrate * 100).toFixed(0) + '%' : '?') + ')');
+  // 0.4.7 §1.4: the stored/displayed candidate list is eight long, not five, because a hand
+  // with >6s of recorded thinking was analysed with `YXNBEST 8` and the sixth-to-eighth
+  // candidates are real evidence about it. `top5`/`top8` below are what the analysis reads;
+  // `cands` is what the table and the archive carry, and it has to be at least as long as the
+  // deepest flag or the viewer would show a hand as Top6-8 with no candidate to point at.
+  step.cands = cands.slice(0, 8);
+  step.candStrs = cands.slice(0, 8).map(c => coordToShare(c.move) + '(' + (c.winrate != null ? (c.winrate * 100).toFixed(0) + '%' : '?') + ')');
   step.top1 = !!(eqCoord(actual, best) || (actualCand && cands.indexOf(actualCand) === 0));
   step.top3 = cands.slice(0, 3).some(c => eqCoord(c.move, actual));
   step.top5 = cands.slice(0, 5).some(c => eqCoord(c.move, actual));
+  // 0.4.7 §1.4. Only ever true when the caller asked for eight candidates (see nbestFor) —
+  // on a 5-candidate result `cands.slice(0,8)` is just the same five, so this cannot fire by
+  // accident and a Top5 hand is never relabelled as Top8.
+  step.top8 = cands.slice(0, 8).some(c => eqCoord(c.move, actual));
   step.outsideTop5 = !step.top5;
   step.bestWR = bestWR;
   step.actualWR = actualCand ? actualCand.winrate : null;
@@ -753,6 +781,98 @@ function markEvasion(steps, thresholds) {
   return steps;
 }
 
+// ---------- 0.4.7 §1.1 连续无用冲四 ----------
+// A "four run" is >=2 of the SAME SIDE's consecutive hands, each of which left that side
+// holding a four. Read along the side's own sequence (the opponent's intervening hands are
+// skipped), so "consecutive" means consecutive HANDS OF THAT PLAYER, which is what a forcing
+// sequence actually is.
+//
+// The classification is by `prevBestWR`: the win rate the engine gave the best move in the
+// position BEFORE the run started. §1.1 is explicit that this is "序列第一步之前" and not the
+// first hand's own `bestWR` — a four that is already on the board has moved the win rate, so
+// reading the run's own first value would relabel exactly the case being looked for. That is
+// why `analyzeGame` / `analyzeStepwise` record `prevBestWR` per step (see recordPrevBestWR).
+//
+//   vcf        bestWR >= 0.90 : the run is the conversion. Normal, and evidence of strength.
+//   useless    bestWR <= 0.10 : a lost player firing fours that change nothing. This is the
+//                               one that raises the risk score.
+//   defensive  in between     : the outcome is undecided. Counted and reported, not scored.
+//
+// A single four is not a run: §1.1's acceptance criterion 4 says so, and a lone four is how
+// most games end. Both bounds are read from the thresholds object so they stay learnable.
+const FOUR_RUN_MIN = 2;
+const VCF_WR = 0.90;
+const LOST_WR = 0.10;
+
+function markFourRuns(steps, thresholds) {
+  const t = thresholds || BASE_THRESHOLDS;
+  const vcfWR = t.fourVcfWR != null ? t.fourVcfWR : VCF_WR;
+  const lostWR = t.fourLostWR != null ? t.fourLostWR : LOST_WR;
+  for (let i = 0; i < steps.length; i++) {
+    // Reset first, unconditionally: this is a post-processing pass that runs again on the same
+    // array during a live session (like markEvasion), and a stale flag left behind would keep
+    // scoring a hand after the run it belonged to was re-derived.
+    steps[i].fourRun = 0;
+    steps[i].fourKind = null;
+  }
+  for (const side of ['B', 'W']) {
+    const own = [];
+    steps.forEach((s, i) => {
+      if (s.side === side && s.analyzed && !s.isOpening) own.push({ s: s, i: i });
+    });
+    let k = 0;
+    while (k < own.length) {
+      if (!own[k].s.four) { k++; continue; }
+      const start = k;
+      while (k + 1 < own.length && own[k + 1].s.four) k++;
+      const end = k;
+      const runLen = end - start + 1;
+      if (runLen >= FOUR_RUN_MIN) {
+        const first = own[start].s;
+        // `prevBestWR` when the analysis recorded one; falling back to the step's own bestWR
+        // rather than to null, so a record analysed before 0.4.7 still classifies — it just
+        // classifies with the value that was available, which is what the hand knows.
+        const wr = first.prevBestWR != null ? first.prevBestWR : first.bestWR;
+        let kind;
+        if (wr != null && wr >= vcfWR) kind = 'vcf';
+        else if (wr != null && wr <= lostWR) kind = 'useless';
+        else kind = 'defensive';
+        for (let j = start; j <= end; j++) {
+          own[j].s.fourRun = runLen;
+          own[j].s.fourKind = kind;
+        }
+      }
+      k++;
+    }
+  }
+  return steps;
+}
+
+// ---------- 0.4.7 §1.1: the win rate of the position BEFORE each hand ----------
+// `markFourRuns` classifies a run of fours by the value the engine gave the best move before
+// the run began, so every analysed step has to carry "what the best move was worth one of MY
+// hands ago". Two things make this per-SIDE and not per-row: gomoku alternates strictly, so
+// the opponent's intervening hand has already changed the position and its own `bestWR` is
+// about a different player; and a run is defined along one side's own sequence.
+//
+// `i` is the side's OWN hand index (0-based), which is what makes this robust to a mid-game
+// join or an ai-suggest stone sitting in the middle of the record: the two are skipped, so the
+// numbering is still "my first analysed hand, my second, …".
+function recordPrevBestWR(steps) {
+  const last = { B: null, W: null };
+  for (let i = 0; i < steps.length; i++) {
+    const s = steps[i];
+    if (s.side !== 'B' && s.side !== 'W') continue;
+    if (!s.analyzed) continue;
+    // Explicitly null rather than left undefined: `markFourRuns` reads it with `!= null`, and
+    // an absent field and a null one mean the same thing to it — but only one of them survives
+    // a JSON round trip through storage, and only one of them is honest about "not recorded".
+    s.prevBestWR = last[s.side];
+    if (s.bestWR != null) last[s.side] = s.bestWR;
+  }
+  return steps;
+}
+
 // The per-side evasion figures §2.3 scores. Split out of sideAggregate so the two things it
 // returns can be read separately — the COUNT (how often) and the REGULARITY (how evenly
 // spaced), which mean different things: a player who blunders once may have simply blundered,
@@ -832,7 +952,7 @@ async function analyzeStep(eng, allMoves, playerIdx, actual, opts, budgetMs, rec
     step.analyzed = false;
     step.best = null; step.bestStr = '—';
     step.cands = []; step.candStrs = [];
-    step.top1 = step.top3 = step.top5 = false;
+    step.top1 = step.top3 = step.top5 = step.top8 = false;
     step.outsideTop5 = false;
     step.bestWR = step.actualWR = step.loss = null;
     step.isSharp = false;
@@ -841,7 +961,12 @@ async function analyzeStep(eng, allMoves, playerIdx, actual, opts, budgetMs, rec
     return step;
   }
   eng.configure({ rule: opts.rule, thinkMs: budgetMs, threadNum: opts.threadNum });
-  const res = await eng.analyzePosition(allMoves.slice(0, -1), 5);
+  // 0.4.7 §1.4: the RECORDED interval decides how deep a candidate list this hand gets, not the
+  // engine budget. The budget is clamped (min 2s, capped by the panel setting), so a hand the
+  // player actually thought 9s about would be analysed at 2s and never widen; the recorded
+  // interval is the human's real thinking time and is exactly what §1.4's "思考时间 > 6000ms"
+  // means. `recordedMs` is null on a hand with no timing, and nbestFor() then returns five.
+  const res = await eng.analyzePosition(allMoves.slice(0, -1), nbestFor(recordedMs));
   scoreStep(step, res, actual);
   // 0.3.4 活四停止: shape test on the position AFTER this hand, so the offscreen live
   // session still ends on a real live four (doStep sets live.ended) — but not on the
@@ -920,7 +1045,7 @@ async function analyzeStepwise(record, opts, onProgress, onStep) {
         thinkMs: recorded, budgetMs: null, analyzed: false,
         orderKnown: scorable(sources[i]),
         best: null, bestStr: '—', cands: [], candStrs: [],
-        top1: false, top3: false, top5: false, outsideTop5: false,
+        top1: false, top3: false, top5: false, top8: false, outsideTop5: false,
         bestWR: null, actualWR: null, loss: null, isSharp: false, forcedDefense: false,
       };
       // 0.4.5 §三/§3.4 — the step we just stopped analysing as an opening hand is exactly the
@@ -940,6 +1065,11 @@ async function analyzeStepwise(record, opts, onProgress, onStep) {
   // 0.4.2 §2.3: the evasion pass, right after markDesperate and before anything aggregates —
   // sideAggregate() drops the hands this flags, so it must have run by then.
   markEvasion(steps, riskParams(learned).t);
+  // 0.4.7 §1.1: the four-run pass and the value it classifies with. Both run AFTER the two
+  // passes above so a hand that is an evasion is still visible as one, and BEFORE buildReport,
+  // which is where sideAggregate() counts `fourKind === 'useless'`.
+  recordPrevBestWR(steps);
+  markFourRuns(steps, riskParams(learned).t);
   // 0.3.3 C: same fingerprint pass as analyzeGame, for the same reason.
   if (learned && learned.features && learned.features.length &&
       typeof GMLearn !== 'undefined' && GMLearn && GMLearn.matchFeatures) {
@@ -957,6 +1087,10 @@ function summarizeSteps(steps, times, opts) {
   // risk score would visibly change the moment the game ends — and the change would look like
   // a bug. markEvasion() rewrites the flags from scratch, so re-running it per update is safe.
   markEvasion(steps, riskParams(params).t);
+  // 0.4.7 §1.1: the four-run pass is part of the score now, so the live summary has to run it
+  // too — same reason as the line above. Both are idempotent (they reset their own fields).
+  recordPrevBestWR(steps);
+  markFourRuns(steps, riskParams(params).t);
   // Two steps in a row by the same side cannot happen in a real game. The live session
   // only holds PLAYED moves, so an adjacency here means the capture lost one.
   let issues = 0;
@@ -1019,12 +1153,24 @@ function rampDown(v, lo, hi) {
 const BASE_WEIGHTS = {
   top1: 0.20, acpl: 0.08, sharp: 0.22, out: 0.27, desperate: 0.08, time: 0.15,
   evasion: 0.06, winBlunder: 0.04,
+  // 0.4.7 §1.1: a run of >=2 consecutive fours played from a LOST position (bestWR <= 0.10).
+  // Same status as the two above — a surcharge on top of the six, not a slice of them, so a
+  // game with no such run scores exactly what it scored before. §1.1 asks for it to be
+  // "同级（0.05）" with `desperate`; `desperate` is 0.08, so the spec's parenthetical and its
+  // own comparison disagree. 0.05 is the number it names twice, and this is a NEW signal with
+  // no corpus behind it yet, so the smaller of the two is the honest choice and the one the
+  // §五 checklist writes. Replace with a learned value once samples exist.
+  uselessFour: 0.05,
 };
 const BASE_THRESHOLDS = {
   // 0.4.3 §1.1: the ramp aTop1 now reads. `top1Lo`/`top1Hi` are kept because a pre-0.4.3
   // archive and the `opts.legacyTop1` comparison path still describe themselves with them,
   // but the detector itself no longer consumes them.
-  topProxLo: 0.50, topProxHi: 0.90,
+  //
+  // 0.4.7 §1.2 moves Lo from 0.50 down to 0.45, which is what makes the three-tier proximity
+  // of stepProximity() actually pay off: with the graded mean now sitting higher for the same
+  // hands, the ramp reaches its useful range sooner instead of clipping at the bottom.
+  topProxLo: 0.45, topProxHi: 0.90,
   top1Lo: 0.72, top1Hi: 0.90,
   acplLo: 0.003, acplHi: 0.015,
   sharpHitLo: 0.65, sharpHitSpan: 0.35,
@@ -1039,6 +1185,16 @@ const BASE_THRESHOLDS = {
   evasionMin: 3,        // fewest evasions before the rhythm score means anything
   evasionReg: 0.35,     // stddev / mean ceiling for "a regular rhythm"
   winningWR: 0.85,      // "winning" for the 将胜乱下 signal
+  // 0.4.7 §1.1: the two win-rate cuts that split a run of consecutive fours into VCF /
+  // 防御性 / 无用. They MUST be listed here and not only as the module-level VCF_WR / LOST_WR
+  // constants used as their fallback: `markFourRuns` prefers the value on the threshold set,
+  // `riskParams` merges the learned set key by key against THIS object, and storage.js's
+  // DEFAULT_THRESHOLDS is merged into the same one. A key that is absent here is therefore
+  // invisible to every one of those paths — the learner would report that it updated a cut it
+  // never actually touched, and a hand-edited storage entry would be silently dropped. The
+  // constants stay as the belt-and-braces default for a caller that passes no set at all.
+  fourVcfWR: 0.90,      // at or above this, the four-run is a winning line (VCF)
+  fourLostWR: 0.10,     // at or below this, it is 无用冲四 and it scores
   // 0.4.3 §1.6: the five risk bands' four cut lines, all right-open (75 is AI, 74 is 疑似AI).
   // The band a game lands in is a summary of the risk score, not a second opinion about it,
   // so these are configurable and learnable like every other cut but never feed back into the
@@ -1200,7 +1356,9 @@ async function analyzeGame(record, opts, onProgress) {
     if (needEngine) {
       if (opts.shouldAbort && opts.shouldAbort()) throw new Error('__aborted__');
       const prefix = moves.slice(0, i);
-      const res = await eng.analyzePosition(prefix, 5);
+      // 0.4.7 §1.4: same rule as the stepwise path — the recorded interval decides the width,
+      // so `thinkMs > 6000` is measured on the human's clock and not on the engine budget.
+      const res = await eng.analyzePosition(prefix, nbestFor(record.times[i]));
       scoreStep(step, res, actual);
       step.budgetMs = opts.thinkMs;
       // 0.3.4 活四停止: a real live four in the position after this hand ends the game, so
@@ -1215,7 +1373,7 @@ async function analyzeGame(record, opts, onProgress) {
       step.analyzed = false;
       step.best = null; step.bestStr = '—';
       step.cands = []; step.candStrs = [];
-      step.top1 = step.top3 = step.top5 = false;
+      step.top1 = step.top3 = step.top5 = step.top8 = false;
       step.outsideTop5 = false;
       step.bestWR = step.actualWR = step.loss = null;
       step.isSharp = false;
@@ -1233,6 +1391,9 @@ async function analyzeGame(record, opts, onProgress) {
   // 0.4.2 §2.3: same pass as the stepwise path, for the same reason — and before buildReport,
   // which is where sideAggregate() reads the flags.
   markEvasion(steps, riskParams(learned).t);
+  // 0.4.7 §1.1: same two steps as the stepwise path, in the same order and for the same reason.
+  recordPrevBestWR(steps);
+  markFourRuns(steps, riskParams(learned).t);
 
   // 0.3.3 C: mark steps whose fingerprint matches a human-confirmed AI move. Done here, on
   // the finished step array, because the match is a post-processing pass over verdicts — it
@@ -1257,11 +1418,20 @@ async function analyzeGame(record, opts, onProgress) {
 // `sharpHit` counted only top-1 hits among the sharp hands — so BOTH terms collapsed together
 // and a game that read 80+ slid into the 50s. Human play does not hug the engine's first few
 // candidates that tightly; being one candidate off is a coordinate, not a different player.
-const PROX = { top1: 1.0, top3: 0.75, top5: 0.55 };
+//
+// 0.4.7 §1.2 flattens the middle to a single 0.80 and adds a Top6-8 tier at 0.50. The 0.4.3
+// split (0.75 / 0.55) said Top4-5 is a materially weaker signal than Top2-3; on the real
+// corpus it is not — the engine's internal ordering beyond its first pick is noisy at a fixed
+// time budget, and the operator's own observation was that the 0.55 tier was the single
+// largest source of understated scores. Top6-8 exists only because §1.4 started ASKING for
+// eight candidates when the recorded thinking time exceeded 6s; on every other hand `top8` is
+// false, so this tier is unreachable and the grade is the 0.4.7 two-tier one. Reading `top8`
+// is therefore safe: it is never true unless the engine was actually asked for eight.
+const PROX = { top1: 1.0, top3: 0.80, top5: 0.80, top8: 0.50 };
 function stepProximity(s) {
   if (s.top1) return PROX.top1;
-  if (s.top3) return PROX.top3;
-  if (s.top5) return PROX.top5;
+  if (s.top5) return PROX.top5;   // Top2-5, one tier: see above
+  if (s.top8) return PROX.top8;   // Top6-8, only ever set on a >6s hand (§1.4)
   return 0;
 }
 
@@ -1300,6 +1470,25 @@ function sideAggregate(steps, side, hasTime, params, opts) {
     : null;
   const outTop5 = avg(s.map(x => x.outsideTop5 ? 1 : 0));
   const desperateCount = s.filter(x => x.desperate).length;
+  // 0.4.7 §1.1: runs of consecutive fours played from a lost position. Counted as RUNS, not
+  // hands: the signal is "this side, losing, fired a forcing sequence that could not work", and
+  // a five-hand run is one such decision rather than five. §1.1's relationship note is explicit
+  // that this does NOT double-count `desperateCount` — a hand can satisfy both predicates, and
+  // each count is of its own predicate over its own unit (a hand vs a run).
+  //
+  // The hands are walked in the table's order and a new run is counted whenever the length
+  // stamped by markFourRuns() differs from the previous hand's. Two adjacent runs of the same
+  // length are separated by a non-four hand (otherwise they would be one run), and that hand
+  // resets `prevLen` to 0 — which is what makes the count exact rather than approximate.
+  const uselessFourCount = s.filter(x => x.fourKind === 'useless').length;
+  const fourRuns = { vcf: 0, useless: 0, defensive: 0 };
+  let prevRun = 0;
+  for (let i = 0; i < s.length; i++) {
+    const x = s[i];
+    const len = x.fourKind ? (x.fourRun || 0) : 0;
+    if (len && len !== prevRun) fourRuns[x.fourKind]++;
+    prevRun = len;
+  }
   // Counted over the side's whole sequence (evasions included, since an evasion is one of
   // them) — see evasionStats. Zero on every hand ⇒ both new terms below are exactly 0.
   const ev = evasionStats(steps, side, t);
@@ -1339,6 +1528,11 @@ function sideAggregate(steps, side, hasTime, params, opts) {
   const aEvasion = clamp(ev.count / 5, 0, 1) * 0.5 +
                    ev.regularity * clamp(ev.count / 4, 0, 1) * 0.5;
   const aWinBlunder = clamp(ev.winBlunders / 3, 0, 1);
+  // 0.4.7 §1.1: the useless-four surcharge. Exactly 0 when the side never played a run of
+  // consecutive fours from a lost position, which is what keeps every earlier release's score
+  // reproducible — the same construction the two terms above use. Full weight at two such
+  // runs (a single one can be a desperate but honest attempt to create a threat).
+  const aUselessFour = clamp(fourRuns.useless / 2, 0, 1);
   // 0.3.3 C: the feature library's similarity match. Only present once 重新学习 has built a
   // library; it then claims `simWeight` of the score and the six base terms are scaled down
   // proportionally, so an unlearned run is bit-identical to 0.3.1. `aiSimilar` is set by
@@ -1354,7 +1548,8 @@ function sideAggregate(steps, side, hasTime, params, opts) {
   // the surcharge is 0 and this is arithmetically the 0.4.1 expression.
   const risk = clamp(100 * (wEff.top1 * aTop1 + wEff.acpl * aAcpl + wEff.sharp * aSharp + wEff.out * aOut
                     + wEff.desperate * aDesperate + wEff.time * aTime + simW * aSim
-                    + wEff.evasion * aEvasion + wEff.winBlunder * aWinBlunder), 0, 100);
+                    + wEff.evasion * aEvasion + wEff.winBlunder * aWinBlunder
+                    + wEff.uselessFour * aUselessFour), 0, 100);
   const level = risk >= t.riskHigh ? '高风险' : (risk >= t.riskMid ? '可疑' : '低风险');
   return {
     side, n, top1, top3, top5, topProx, meanLoss, sharpHit, outTop5, desperateCount,
@@ -1362,11 +1557,16 @@ function sideAggregate(steps, side, hasTime, params, opts) {
     // 0.4.2 §二. n / top1 / meanLoss above deliberately do NOT include these hands; these
     // three fields are the only place they are counted.
     evasionCount: ev.count, evasionRegularity: ev.regularity, winBlunderCount: ev.winBlunders,
+    // 0.4.7 §1.1. Three numbers about the four runs: how many hands carried a useless run
+    // (the thing that scores), and how many runs of each kind there were (reported, so an
+    // operator can tell "one long run" from "three short ones" — the score cannot).
+    uselessFourCount, fourRuns,
     contributions: {
       top1: wEff.top1 * aTop1 * 100, acpl: wEff.acpl * aAcpl * 100, sharp: wEff.sharp * aSharp * 100,
       out: wEff.out * aOut * 100, desperate: wEff.desperate * aDesperate * 100, time: wEff.time * aTime * 100,
       sim: simW * aSim * 100,
       evasion: wEff.evasion * aEvasion * 100, winBlunder: wEff.winBlunder * aWinBlunder * 100,
+      uselessFour: wEff.uselessFour * aUselessFour * 100,
     },
     risk, level,
   };
@@ -1415,10 +1615,19 @@ function segmentSide(steps, side) {
   //    is not re-encoded, i.e. a boundary line drawn through a uniform stretch — and it would
   //    also keep measuring that stretch in two pieces, so a length-2 run sitting inside a
   //    length-7 region would still look "short" and get flipped again.
+  //
+  //    0.4.7 §1.3: `low` runs are EXEMPT from the merge. The old rule deleted any dip shorter
+  //    than three hands, which is precisely the shape §1.3 is about — a 5 + 2 + 4 pattern
+  //    merged its two-hand dip away and read as a clean 11-hand Top5 stretch, i.e. the exact
+  //    opposite of what it is. A short `low` run is a SHORT DELIBERATE DIP, which is one of the
+  //    two things an evasive AI does; only short `high` runs are noise, because a two-hand
+  //    run of top-5 hits inside a long poor stretch really is just two good hands. `low` runs
+  //    are therefore kept at any length, and `high` runs are still merged between them.
   let runs = rle();
   while (runs.length > 1) {
     let shortest = -1, shortLen = Infinity;
     for (let r = 0; r < runs.length; r++) {
+      if (runs[r].kind === 'low') continue;    // 0.4.7 §1.3: a dip is never merged away
       const len = runs[r].to - runs[r].from + 1;
       if (len < MIN_SEGMENT && len < shortLen) { shortLen = len; shortest = r; }
     }
@@ -1471,25 +1680,44 @@ const TYPE_OF_BAND = { suspect: 'suspectAi', pro: 'pro', expert: 'expert', norma
 // the segments: an AI that never left Top5 is a different animal from one that dipped out a
 // few times to look human, and that in turn differs from one that left Top5 repeatedly.
 //
-// §1.5 deliberately defaults the fuzzy edge here, and this is that default: 1-3 low hands is
-// "evasive" (the few dips it takes to break a correlation), 4+ is "strongly evasive".
+// 0.4.7 §1.3 replaces the single "how many low hands in total" count with the SHAPE of the
+// dips. §1.3's own table is the specification:
+//
+//   全程 Top5            -> 低级AI     (no low run at all)
+//   5 + 1 + 4            -> 规避型AI   (one short dip: 1-2 hands)
+//   5 + 2 + 4 + 2 + 3    -> 强规避AI   (more than one dip)
+//   5 + 3 + 4            -> 强规避AI   (one dip of >=3 hands)
+//
+// Two dips is the ``>= 2`` clause regardless of their lengths, and one long dip is the
+// ``lowMax >= 3`` clause. A single short dip is the only shape left, and it is 规避型.
+//
+// `lowTotal` is still reported: it is the number the 0.4.3 classifier used and an operator
+// comparing two archives of the same game should be able to see why the label moved.
 function classifySide(risk, segments, steps, side, thresholds) {
   const band = riskBand(risk, thresholds);
   if (band !== 'ai') {
     return { suspect: band, type: TYPE_OF_BAND[band] || 'normal', auto: true, lowSteps: 0 };
   }
-  let lowSteps = 0;
+  const lowRuns = [];
+  let lowTotal = 0;
   (segments || []).forEach(function (sg) {
     if (sg.kind !== 'low') return;
+    let cnt = 0;
     for (let i = sg.from; i <= sg.to; i++) {
-      if (steps[i] && steps[i].side === side) lowSteps++;
+      if (steps[i] && steps[i].side === side && steps[i].analyzed && !steps[i].isOpening) cnt++;
     }
+    if (cnt > 0) { lowRuns.push(cnt); lowTotal += cnt; }
   });
+  const lowMax = lowRuns.length ? Math.max.apply(null, lowRuns) : 0;
+
   let type;
-  if (lowSteps === 0) type = 'lowAi';
-  else if (lowSteps <= 3) type = 'evasiveAi';
-  else type = 'strongEvasiveAi';
-  return { suspect: 'ai', type, auto: true, lowSteps };
+  if (lowRuns.length === 0) type = 'lowAi';
+  else if (lowRuns.length >= 2 || lowMax >= 3) type = 'strongEvasiveAi';
+  else type = 'evasiveAi';
+  // `lowSteps` keeps its 0.4.3 meaning (the total, not the run count) because storage.js copies
+  // that field and a pre-0.4.7 archive is compared against it. `lowRuns`/`lowMax` travel beside
+  // it so the viewer can say WHY the label is what it is.
+  return { suspect: 'ai', type, auto: true, lowSteps: lowTotal, lowRuns: lowRuns.length, lowMax };
 }
 
 function buildReport(steps, record, opts) {
@@ -1578,6 +1806,12 @@ if (typeof module !== 'undefined' && module.exports) {
     // 0.4.2 §二: the evasion pass and its per-side figures, exported so the unit tests can
     // drive the two thresholds directly instead of only through a full analysis.
     markEvasion, evasionStats,
+    // 0.4.7 §1.1: the four-run pass and the per-step value it classifies with. Exported for the
+    // same reason as the two above — a test that re-derived `prevBestWR` itself would be
+    // testing its own copy of the rule, and the two could drift.
+    markFourRuns, recordPrevBestWR, FOUR_RUN_MIN,
+    // 0.4.7 §1.4: the candidate width the two analysis paths derive from the recorded interval.
+    nbestFor, NBEST_DEFAULT, NBEST_EXTENDED, THINK_MS_EXTENDED,
     // 0.4.3 §1.1/§1.2/§1.5: the proximity grade, the segmenter and the classifier. Exported
     // for the same reason — a test that had to re-implement segmentSide() to check it would
     // be testing its own copy, and the two could drift.
