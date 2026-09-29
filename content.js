@@ -1646,13 +1646,23 @@
     // inside the split `:host{` block would make them bogus declarations.
     ':host{--gm-bg:#161b22;--gm-panel:#1a2029;--gm-head:#1a2029;--gm-line:#2a3441;--gm-line-soft:#22303c;',
     '--gm-txt:#e6edf3;--gm-txt-2:#c8d2dc;--gm-mut:#9aa7b4;--gm-dim:#6e7b8a;--gm-off:#4a5563;',
-    '--gm-lk:#7aa2ff;--gm-in:#0d1117;--gm-bar:#0d1117}',
+    '--gm-lk:#7aa2ff;--gm-in:#0d1117;--gm-bar:#0d1117;',
+    // 0.4.8 §一 — the second tier. Same defect the viewer had: these were inline, so the light
+    // panel went pale and left its banner, hover washes and dividers dark. `--gm-hov` is the
+    // row/menu hover, `--gm-btn-hov` the neutral button hover, `--gm-info-*` the blue banner
+    // (and the .t-run badge), `--gm-div` the in-panel divider.
+    '--gm-hov:#243040;--gm-btn-hov:#33404f;--gm-pri-hov:#4a6cf0;--gm-div:#1b2530;',
+    '--gm-info-bg:#16233d;--gm-info-line:#2f4b8f;--gm-info-fg:#cfe0ff}',
     ':host([data-theme="light"]){--gm-bg:#ffffff;--gm-panel:#f5f5f5;--gm-head:#ececec;--gm-line:#d0d0d0;',
     '--gm-line-soft:#e0e0e0;--gm-txt:#1a1a1a;--gm-txt-2:#333333;--gm-mut:#555555;--gm-dim:#6b6b6b;',
-    '--gm-off:#aaaaaa;--gm-lk:#2a4bd7;--gm-in:#f0f0f0;--gm-bar:#e2e2e2}',
+    '--gm-off:#aaaaaa;--gm-lk:#2a4bd7;--gm-in:#f0f0f0;--gm-bar:#e2e2e2;',
+    '--gm-hov:#ececec;--gm-btn-hov:#d8d8d8;--gm-pri-hov:#3d5fd8;--gm-div:#e0e0e0;',
+    '--gm-info-bg:#e8f0fe;--gm-info-line:#a8c4f0;--gm-info-fg:#1f3f7a}',
     '@media (prefers-color-scheme: light){:host([data-theme="auto"]){--gm-bg:#ffffff;--gm-panel:#f5f5f5;',
     '--gm-head:#ececec;--gm-line:#d0d0d0;--gm-line-soft:#e0e0e0;--gm-txt:#1a1a1a;--gm-txt-2:#333333;',
-    '--gm-mut:#555555;--gm-dim:#6b6b6b;--gm-off:#aaaaaa;--gm-lk:#2a4bd7;--gm-in:#f0f0f0;--gm-bar:#e2e2e2}}',
+    '--gm-mut:#555555;--gm-dim:#6b6b6b;--gm-off:#aaaaaa;--gm-lk:#2a4bd7;--gm-in:#f0f0f0;--gm-bar:#e2e2e2;',
+    '--gm-hov:#ececec;--gm-btn-hov:#d8d8d8;--gm-pri-hov:#3d5fd8;--gm-div:#e0e0e0;',
+    '--gm-info-bg:#e8f0fe;--gm-info-line:#a8c4f0;--gm-info-fg:#1f3f7a}}',
     '*{box-sizing:border-box}',
     '.gm{background:var(--gm-bg);border:1px solid var(--gm-line);border-radius:10px;box-shadow:0 10px 34px rgba(0,0,0,.55);overflow:hidden;display:flex;flex-direction:column;max-height:var(--gm-max);position:relative}',
     // Resized: the height is explicit, so the box fills it and .body does the scrolling.
@@ -1662,7 +1672,7 @@
     // 尺寸上必须配对：`.gm` 的上限是 `--gm-max`，横幅吃掉多少就从里面减掉多少（`--gm-ban`），
     // 否则一块 86vh 的面板再加一条横幅会一起顶出视口。
     '.gmban{display:none;align-items:center;gap:8px;padding:7px 10px;margin-bottom:8px;',
-    'background:#16233d;border:1px solid #2f4b8f;border-radius:10px;font-size:12px;color:#cfe0ff}',
+    'background:var(--gm-info-bg);border:1px solid var(--gm-info-line);border-radius:10px;font-size:12px;color:var(--gm-info-fg)}',
     ':host(.upd) .gmban{display:flex}',
     // 缩略态（只显示评估值）和图标态（48×48）都没有位置放横幅，也不该被它撑大。
     ':host(.mg) .gmban,:host(.cp) .gmban{display:none}',
@@ -1676,23 +1686,23 @@
     ':host(.mg) .gm{display:none}',
     '.mface{display:none;width:48px;height:48px;border-radius:12px;background:var(--gm-bg);border:1px solid var(--gm-line);',
     'box-shadow:0 6px 20px rgba(0,0,0,.5);color:var(--gm-txt);font-size:24px;line-height:46px;text-align:center;cursor:pointer}',
-    '.mface:hover{border-color:#3c5ee7}',
+    '.mface:hover{border-color:var(--gm-lk)}',
     ':host(.mg) .mface{display:block}',
     // 0.3.1 缩略态：只显示评估值，点击任意处恢复完整面板。不带按钮、状态文字或进度条。
     ':host(.cp) .gm{display:none}',
     ':host(.cp) .gmcp{display:block}',
     '.gmcp{display:none;background:var(--gm-bg);border:1px solid var(--gm-line);border-radius:10px;box-shadow:0 10px 34px rgba(0,0,0,.55);overflow:hidden;cursor:grab;user-select:none;touch-action:none}',
-    ':host(.dragging) .gmcp{box-shadow:0 14px 40px rgba(0,0,0,.7);border-color:#3c5ee7}',
+    ':host(.dragging) .gmcp{box-shadow:0 14px 40px rgba(0,0,0,.7);border-color:var(--gm-lk)}',
     '.gmcp .cprow{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:7px 12px}',
     '.gmcp .cpk{font-size:12px;color:var(--gm-mut)}',
     '.gmcp .cpv{font-size:22px;font-weight:600;font-variant-numeric:tabular-nums;line-height:1.1}',
     '.gmcp .cpbar{height:4px;background:var(--gm-in);margin:0 12px 8px}',
-    '.gmcp .cpbar>i{display:block;height:100%;background:#3c5ee7;width:0}',
+    '.gmcp .cpbar>i{display:block;height:100%;background:var(--gm-lk);width:0}',
     // The shrink icon is a tap target (restore); a press that travels drags it instead.
     ':host(.mg) .mface{cursor:pointer}',
     '.hd{display:flex;align-items:center;gap:8px;padding:8px 10px;background:var(--gm-panel);border-bottom:1px solid var(--gm-line);',
     'cursor:move;user-select:none;touch-action:none}',
-    ':host(.dragging) .gm{box-shadow:0 14px 40px rgba(0,0,0,.7);border-color:#3c5ee7}',
+    ':host(.dragging) .gm{box-shadow:0 14px 40px rgba(0,0,0,.7);border-color:var(--gm-lk)}',
     '.hd b{font-weight:500;font-size:13px}',
     '.hd .sp{flex:1}',
     '.hd .lk{color:var(--gm-lk);cursor:pointer;font-size:12px}',
@@ -1719,7 +1729,7 @@
     '.ctx.show{display:block}',
     '.ctx .it{display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:4px;',
     'color:var(--gm-txt-2);cursor:pointer;white-space:nowrap}',
-    '.ctx .it:hover{background:#243040}',
+    '.ctx .it:hover{background:var(--gm-hov)}',
     '.ctx .it .ck{flex:0 0 12px;color:var(--gm-lk)}',
     '.ctx .it[aria-checked=true]{color:var(--gm-txt)}',
     '.x{color:var(--gm-dim);cursor:pointer;font-size:15px;line-height:1;padding:2px 4px}',
@@ -1740,7 +1750,7 @@
     '.warn{color:#f1c40f;border:1px solid #6b5411;background:#2a2410;border-radius:9px;padding:1px 7px;font-size:11px}',
     '.src{color:var(--gm-dim);font-size:10px;border:1px solid var(--gm-line);border-radius:8px;padding:0 6px}',
     '.bar{height:5px;background:var(--gm-in);border-radius:3px;overflow:hidden;margin:2px 0 9px}',
-    '.bar>i{display:block;height:100%;background:#3c5ee7;width:0}',
+    '.bar>i{display:block;height:100%;background:var(--gm-lk);width:0}',
     '.cards{display:grid;grid-template-columns:repeat(4,1fr);gap:7px}',
     '.card{background:var(--gm-in);border:1px solid var(--gm-line-soft);border-radius:7px;padding:7px 6px;text-align:center}',
     '.card .v{font-size:19px;font-weight:500;line-height:1.25}',
@@ -1750,14 +1760,14 @@
     '.q{max-height:190px;overflow:auto}',
     '.qi{padding:6px 9px;border-bottom:1px solid var(--gm-line-soft);cursor:pointer;display:flex;gap:6px;align-items:center;font-size:12px}',
     '.qi:last-child{border-bottom:0}',
-    '.qi:hover{background:#202834}',
+    '.qi:hover{background:var(--gm-hov)}',
     '.qi.on{background:var(--gm-line-soft)}',
     '.qi .no{color:var(--gm-dim);min-width:20px;flex:none}',
     '.qi .nm{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
     '.qi .rk{color:var(--gm-mut);font-size:11px;flex:none}',
     '.tag{font-size:10px;padding:1px 5px;border-radius:9px;border:1px solid transparent;white-space:nowrap;flex:none}',
-    '.t-wait{color:var(--gm-dim);border-color:#39434f}',
-    '.t-run{color:var(--gm-lk);border-color:#2f4b8f;background:#16233d}',
+    '.t-wait{color:var(--gm-dim);border-color:var(--gm-line-soft)}',
+    '.t-run{color:var(--gm-lk);border-color:var(--gm-info-line);background:var(--gm-info-bg)}',
     '.t-done{color:#4ec97b;border-color:#245c39;background:#12291c}',
     '.t-stop{color:#f1c40f;border-color:#6b5411;background:#2a2410}',
     '.t-fail{color:#e74c3c;border-color:#6e2b24;background:#2b1614}',
@@ -1766,14 +1776,14 @@
     '.row label{width:74px;color:var(--gm-mut);font-size:12px;flex:none}',
     'select{flex:1;background:var(--gm-in);color:var(--gm-txt);border:1px solid var(--gm-line);border-radius:6px;padding:4px 6px;font:inherit;font-size:12px}',
     'input[type=number]{width:84px;background:var(--gm-in);color:var(--gm-txt);border:1px solid var(--gm-line);border-radius:6px;padding:4px 6px;font:inherit;font-size:12px}',
-    'input[type=checkbox]{accent-color:#3c5ee7}',
+    'input[type=checkbox]{accent-color:var(--gm-lk)}',
     '.more{margin-top:2px;border-top:1px solid var(--gm-line-soft);padding-top:8px}',
     '.more .row label{width:74px}',
     '.btns{display:flex;flex-wrap:wrap;gap:6px;margin-top:2px}',
     'button{font:inherit;font-size:12px;border:0;border-radius:6px;padding:5px 11px;cursor:pointer;background:var(--gm-line);color:var(--gm-txt)}',
-    'button:hover{background:#33404f}',
-    'button.p{background:#3c5ee7;color:#fff}',
-    'button.p:hover{background:#4a6cf0}',
+    'button:hover{background:var(--gm-btn-hov)}',
+    'button.p{background:var(--gm-lk);color:#fff}',
+    'button.p:hover{background:var(--gm-pri-hov)}',
     'button:disabled{opacity:.45;cursor:default}',
     '.ft{padding:5px 10px;border-top:1px solid var(--gm-line);color:var(--gm-dim);font-size:10px;display:flex;gap:10px}',
     '.note{color:#f1c40f;font-size:11px;margin-top:6px}',
@@ -1785,7 +1795,7 @@
     '.cpnl .chd .sp,.cpnl .cft .sp{flex:1}',
     '.cpnl .cbody{padding:8px 10px;color:var(--gm-txt-2);font-size:11px;line-height:1.5}',
     '.cpnl .ctext{margin-top:6px;padding:6px 8px;background:var(--gm-in);border:1px solid var(--gm-line-soft);border-radius:3px;color:var(--gm-mut);font-size:11px}',
-    '.cpnl .cr{display:flex;gap:8px;align-items:flex-start;padding:6px 10px;border-bottom:1px solid #1b2530;font-size:11px}',
+    '.cpnl .cr{display:flex;gap:8px;align-items:flex-start;padding:6px 10px;border-bottom:1px solid var(--gm-div);font-size:11px}',
     '.cpnl .cq{color:var(--gm-mut);flex:0 0 46%}',
     '.cpnl .ca{color:var(--gm-txt-2);flex:1;word-break:break-word}',
     '.cpnl .cv{flex:0 0 auto;color:var(--gm-dim)}',
@@ -1815,7 +1825,7 @@
       '</div>' +
       '<div class="gm">' +
         '<div class="hd" title="' + esc(T('panel|按住此处拖动面板到任意位置')) + '">' +
-          '<span aria-hidden="true" style="color:#6e7b8a;font-size:12px;line-height:1">⠿</span>' +
+          '<span aria-hidden="true" style="color:var(--gm-dim);font-size:12px;line-height:1">⠿</span>' +
           '<b>' + esc(T('panel|Gomoku 反作弊检测')) + '</b><span class="sp"></span>' +
           '<span class="lk" data-act="open-viewer">' + esc(T('panel|查看器')) + '</span>' +
           '<span class="lk" data-act="copy" data-copy-state="off" title="' +
@@ -2686,10 +2696,10 @@
             '<input type="number" min="0" step="100" data-act="set-ai-think" placeholder="' +
               esc(T('panel|跟随')) + '" value="' +
               (S.aiThinkMs == null ? '' : S.aiThinkMs) + '">' +
-            '<span style="color:#6e7b8a;font-size:11px">' + esc(T('panel|ms，留空=跟随检测思考')) + '</span></div>' +
+            '<span style="color:var(--gm-dim);font-size:11px">' + esc(T('panel|ms，留空=跟随检测思考')) + '</span></div>' +
           '<div class="row"><label>' + esc(T('panel|开局排除')) + '</label>' +
             '<input type="number" min="0" max="40" data-act="set-opening" value="' + (S.openingCutoff || 0) + '">' +
-            '<span style="color:#6e7b8a;font-size:11px">' + esc(T('panel|手')) + '</span></div>' +
+            '<span style="color:var(--gm-dim);font-size:11px">' + esc(T('panel|手')) + '</span></div>' +
           '<div class="row"><label>' + esc(T('panel|线程数')) + '</label>' +
             '<select data-act="select-thread">' +
               // 0.3.7 §二.1: the automatic entry names the count this machine will actually
@@ -2704,10 +2714,10 @@
           '<div class="row"><label>' + esc(T('panel|最小存档')) + '</label>' +
             '<input type="number" min="' + GMStorage.MIN_MOVES_LO + '" max="' + GMStorage.MIN_MOVES_HI +
               '" data-act="set-min-moves" value="' + S.minArchiveMoves + '">' +
-            '<span style="color:#6e7b8a;font-size:11px">' + esc(T('panel|手，不足不存档')) + '</span></div>' +
+            '<span style="color:var(--gm-dim);font-size:11px">' + esc(T('panel|手，不足不存档')) + '</span></div>' +
           '<div class="row" style="margin-bottom:0"><label>' + esc(T('panel|结束自动分析')) + '</label>' +
             '<input type="checkbox" data-act="set-auto"' + (S.autoAnalyze ? ' checked' : '') + '>' +
-            '<span style="color:#6e7b8a;font-size:11px">' + esc(T('panel|对局结束时自动出报告并存档')) + '</span></div>' +
+            '<span style="color:var(--gm-dim);font-size:11px">' + esc(T('panel|对局结束时自动出报告并存档')) + '</span></div>' +
           '<div class="note">' +
             esc(T('panel|引擎：多线程 rapfi-multi-simd128 优先，加载失败自动回退单线程。「自动」= 半核且不超过 16 线程。')) +
           '</div>' +

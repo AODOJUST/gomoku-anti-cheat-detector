@@ -23,6 +23,33 @@
     --bg:#ffffff; --bg-rgb:255,255,255;
     --panel:#f5f5f5; --panel-rgb:245,245,245;
     --line:#d0d0d0; --txt:#1a1a1a; --mut:#555555;
+    /* ---- 0.4.8 §一: the SECOND tier of surface colours ----
+       0.4.7 moved the six top-level surfaces (--bg/--panel/--line/--txt/--mut) onto :root and
+       stopped there. Every rule that needed a colour the six did not name — an inset control,
+       a neutral button, the hover wash, the floating menu, the info banner — kept its 0.4.6
+       dark hex **inline**, so the theme only half-applied: the page went white and the buttons
+       stayed black. That is exactly what the operator photographed.
+
+       The lesson is the one this project keeps relearning: a colour that is written in two
+       places drifts. Every surface colour the viewer uses now has a NAME here, and both
+       palettes below give it a value. The rule below the three blocks is the enforcement:
+       no `#`-literal may appear in the stylesheet outside these definitions.
+
+       --inset    : a control sunk INTO a panel (input/textarea/select/#progress/card figures)
+       --btn      : the neutral button / badge fill (was #2a3441 dark)
+       --btn-hover: hover for --btn
+       --line-soft: a divider INSIDE a panel; --line is the panel's own edge, this is finer
+       --hover    : the row/menu-item hover wash
+       --float    : the floating menus (.colmenu / .ctx) — lifted, so a touch off --panel
+       --info-*   : the blue information surfaces (update banner, 活四停止 warnbox, t-run badge)
+       --chip-*   : the blue "category" chips (acard .cat, .tagchip) and the link colour
+       --dim      : a third text step below --mut, for the 人工标记 placeholder on a white row
+       --txt-2    : a second text step above --mut (badge text that must not be --mut grey) */
+    --inset:#f0f0f0; --btn:#e4e4e4; --btn-hover:#d8d8d8; --line-soft:#e0e0e0;
+    --hover:#ececec; --float:#ffffff;
+    --info-bg:#e8f0fe; --info-line:#a8c4f0; --info-fg:#1f3f7a; --info-strong:#2c4a7a;
+    --chip-fg:#2a4bd7; --chip-line:#a8c0ea;
+    --lk:#2a4bd7; --dim:#9a9a9a; --txt-2:#333333;
     --red:#e74c3c; --green:#2ecc71; --yellow:#f1c40f; --blue:#3c5ee7; --orange:#e67e22;
 
     /* ---- one UI scale for the whole viewer ----
@@ -66,6 +93,12 @@
     --bg:#0f1419; --bg-rgb:15,20,25;
     --panel:#1a2029; --panel-rgb:26,32,41;
     --line:#2a3441; --txt:#e6edf3; --mut:#8b98a5;
+    /* The 0.4.6 values exactly — see the light block above for what each name means. */
+    --inset:#0d1117; --btn:#2a3441; --btn-hover:#38455a; --line-soft:#22303c;
+    --hover:#202834; --float:#1f2733;
+    --info-bg:#16233d; --info-line:#2f4b8f; --info-fg:#cfe0ff; --info-strong:#7fb0ff;
+    --chip-fg:#8fb6ff; --chip-line:#3d5a80;
+    --lk:#7aa2ff; --dim:#5c6773; --txt-2:#c3ccd6;
   }
   /* `auto` is the default and the OS decides. The LIGHT set is already on plain `:root`, so
      only the dark branch needs a media query — and `:root[data-theme=auto]` keeps it from
@@ -75,6 +108,11 @@
       --bg:#0f1419; --bg-rgb:15,20,25;
       --panel:#1a2029; --panel-rgb:26,32,41;
       --line:#2a3441; --txt:#e6edf3; --mut:#8b98a5;
+      --inset:#0d1117; --btn:#2a3441; --btn-hover:#38455a; --line-soft:#22303c;
+      --hover:#202834; --float:#1f2733;
+      --info-bg:#16233d; --info-line:#2f4b8f; --info-fg:#cfe0ff; --info-strong:#7fb0ff;
+      --chip-fg:#8fb6ff; --chip-line:#3d5a80;
+      --lk:#7aa2ff; --dim:#5c6773; --txt-2:#c3ccd6;
     }
   }
   /* ---- 0.4.7 §三.2 透明度 ----
@@ -146,15 +184,15 @@
   #view-detect .main-row > .left-col{flex:0 0 auto;width:calc(530px + 2 * var(--ui-shell-padding) + 2px)}
   .panel{background:var(--panel);border:1px solid var(--line);border-radius:calc(var(--ui-shell-radius) + 4px);padding:var(--ui-shell-padding)}
   .panel h2{font-size:var(--ui-shell-title);margin:0 0 var(--ui-detail-padding);color:var(--mut);font-weight:600;letter-spacing:.5px}
-  textarea{width:100%;height:110px;background:#0d1117;color:var(--txt);border:1px solid var(--line);border-radius:var(--ui-detail-radius);padding:var(--ui-detail-padding);font-family:Consolas,monospace;font-size:var(--ui-detail-small)}
+  textarea{width:100%;height:110px;background:var(--inset);color:var(--txt);border:1px solid var(--line);border-radius:var(--ui-detail-radius);padding:var(--ui-detail-padding);font-family:Consolas,monospace;font-size:var(--ui-detail-small)}
   button{background:var(--blue);color:#fff;border:0;border-radius:var(--ui-shell-radius);padding:0 22px;min-height:var(--ui-shell-btn-height);cursor:pointer;font-size:var(--ui-detail-font)}
-  button.sec{background:#2a3441}
-  button.danger{background:#7a2a2a}
+  button.sec{background:var(--btn);color:var(--txt)}
+  button.danger{background:#7a2a2a;color:#fff}
   button:disabled{opacity:.5;cursor:not-allowed}
   label{font-size:var(--ui-detail-small);color:var(--mut);display:inline-flex;align-items:center;gap:6px;margin-inline-end:14px}
-  select,input[type=number],input[type=text],input[type=datetime-local]{background:#0d1117;color:var(--txt);border:1px solid var(--line);border-radius:var(--ui-detail-radius);padding:8px 10px;font-size:var(--ui-detail-small)}
+  select,input[type=number],input[type=text],input[type=datetime-local]{background:var(--inset);color:var(--txt);border:1px solid var(--line);border-radius:var(--ui-detail-radius);padding:8px 10px;font-size:var(--ui-detail-small)}
   input[type=checkbox]{accent-color:var(--blue);width:20px;height:20px}
-  #progress{height:10px;background:#0d1117;border-radius:5px;overflow:hidden;margin-top:var(--ui-detail-padding)}
+  #progress{height:10px;background:var(--inset);border-radius:5px;overflow:hidden;margin-top:var(--ui-detail-padding)}
   #bar{height:100%;width:0;background:var(--green);transition:width .2s}
   /* max-width lets a board shrink on a narrow window; drawBoard derives every radius and
      font size from cv.width, so the stone numbers scale with it. */
@@ -166,7 +204,7 @@
      fitting on one row. It flexes between 110 and 280 instead. */
   input[type=range]{flex:1 1 90px;min-width:90px;max-width:280px;width:auto;height:26px}
   .score{display:flex;gap:var(--ui-shell-gap);flex-wrap:wrap}
-  .card{flex:1;min-width:150px;background:#0d1117;border:1px solid var(--line);border-radius:var(--ui-detail-radius);padding:var(--ui-detail-padding);text-align:center}
+  .card{flex:1;min-width:150px;background:var(--inset);border:1px solid var(--line);border-radius:var(--ui-detail-radius);padding:var(--ui-detail-padding);text-align:center}
   /* shell-scale figure: it is the headline number, not card fine print */
   .card .big{font-size:37px;font-weight:700}
   .card .lab{font-size:var(--ui-detail-small);color:var(--mut);margin-top:4px}
@@ -207,9 +245,12 @@
   tr.flagged td{background:rgba(231,76,60,.12);box-shadow:inset 0 0 0 9999px rgba(231,76,60,.14)}
   td.side-B{background:var(--side-b-bg);color:var(--side-b-fg);font-weight:600;border-radius:4px}
   td.side-W{background:var(--side-w-bg);color:var(--side-w-fg);font-weight:600;border-radius:4px}
-  /* The 人工标记 placeholder is --mut (#8b98a5) grey, which reads on the dark panel but
-     disappears on a white row — the one place the new row colour needed a companion rule. */
-  tr.side-W td.ma .ma-off{color:#5c6773}
+  /* The 人工标记 placeholder needs a THIRD text step. It used to be --mut (#8b98a5 dark), which
+     reads on the dark panel but disappears on a white row; and the 0.4.7 light palette made the
+     white row the DEFAULT, so the companion rule below is what keeps it visible there. --dim is
+     that third step, and it is a variable rather than a one-off hex so the dark palette can
+     still put back the exact #5c6773 it shipped. */
+  tr.side-W td.ma .ma-off{color:var(--dim)}
   .scroll{max-height:64vh;overflow:auto}
   .badge{padding:2px 10px;border-radius:var(--ui-detail-radius);font-size:var(--ui-detail-small)}
   /* The opening is a headline fact about the game, not a figure to be read out of a table,
@@ -251,9 +292,9 @@
   .tbadge.evasive-ai{background:#9a3412;color:#ffe4d1}
   .tbadge.strong-evasive-ai{background:#7c2d12;color:#ffd9d9}
   .tbadge.suspect-ai{background:#3f3208;color:#f5d97a}
-  .tbadge.pro{background:#16233d;color:#8fb6ff}
+  .tbadge.pro{background:var(--info-bg);color:var(--chip-fg);border:1px solid var(--chip-line)}
   .tbadge.expert{background:#1d3b2a;color:#7fe0a3}
-  .tbadge.normal{background:#2a3441;color:#c3ccd6}
+  .tbadge.normal{background:var(--btn);color:var(--txt-2)}
   /* The `*` that says a class was set by hand rather than derived. Its own element, not a
      character glued onto the label, so a long translated label cannot swallow it. */
   .tbadge .man{opacity:.9;margin-inline-start:3px}
@@ -274,9 +315,9 @@
   .tabpane.active{display:block}
 
   /* ---- nav ---- */
-  .nav{display:flex;gap:4px;background:#0d1117;border:1px solid var(--line);border-radius:var(--ui-shell-radius);padding:4px}
+  .nav{display:flex;gap:4px;background:var(--inset);border:1px solid var(--line);border-radius:var(--ui-shell-radius);padding:4px}
   .navbtn{background:transparent;color:var(--mut);font-size:var(--ui-shell-nav);padding:8px 22px;border-radius:var(--ui-detail-radius)}
-  .navbtn:hover{background:#202834;color:var(--txt)}
+  .navbtn:hover{background:var(--hover);color:var(--txt)}
   .navbtn.active{background:var(--blue);color:#fff}
   .view{display:none}
   .view.active{display:block}
@@ -289,7 +330,7 @@
   .col-toggle{display:inline-block;margin-inline-end:5px;font-size:9px;opacity:.4;cursor:pointer;
               vertical-align:middle;user-select:none}
   .col-toggle:hover{opacity:1;color:var(--blue)}
-  .colmenu{position:fixed;z-index:200;background:#1f2733;border:1px solid var(--line);
+  .colmenu{position:fixed;z-index:200;background:var(--float);border:1px solid var(--line);
            border-radius:var(--ui-shell-radius);padding:12px 16px;min-width:210px;
            box-shadow:0 10px 30px rgba(0,0,0,.6)}
   .colmenu .cmh{color:var(--mut);font-size:var(--ui-detail-small);letter-spacing:.4px;
@@ -297,13 +338,13 @@
   .colmenu .cmrow{display:flex;align-items:center;gap:9px;padding:4px 2px;
                   font-size:var(--ui-detail-small);color:var(--txt);cursor:pointer;
                   white-space:nowrap;margin:0}
-  .colmenu .cmrow:hover{color:#cfe0ff}
+  .colmenu .cmrow:hover{color:var(--lk)}
   .colmenu .cmrow input[type=checkbox]{width:16px;height:16px;margin:0}
   .colmenu .cmrow.fixed{color:var(--mut);cursor:default}
   .colmenu .cmft{display:flex;gap:8px;margin-top:10px;padding-top:10px;
                  border-top:1px solid var(--line);flex-wrap:wrap}
   .colmenu .cmft button{min-height:0;padding:4px 10px;font-size:var(--ui-detail-small);
-                        background:#2a3441;border-radius:var(--ui-detail-radius)}
+                        background:var(--btn);color:var(--txt);border-radius:var(--ui-detail-radius)}
 
   /* ---- replay list ---- */
   .filters-bar{display:flex;align-items:center;gap:var(--ui-shell-gap);flex-wrap:wrap}
@@ -340,7 +381,7 @@
   /* §2.3: statistics as cards. `.card` above is the DETECT score card and carries a coloured
      level class; these are plain figures, so they get their own pair of names. */
   .stat-cards{display:flex;gap:12px;flex-wrap:wrap}
-  .stat-card{flex:1 1 160px;background:#0d1117;border:1px solid var(--line);
+  .stat-card{flex:1 1 160px;background:var(--inset);border:1px solid var(--line);
              border-radius:var(--ui-detail-radius);padding:12px;text-align:center}
   .stat-card .big{font-size:22px;font-weight:600;color:var(--txt);font-variant-numeric:tabular-nums}
   .stat-card .big.sm{font-size:var(--ui-detail-font);font-weight:500;font-variant-numeric:normal}
@@ -349,12 +390,12 @@
      §一.4 puts it「导航栏下方、.wrap 之上」and requires a FLOW layout — it pushes the page
      down instead of covering it, so nothing underneath becomes unclickable. */
   .updban{display:flex;align-items:center;gap:12px;flex-wrap:wrap;
-          padding:10px var(--ui-shell-padding);background:#16233d;
-          border-bottom:1px solid #2f4b8f;font-size:var(--ui-detail-small);color:#cfe0ff}
+          padding:10px var(--ui-shell-padding);background:var(--info-bg);
+          border-bottom:1px solid var(--info-line);font-size:var(--ui-detail-small);color:var(--info-fg)}
   .updban.hidden{display:none}
   .updban .bt{color:var(--txt);font-weight:600}
   .updban .sp{flex:1}
-  .updban .blk{color:#7aa2ff;cursor:pointer;white-space:nowrap}
+  .updban .blk{color:var(--lk);cursor:pointer;white-space:nowrap}
   .updban .blk:hover{text-decoration:underline}
   .alist{margin-top:var(--ui-detail-padding)}
   /* 0.3.5 §2.2: this sticks in the VIEWPORT (its panel has no overflow), so once the header
@@ -369,8 +410,8 @@
   /* The card box is shell (padding/radius), its contents are detail. Card height is what
      sets list density: at ×2 inside, a card was ~135px tall and only four fitted on a
      1440×900 window; at ×1.2 it is ~66px and eight do, which is what the spec asks for. */
-  .acard{display:flex;gap:var(--ui-shell-gap);align-items:center;padding:var(--ui-detail-padding) var(--ui-shell-padding);border-bottom:1px solid #22303c;cursor:pointer;font-size:var(--ui-detail-font)}
-  .acard:hover{background:#202834}
+  .acard{display:flex;gap:var(--ui-shell-gap);align-items:center;padding:var(--ui-detail-padding) var(--ui-shell-padding);border-bottom:1px solid var(--line-soft);cursor:pointer;font-size:var(--ui-detail-font)}
+  .acard:hover{background:var(--hover)}
   .acard .ico{width:12px;height:12px;border-radius:50%;flex:none}
   .acard .body{flex:1;min-width:0}
   /* display:block matters: these are <span>s in the markup, and an inline box ignores
@@ -378,17 +419,17 @@
      collapsed onto one wrapping line. */
   .acard .nm{display:block;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .acard .meta{display:block;font-size:var(--ui-detail-small);color:var(--mut);margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-  .acard .cat{font-size:var(--ui-detail-small);padding:2px 12px;border-radius:14px;border:1px solid #3d5a80;background:#16233d;color:#8fb6ff;flex:none}
+  .acard .cat{font-size:var(--ui-detail-small);padding:2px 12px;border-radius:14px;border:1px solid var(--chip-line);background:var(--info-bg);color:var(--chip-fg);flex:none}
   .empty{padding:44px;text-align:center;color:var(--mut);font-size:var(--ui-detail-font)}
   /* Pagination, 15 per page. Without it the list is one 12 000px scroll once the 200-archive
      cap is anywhere near full, and "which game was that" stops being answerable by scrolling.
      The pager buttons opt out of the global button height — they are list chrome, not actions. */
   .pager{display:flex;align-items:center;gap:var(--ui-detail-padding) var(--ui-shell-gap);flex-wrap:wrap;
-         padding:var(--ui-detail-padding) var(--ui-shell-padding);border-top:1px solid #22303c}
+         padding:var(--ui-detail-padding) var(--ui-shell-padding);border-top:1px solid var(--line-soft)}
   .pager .pin{font-size:var(--ui-detail-small);color:var(--mut)}
   .pager .pgs{display:flex;gap:4px;flex-wrap:wrap}
-  .pager button{min-height:0;padding:4px 10px;font-size:var(--ui-detail-small);background:#2a3441;
-                border-radius:var(--ui-detail-radius)}
+  .pager button{min-height:0;padding:4px 10px;font-size:var(--ui-detail-small);background:var(--btn);
+                color:var(--txt);border-radius:var(--ui-detail-radius)}
   .pager button.on{background:var(--blue);color:#fff}
   .pager button:disabled{opacity:.4;cursor:not-allowed}
 
@@ -400,9 +441,9 @@
      read, and at the old density a name plus two metadata lines inside ~45px was the part
      that was actually hard to read. 15 cards per column is unchanged, so a column is now
      ~1800px and fewer columns fit; that is the intended trade. */
-  .archive-grid .acard{border:1px solid #22303c;border-radius:var(--ui-detail-radius);
-                background:#0d1117;padding:var(--ui-detail-padding) 14px;
-                min-height:120px;font-size:calc(var(--ui-detail-font) * 1.2)}
+  .archive-grid .acard{border:1px solid var(--line-soft);border-radius:var(--ui-detail-radius);
+               background:var(--inset);padding:var(--ui-detail-padding) 14px;
+               min-height:120px;font-size:calc(var(--ui-detail-font) * 1.2)}
   .archive-grid .acard .nm{font-size:calc(var(--ui-detail-font) * 1.2)}
   .archive-grid .acard .meta{font-size:calc(var(--ui-detail-small) * 1.2)}
   /* The serial number and the tag chips sit inside the same card, so they scale with it —
@@ -413,15 +454,15 @@
      the second column, not below card 1, so without a number the order reads as random. */
   /* 0.3.5 §2.3: the box grows with the text it holds (see .archive-grid .acard above). */
   .archive-grid .dno{display:inline-flex;align-items:center;justify-content:center;
-                min-width:26px;height:26px;margin-inline-end:10px;flex:none;
-                background:#0d1117;border:1px solid var(--line);border-radius:6px;
-                font-size:calc(var(--ui-detail-small) * 1.2);color:var(--mut)}
+               min-width:26px;height:26px;margin-inline-end:10px;flex:none;
+               background:var(--panel);border:1px solid var(--line);border-radius:6px;
+               font-size:calc(var(--ui-detail-small) * 1.2);color:var(--mut)}
   /* 0.3.4 二.2 批量选择：勾选框 + 选中态。选中态必须一眼可辨，否则批量删除点下去前
      操作者无法确认自己到底勾了哪几个。 */
   .acard .tick{flex:none;font-size:15px;line-height:1;color:var(--mut);user-select:none}
   .acard .tick.on{color:var(--blue)}
-  .archive-grid.bulk .acard.sel{border-color:var(--blue);background:#152036}
-  .archive-grid.bulk .acard.sel .nm{color:#cfe0ff}
+  .archive-grid.bulk .acard.sel{border-color:var(--blue);background:var(--info-bg)}
+  .archive-grid.bulk .acard.sel .nm{color:var(--info-fg)}
   /* The manual-AI mark column. Clicking toggles the operator's own verdict on a step;
      distinct colour from the engine's "可疑" badge so the two are never confused. */
   td.ma{cursor:pointer;user-select:none}
@@ -436,8 +477,8 @@
      as one blue block would lose that. */
   td.annotations{white-space:nowrap}
   .ann-btn{min-height:0;padding:2px 7px;margin:0 3px 0 0;font-size:var(--ui-detail-small);
-           background:#2a3441;color:var(--mut);border-radius:5px;border:1px solid transparent;line-height:1.6}
-  .ann-btn:hover{color:var(--txt);background:#38455a}
+           background:var(--btn);color:var(--mut);border-radius:5px;border:1px solid transparent;line-height:1.6}
+  .ann-btn:hover{color:var(--txt);background:var(--btn-hover)}
   .ann-btn.on{background:#1d4ed8;color:#fff;border-color:#5b8cff}
   .ann-btn.on[data-label="判断错误"]{background:#7a2a2a;border-color:#c06060}
   .ann-btn.on[data-label="无用冲四"]{background:#8a5a10;border-color:#d0a050}
@@ -448,13 +489,13 @@
   .ann-btn.on[data-label="豁免"]{background:#245c39;border-color:#4ec97b}
   .ann-btn.on[data-label="冲四"]{background:#7a4a2a;border-color:#d0a050}
   /* The per-step note row, revealed by clicking anywhere on the step row (§2.2). */
-  tr.step-note>td{padding:6px 10px;text-align:start;background:#141a22}
+  tr.step-note>td{padding:6px 10px;text-align:start;background:var(--inset)}
   tr.step-note textarea{height:46px;font-size:var(--ui-detail-small)}
   tr.step-note .snote-hint{color:var(--mut);font-size:var(--ui-detail-small)}
   /* 标签 (§1.6): a chip is a toggle. Preset and custom chips are visually distinct so a
      user-created tag never looks like part of the fixed vocabulary. */
   .tagchip{display:inline-block;padding:3px 12px;margin:3px 5px 3px 0;border-radius:12px;
-           border:1px solid #3d5a80;background:#16233d;color:#8fb6ff;
+           border:1px solid var(--chip-line);background:var(--info-bg);color:var(--chip-fg);
            font-size:var(--ui-detail-small);cursor:pointer;user-select:none}
   .tagchip:hover{border-color:#5b8cff}
   .tagchip.on{background:#1d4ed8;color:#fff;border-color:#5b8cff}
@@ -472,20 +513,20 @@
   .ltable td,.ltable th{padding:5px 12px;text-align:start;white-space:nowrap}
   .ltable td.num{text-align:end;font-family:Consolas,monospace}
   .ltable .up{color:var(--red)} .ltable .down{color:var(--green)} .ltable .same{color:var(--mut)}
-  .lbox{background:#0d1117;border:1px solid var(--line);border-radius:var(--ui-detail-radius);
+  .lbox{background:var(--inset);border:1px solid var(--line);border-radius:var(--ui-detail-radius);
         padding:var(--ui-detail-padding) 14px;margin-top:var(--ui-detail-padding)}
   .lbox b{color:var(--txt)}
   /* 学习结果 summary cards */
   .lcards{display:flex;gap:var(--ui-shell-gap);flex-wrap:wrap;margin-top:var(--ui-detail-padding)}
-  .lcard{flex:1;min-width:150px;background:#0d1117;border:1px solid var(--line);
+  .lcard{flex:1;min-width:150px;background:var(--inset);border:1px solid var(--line);
          border-radius:var(--ui-detail-radius);padding:var(--ui-detail-padding);text-align:center}
   .lcard .big{font-size:30px;font-weight:700}
   .lcard .lab{font-size:var(--ui-detail-small);color:var(--mut);margin-top:3px}
 
   /* ---- context menu ---- */
-  .ctx{position:fixed;z-index:9999;background:#1f2733;border:1px solid var(--line);border-radius:var(--ui-shell-radius);padding:6px;min-width:250px;box-shadow:0 8px 26px rgba(0,0,0,.6);font-size:var(--ui-detail-font)}
+  .ctx{position:fixed;z-index:9999;background:var(--float);border:1px solid var(--line);border-radius:var(--ui-shell-radius);padding:6px;min-width:250px;box-shadow:0 8px 26px rgba(0,0,0,.6);font-size:var(--ui-detail-font)}
   .ctx .it{padding:10px 16px;border-radius:var(--ui-detail-radius);cursor:pointer;display:flex;gap:14px;align-items:center;white-space:nowrap}
-  .ctx .it:hover{background:#2f3b4c}
+  .ctx .it:hover{background:var(--hover)}
   .ctx .it.danger{color:#ff8c7f}
   .ctx .sep{height:1px;background:var(--line);margin:6px 4px}
   .ctx .ti{padding:6px 16px 10px;color:var(--mut);font-size:var(--ui-detail-small);letter-spacing:.4px}
@@ -499,7 +540,7 @@
   .modal .ft{padding:16px 24px;border-top:1px solid var(--line);display:flex;gap:14px;justify-content:flex-end}
   .modal input[type=text]{width:100%;font-size:var(--ui-detail-font);padding:10px}
   .modal button{font-size:var(--ui-detail-font);padding:0 22px;min-height:var(--ui-shell-btn-height);border-radius:var(--ui-shell-radius)}
-  .crow{display:flex;align-items:center;gap:14px;padding:10px 0;border-bottom:1px solid #22303c;font-size:var(--ui-detail-font)}
+  .crow{display:flex;align-items:center;gap:14px;padding:10px 0;border-bottom:1px solid var(--line-soft);font-size:var(--ui-detail-font)}
   .crow .cn{flex:1}
 
   /* ---- detail ---- */
@@ -514,8 +555,8 @@
            margin-top:16px;font-size:var(--ui-detail-font);line-height:1.7}
   .warnbox b{display:block;color:var(--yellow);font-size:var(--ui-detail-large);margin-bottom:4px}
   /* 0.3.1 活四停止 banner: blue, distinct from the yellow data-incompleteness box. */
-  .warnbox.term{border-color:#2c4a7a;border-inline-start-color:var(--blue);background:#16233d}
-  .warnbox.term b{color:#7fb0ff}
+  .warnbox.term{border-color:var(--info-line);border-inline-start-color:var(--blue);background:var(--info-bg)}
+  .warnbox.term b{color:var(--info-strong)}
   .dgrid{display:flex;gap:var(--ui-shell-gap);align-items:flex-start;flex-wrap:wrap;margin-top:var(--ui-detail-padding)}
   /* The board column may shrink — its canvas is max-width:100% — so the info column keeps
      its width and the board gives way. The alternative (info pushed onto its own row) buries
