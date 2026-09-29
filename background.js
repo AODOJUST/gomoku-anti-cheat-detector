@@ -18,6 +18,8 @@
 importScripts('i18n.js',
   'locale/zh-CN.js', 'locale/zh-TW.js', 'locale/ja.js', 'locale/ko.js',
   'locale/en.js', 'locale/ru.js', 'locale/fr.js', 'locale/de.js',
+  'locale/vi.js', 'locale/es.js', 'locale/ms.js', 'locale/ar.js', 'locale/mn.js',
+  'llm.js',
   'storage.js');
 
 var LANG_MENU = 'gm-lang';
@@ -48,7 +50,10 @@ function buildLangMenu(setting) {
       createMenu({
         id: LANG_PREFIX + code,
         parentId: LANG_MENU,
-        title: GMI18n.t('lang.' + code),
+        // 0.4.6 §2.4 — same label format as the panel and the viewer dropdown: 「English（英语）」.
+        // The context menu is where it matters most, because a submenu of thirteen endonyms is
+        // the one place the operator cannot see which language they are reading it in.
+        title: GMI18n.langLabel(code),
         type: 'radio',
         checked: code === lang,
         contexts: ['action'],
@@ -90,7 +95,11 @@ chrome.storage.onChanged.addListener(function (changes, area) {
   GMI18n.setLocale(lang);
   updateMenu(LANG_MENU, { title: GMI18n.t('menu.lang') });
   GMI18n.LOCALES.forEach(function (code) {
-    updateMenu(LANG_PREFIX + code, { checked: code === lang });
+    // 0.4.6 §2.4 — the title is refreshed too, not just the checkmark. `langLabel()` renders
+    // 「English（英语）」, whose parenthetical is written in the CURRENT language, so every label
+    // changes when the language does. Leaving the old titles in place would keep the menu in the
+    // language the operator just switched away from until the next service-worker restart.
+    updateMenu(LANG_PREFIX + code, { checked: code === lang, title: GMI18n.langLabel(code) });
   });
 });
 
@@ -277,6 +286,18 @@ chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
   if (msg.type === 'gm-check-update') {
     checkForUpdate(true)
       .then(function (r) { sendResponse(r); })
+      .catch(function (e) { sendResponse({ ok: false, error: String((e && e.message) || e) }); });
+    return true;
+  }
+
+  // 0.4.4 §十七 — the LLM call. It has to live in the worker: a content script's `fetch` is
+  // bound to the PAGE's origin (Chrome 85+), so a request to api.openai.com from there is a
+  // cross-origin request the provider answers without CORS headers, and it fails. The worker
+  // runs on the extension origin and holds the optional host permission, so the same request
+  // succeeds. `GMLLM.fetchDirect` is the single implementation — this handler only relays.
+  if (msg.type === 'gm-llm') {
+    GMLLM.fetchDirect(msg.prompt, msg.opts || {})
+      .then(function (text) { sendResponse({ ok: true, text: text }); })
       .catch(function (e) { sendResponse({ ok: false, error: String((e && e.message) || e) }); });
     return true;
   }

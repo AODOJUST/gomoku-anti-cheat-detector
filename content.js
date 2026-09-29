@@ -49,7 +49,16 @@
     // The host page's <html lang> belongs to gomoku.com, so i18n.js only tags it with
     // data-gm-lang; the panel's own subtree carries the real lang attribute for font
     // resolution (CJK vs Cyrillic vs Latin metrics differ enough to shift the layout).
-    if (root && root.host) root.host.setAttribute('lang', LANG);
+    //
+    // 0.4.6 §二.2: `dir` is set here for the same reason and with the same split — i18n.js puts
+    // `data-gm-dir` on the host document (setting `dir="rtl"` on gomoku.com itself would mirror
+    // the site's own board and chat, which are not ours to mirror), and the panel's shadow host
+    // is the subtree that actually flips. Every `margin-inline-*` / `text-align: start` in the
+    // panel's CSS reads this attribute.
+    if (root && root.host) {
+      root.host.setAttribute('lang', LANG);
+      root.host.setAttribute('dir', GMI18n.dirFor(LANG));
+    }
   }
 
   // ---------- settings (persisted, shared with viewer.html) ----------
@@ -99,7 +108,32 @@
   // single-thread, or an explicit thread count on a multi build).
   var engineNote = '';
 
-  function isRenju() { return /\/renju/i.test(location.pathname); }
+  // 0.4.5 §一 — which host we are on, and what its board looks like. Everything site-specific
+  // lives in sites.js; this is the only place the rest of the file has to know about it.
+  // `GMSites.current()` returns null on an unrecognised host, in which case every board reader
+  // below abstains rather than guessing at gomoku.com's DOM on someone else's page.
+  function site() { return (typeof GMSites !== 'undefined' && GMSites) ? GMSites.current() : null; }
+
+  // §二.2 — the rule in force: the operator's explicit choice wins, otherwise infer from the
+  // site (gomoku.com's /renju/ path). `S.rule === null` means "auto".
+  function isRenju() {
+    if (S.rule != null) return S.rule === 2;
+    return (typeof GMSites !== 'undefined' && GMSites) ? GMSites.isRenju() : false;
+  }
+
+  // 0.4.5 §二.2 — ONE owner for "which rule is in force". The decision was about to be written
+  // in three places (the analysis options, the record's meta, the archive entry), and this
+  // project has twice shipped a silently wrong answer that existed in three copies (the
+  // chat-adjustment side, the risk-card 「交流」 flag). So: `ruleCode()` decides once, and every
+  // label is derived from it rather than from `isRenju()` directly — otherwise a manual 连珠 on a
+  // site with no /renju/ path would be analysed under 禁手 and filed as 自由.
+  function ruleCode() {
+    if (S.rule != null) return S.rule;              // 0 自由 / 1 标准 / 2 连珠
+    return isRenju() ? 2 : 0;
+  }
+  // The archive / viewer label. Its schema is binary ('renju' | 'freestyle'), so 标准 (长连不赢,
+  // no 禁手) shares the freestyle bucket — it is closer to 自由 than to 连珠.
+  function ruleLabel() { return ruleCode() === 2 ? 'renju' : 'freestyle'; }
 
   // ---------- clock alignment (0.4.1 §三.2) ----------
   // Two clocks stamp moves: hook.js (MAIN world) stamps every socket move, and this file
@@ -181,9 +215,12 @@
   }
 
   // ---------- opening (RIF 26) ----------
-  // A collected stone -> the app's own board coordinates: x = column, y = row counted
-  // downward (see openings.js). `14 - row` is the same flip `toRecord` does, so a move that
-  // goes through both agrees.
+  // A collected stone -> the app's own board coordinates: x = column (0 = left), y = row counted
+  // DOWN from the top (0 = top) — see `shareToCoord` in app.js, "y:0=top -> number = SIZE - y".
+  // The collector's `row` counts the other way (gomoku.com's data-row 0 is the BOTTOM row, i.e.
+  // share A1), so `14 - row` is the flip. `toRecord` does the same flip, which is why a move that
+  // goes through both agrees. 0.4.5 §一: sites.js performs the equivalent flip for papergames.io,
+  // whose table rows count from the top, so `m.row` means the same thing on both hosts.
   function movePoint(m) { return [m.col, 14 - m.row]; }
 
   // The opening of the CURRENT game, or null.
@@ -236,7 +273,7 @@
       // colour alternation the per-side statistics rely on.
       if (seen[key]) { dups++; continue; }
       seen[key] = true;
-      pts.push([m.col, 14 - m.row]);          // board row 0 = top; app.js y counts from bottom
+      pts.push([m.col, 14 - m.row]);          // board row 0 = BOTTOM (share A1); app.js y 0 = top
       stones.push(m.stone || null);           // 1 = black, 2 = white — the side's ground truth
       // An interval is only meaningful between two CONSECUTIVE observed moves. A
       // stone recovered from a board render carries no timestamp, and the gap that
@@ -262,7 +299,7 @@
       // `prejoin` = order unrecoverable, position exact. Never scored, always replayed.
       meta: {
         source: fromSocket() ? 'socket' : 'dom',
-        rule: isRenju() ? 'renju' : 'freestyle',
+        rule: ruleLabel(),
         // The RIF opening, derived from the first three KEPT moves (the dedup above can drop
         // one, and then "move 3" would not be the third stone). 0.4.2 §一: when the order is
         // unknown the roles are recovered from the positions instead of the whole thing being
@@ -317,7 +354,9 @@
 
   function baseOpts() {
     return {
-      rule: isRenju() ? 2 : 0,
+      // §二.2 — an explicit rule (0 自由 / 1 标准 / 2 连珠) wins; otherwise the site decides.
+      // papergames.io has no renju mode, which is exactly why the manual override exists.
+      rule: ruleCode(),
       thinkMs: S.thinkMs,
       openingCutoff: S.openingCutoff,
       suspect: S.suspect,
@@ -337,8 +376,18 @@
   // <h3> elements ship with "Player 1" / "Player 2" before `spectate-joined` fills them in).
   // Without them the detector reads the placeholder as a real name and archives the game
   // as "Player 1 vs Player 2" whenever it attaches before the roster arrives.
+  //
+  // 0.4.6: `waiting` / `unknown` / `anonymous` / `guest` are the same defence for papergames.io.
+  // Its player row simply does not exist until BOTH sides are seated (verified — sampling the row
+  // once a second during matchmaking showed `cols=[]` until the opponent joined, never a
+  // placeholder name), so these four are belt-and-braces rather than something observed. They are
+  // exact matches, so a real user called "Guest123" is unaffected; the cost is that a user who
+  // deliberately picks one of these four words gets no name, and the naming rule then falls back
+  // to 黑方 VS 白方. A leaked placeholder is the worse of the two failures: it is a wrong name that
+  // looks like a right one.
   var NAME_PLACEHOLDERS = ['you', 'opponent', 'player', 'player2', 'player 1', 'player 2',
-                           'spectating', '你', '您', '对手', '對手', '玩家', ''];
+                           'spectating', 'waiting', 'unknown', 'anonymous', 'guest',
+                           '你', '您', '对手', '對手', '玩家', ''];
 
   // Selectors seen in the wild, best first. Kept as a list rather than one CSS query so
   // a site-side rename degrades to "no name" instead of "wrong name".
@@ -348,9 +397,9 @@
     // label the opponent white and you unknown ("黑 ? / 白 Bob"), which is a worse lie
     // than admitting the colours are unknown.
     //
-    // 观战 (spectator) pages name the sides too, in their own container — those selectors
-    // belong here precisely BECAUSE they carry the colour, unlike the unlabelled list that
-    // `spectatorPair()` handles below.
+  // 观战 (spectator) pages name the sides too, in their own container — those selectors
+  // belong here precisely BECAUSE they carry the colour, unlike the unlabelled list that
+  // `pairFrom()` handles below.
     //
     // The 观战 page is a SEPARATE document (/spectate/, its own spectate.js) and shares no
     // markup with the play page: its names live in #spectate-player1-name / -player2-name,
@@ -384,6 +433,41 @@
                            '.spectator-players .player-name, .game-players .name, ' +
                            '.spectator-player .name, .game-players .player-name';
 
+  // 0.4.6 §一: the selectors are per-site now. gomoku.com's table is deliberately NOT wrapped,
+  // rewritten or normalised — `nameSelectors()` hands back `DOM_NAME_SEL` verbatim for it, which
+  // is what makes §1.6's "gomoku.com 的玩家名采集不受影响" true by construction instead of by luck.
+  var GOMOKU_NAME_SEL = {
+    black: DOM_NAME_SEL.black, white: DOM_NAME_SEL.white,
+    self: DOM_NAME_SEL.self, opponent: DOM_NAME_SEL.opponent,
+    // The 观战 page's side-by-side names. No colour on them, and no account menu to orient them
+    // with either — a spectator is not one of the two players, so DOM order is the only meaning
+    // these names can carry.
+    pair: SPECTATOR_PAIR_SEL,
+    selfName: null,
+    spectator: true,
+  };
+
+  function nameSelectors() {
+    var st = (typeof GMSites !== 'undefined' && GMSites) ? GMSites.current() : null;
+    var ps = st && st.playerNameSel;
+    if (!ps) return GOMOKU_NAME_SEL;
+    return {
+      black: ps.black || [], white: ps.white || [],
+      self: ps.self || [], opponent: ps.opponent || [],
+      pair: ps.pair || null,
+      // Which of the pair is us. papergames.io puts no colour anywhere near a name, so this
+      // second signal is the only thing standing between "A VS B" and "B VS A".
+      selfName: ps.selfName || [],
+      spectator: false,
+    };
+  }
+
+  // Names are compared here, never displayed, so the comparison is case- and space-insensitive:
+  // the account menu and the player row are two different renders of the same string.
+  function normName(s) {
+    return (s || '').replace(/\s+/g, ' ').trim().toLowerCase();
+  }
+
   function cleanName(el) {
     if (!el) return null;
     var t = (el.textContent || '').replace(/\s+/g, ' ').trim();
@@ -392,12 +476,32 @@
     return t.slice(0, 40);
   }
 
-  function spectatorPair() {
-    var nodes = document.querySelectorAll(SPECTATOR_PAIR_SEL);
+  // A bare pair of names side by side, with no colour on them and no "you"/"opponent" wording.
+  //
+  // Two very different situations share this shape, and the caller has to know which one it is:
+  //   · 观战 (gomoku.com): we are not one of the two, so DOM order is the whole meaning.
+  //   · papergames.io: we ARE one of the two, and DOM order is NOT the meaning (see sites.js) —
+  //     `oriented` reports whether we managed to establish which side is us.
+  function pairFrom(sels) {
+    if (!sels.pair) return null;
+    var nodes = document.querySelectorAll(sels.pair);
     if (nodes.length < 2) return null;
     var a = cleanName(nodes[0]), b = cleanName(nodes[1]);
     if (!a || !b || a === b) return null;
-    return { self: a, opponent: b };
+    var res = { self: a, opponent: b, oriented: false, spectator: !!sels.spectator };
+    if (res.spectator) return res;
+    // Orient with our own nickname — read from the ACCOUNT MENU, not from the row, because the
+    // row is exactly the thing whose order cannot be trusted. This must be the bare-name element:
+    // every ancestor of it also holds the credit balance, so an ancestor can never match (sites.js
+    // records the live structure). A miss here is not an error — it just leaves the pair in DOM
+    // order, which the caller records as such.
+    var me = normName(domOneOf(sels.selfName || []));
+    if (me) {
+      var na = normName(a), nb = normName(b);
+      if (na === me && nb !== me) res.oriented = true;
+      else if (nb === me && na !== me) { res.self = b; res.opponent = a; res.oriented = true; }
+    }
+    return res;
   }
 
   function domOneOf(sels) {
@@ -417,36 +521,85 @@
     return t.slice(0, 40);
   }
 
-  function playerNames() {
-    var out = { black: null, white: null, source: null };
-    // 1) socket
+  // The names of the two sides, from the strongest source available.
+  //
+  // 0.4.6 §一 changed two things here and nothing else: the selectors now come from the SITE
+  // (`nameSelectors()`) instead of being a gomoku-only constant, and a bare side-by-side pair is
+  // a route of its own. That second part is the whole fix for papergames.io — it has no colour and
+  // no "you"/"opponent" wording anywhere, so before this the record was always nameless there.
+  function readNames() {
+    var sels = nameSelectors();
+    var out = { black: null, white: null, self: null, opponent: null, source: null };
+
+    // 1) socket — the only route that can name a COLOUR, and on gomoku.com the usual one.
     if (socketRec && socketRec.players) {
       out.black = socketRec.players.black || null;
       out.white = socketRec.players.white || null;
       if (out.black || out.white) out.source = 'socket';
     }
+
     // 2) DOM
     if (!out.black && !out.white) {
-      var db = domOneOf(DOM_NAME_SEL.black), dw = domOneOf(DOM_NAME_SEL.white);
+      var db = domOneOf(sels.black), dw = domOneOf(sels.white);
       if (db && dw) { out.black = db; out.white = dw; out.source = 'dom'; }
       else {
         // Side-by-side or not at all: a half-filled black/white pair would put a name on
         // the wrong colour, which is what the archive naming then prints.
-        out.self = domOneOf(DOM_NAME_SEL.self);
-        out.opponent = domOneOf(DOM_NAME_SEL.opponent);
-        if (!out.self && !out.opponent) {
-          // 观战: no "you"/"opponent" wording anywhere, just the two names in a list. Still
-          // no colour, so it fills self/opponent — but it is a real pair of names, and it is
-          // also the one reliable DOM sign that this session is a spectator.
-          var sp = spectatorPair();
-          if (sp) { out.self = sp.self; out.opponent = sp.opponent; out.spectator = true; }
-        }
+        out.self = domOneOf(sels.self);
+        out.opponent = domOneOf(sels.opponent);
         if (out.self || out.opponent) out.source = 'dom';
+        else {
+          var pr = pairFrom(sels);
+          if (pr) {
+            out.self = pr.self; out.opponent = pr.opponent;
+            if (pr.spectator) {
+              // 观战: the pair IS the whole answer, and it is also the one reliable DOM sign that
+              // this session is a spectator. The source stays 'dom' — gomoku.com's recorded value
+              // for this route must not shift in a release that is about papergames.io.
+              out.spectator = true;
+              out.source = 'dom';
+            } else {
+              // Two distinct values, because they are two distinct claims. 'dom-pair' means the
+              // pair was read AND we know which side is us; 'dom-pair-order' means we know the two
+              // names but NOT their orientation, and the record says so instead of pretending.
+              out.source = pr.oriented ? 'dom-pair' : 'dom-pair-order';
+            }
+          }
+        }
       }
     }
     // 3) anonymous — nothing to fill in
     if (!out.source) out.source = 'none';
     return out;
+  }
+
+  // ---------- the name memo (0.4.6 §一) ----------
+  // papergames.io TEARS THE ROOM DOWN when a game ends and puts the lobby back — that is how the
+  // ending is detected at all (`endOnBoardGone`, 0.4.5 §一). By the time `pollEnd` acts, its 2.5 s
+  // grace period has already elapsed since the board disappeared, so `app-room-players` is usually
+  // gone with it. Reading names only at finalize time would therefore find nothing and file the
+  // very nameless record this release exists to fix, so the tick remembers the last good read.
+  //
+  // Cleared in `beginNewGame`, so a memo can only ever belong to the game it was read from.
+  var nameMemo = null;
+
+  function rememberNames() {
+    var n = readNames();
+    // A name that names at least one side is worth keeping; `none` is not, or the memo would be
+    // overwritten by the first empty tick and never survive to the finalize.
+    if (n.source !== 'none') nameMemo = n;
+  }
+
+  function playerNames() {
+    var n = readNames();
+    if (n.source !== 'none') return n;
+    // Nothing readable right now. On a site that tears its markup down at game end that is
+    // EXPECTED at the exact moment the record is built — the board and the player row left
+    // together — so fall back to what the tick saw while the game was still on screen. Everywhere
+    // else the DOM is the truth and the memo is deliberately not consulted.
+    var st = site();
+    if (nameMemo && st && st.endOnBoardGone) return nameMemo;
+    return n;
   }
 
   // ---------- identity: 注册 / 游客 / 观战 ----------
@@ -495,6 +648,18 @@
   async function archiveFromJob(job) {
     var report = job.report;
     if (!report) return null;
+    // 0.4.4 §14 — the chat record rides along with the report, but only when there IS one. A
+    // `chatAdjust` on every archive would be dead weight in the shared 10MB budget, and
+    // `{asks:0,total:0}` is exactly the state a viewer can already infer from its absence.
+    if (chat.asks || chat.history.length) {
+      report.chatAdjust = {
+        side: chatAdjSide(),
+        asks: chat.asks,
+        total: chat.total,
+        how: chat.senderHow || null,
+      };
+      report.chatHistory = chat.history.slice(0, 20);
+    }
     // A null aggregate is a legitimate outcome (every move inside 开局排除, or all of
     // them forced defences) — the record and the per-move verdicts are still worth
     // keeping. Only a report with no verdicts at all is refused.
@@ -534,7 +699,7 @@
         record: record,
         players: players,
         mode: S.mode,
-        rule: isRenju() ? 'renju' : 'freestyle',
+        rule: ruleLabel(),
         suspect: S.suspect,
         outcome: record.meta.outcome,
       });
@@ -569,6 +734,11 @@
   window.addEventListener(EV_EVENT, function (e) {
     var p;
     try { p = JSON.parse(e.detail); } catch (err) { return; }
+    // 0.4.4 §八 — chat rides on its own kind and carries no snapshot (see hook.js:emitChat).
+    if (p && p.kind === 'chat' && p.chat) {
+      onChatMessage(p.chat.text, p.chat.fromId, 'socket:' + (p.chat.evt || '?'));
+      return;
+    }
     if (!p || !p.data || p.data.source !== 'socket') return;
 
     // 0.3.7 §一.1 — ORDER IS LOAD-BEARING for `reset`. It arrives together with a snapshot
@@ -588,6 +758,10 @@
     // 0.4.1 §三.2: put the socket's timestamps on THIS file's clock before they are stored —
     // one correction at the single ingest point beats every consumer remembering to apply it.
     socketRec = alignSocketClock(p.data);
+
+    // §9 — every socket frame is a chance to learn which seat we are. Doing it here (rather than
+    // only when a message arrives) is what lets the operator ask the first question.
+    resolveSenderColour();
 
     if (p.kind === 'reset') {
       ended = false; endedBy = '';
@@ -636,27 +810,16 @@
     paintStatus();
   });
 
-  // The board's intersections. Four selectors, most specific first: the play page's own
-  // container, the 观战 page's own container (`#spectate-board`, a separate document with
-  // its own spectate.js), then any grid container, then the bare intersection class — a
-  // spectator page renders the board under a different wrapper, but the intersections
-  // themselves are the board, so matching them directly is the last honest fallback.
+  // The board's intersections. 0.4.5 §一: the selector list now comes from sites.js, because
+  // papergames.io's board is a <table> of td.cell-<row>-<col> and shares no class with
+  // gomoku.com's. A host we do not recognise yields [] — "no board here" — rather than
+  // gomoku.com's selectors applied to a stranger's page.
   function boardCells() {
-    var cells = document.querySelectorAll('#online-player-board .board-intersection');
-    if (!cells.length) cells = document.querySelectorAll('#spectate-board .board-intersection');
-    if (!cells.length) cells = document.querySelectorAll('.board-grid-container .board-intersection');
-    if (!cells.length) cells = document.querySelectorAll('.board-intersection');
-    return cells;
+    return (typeof GMSites !== 'undefined' && GMSites) ? GMSites.boardCells() : [];
   }
 
   function findGrid() {
-    var g = document.querySelector('#online-player-board .board-grid-container') ||
-            document.querySelector('#spectate-board .board-grid-container') ||
-            document.querySelector('.board-grid-container') ||
-            document.querySelector('.spectator-board .board-grid-container');
-    if (g) return g;
-    var cell = document.querySelector('.board-intersection');
-    return cell ? cell.parentNode : null;
+    return (typeof GMSites !== 'undefined' && GMSites) ? GMSites.findGrid() : null;
   }
 
   // One key convention for a board point, everywhere: `row,col`, in this order. hook.js has
@@ -665,22 +828,14 @@
   // look interchangeable and that is how a future merge/dedup between them goes wrong.
   function cellKey(r, c) { return r + ',' + c; }
 
-  // online.js appends one .stone.black-stone | .stone.white-stone per played cell.
+  // 0.4.5 §一 — the stone encoding is per site: gomoku.com appends a .stone.black-stone |
+  // .stone.white-stone child to a played .board-intersection, while papergames.io puts an
+  // <svg class="symbol"> with a circle-dark (black) / circle-light (white) inside a
+  // td.cell-<row>-<col>. sites.js owns both, and owns the row flip that maps papergames'
+  // top-down rows onto gomoku's bottom-up ones.
   // Returns null when the board has not been built yet (unknown) vs [] for "empty".
   function boardStones() {
-    var cells = boardCells();
-    if (!cells.length) return null;
-    var out = [];
-    for (var i = 0; i < cells.length; i++) {
-      var cell = cells[i];
-      var st = cell.querySelector('.stone');
-      if (!st) continue;
-      var cls = st.classList;
-      var stone = cls.contains('black-stone') ? 1 : cls.contains('white-stone') ? 2 : 0;
-      if (!stone) continue;
-      out.push({ row: parseInt(cell.dataset.row, 10), col: parseInt(cell.dataset.col, 10), stone: stone });
-    }
-    return out;
+    return (typeof GMSites !== 'undefined' && GMSites) ? GMSites.boardStones() : null;
   }
 
   // Reconcile the record against the live board.
@@ -812,10 +967,19 @@
   }
 
   function boardFull() {
+    var st = site();
+    if (!st) return false;
     var cells = boardCells();
     if (cells.length < 225) return false;
-    for (var i = 0; i < cells.length; i++) if (!cells[i].querySelector('.stone')) return false;
+    for (var i = 0; i < cells.length; i++) if (!cells[i].querySelector(st.stoneSel)) return false;
     return true;
+  }
+
+  // 0.4.5 §一 — "there is no board here any more". A site whose board is REMOVED at game end
+  // (papergames.io) uses this as its ending; the move floor keeps a page that simply has no
+  // board yet from ending a game that never started.
+  function boardGone() {
+    return activeMoves().length >= 4 && boardCells().length === 0;
   }
 
   // ---------- five in a row: the game really is over ----------
@@ -831,6 +995,10 @@
   // A five cannot exist in a position that is still being played.
   var FIVE_GRACE_MS = 3000;      // let the site's own overlay/socket event win the race
   var fiveSince = 0;
+  // 0.4.5 §一 — sites whose board is REMOVED when the game ends (papergames.io returns to the
+  // lobby). Held for a grace period because a re-render can unmount the table for a moment.
+  var GONE_GRACE_MS = 2500;
+  var goneSince = 0;
 
   function sideWithFive(moves) {
     var grid = {}, i, d, k;
@@ -901,6 +1069,7 @@
 
   function pollEnd() {
     if (!ended) {
+      var st = site();
       var o = document.querySelector('.game-end-overlay');
       var ep = null;
       if (o && !o.classList.contains('hidden')) {
@@ -910,6 +1079,18 @@
       } else if ((ep = endProbe())) {
         // Only evaluated when every earlier branch missed, so the DOM scan happens once.
         endGame('结算文案（' + ep + '）');
+      } else if (st && st.endOnBoardGone && boardGone()) {
+        // 0.4.5 §一 — papergames.io takes the board away when the game ends and puts the lobby
+        // back, so a board that has DISAPPEARED while we still hold a live record IS the ending.
+        // Verified live (2026-09-29): aborting took `td[class*=cell-]` from 225 to 0.
+        //
+        // The move-count floor is what keeps a first page load — where there is no board yet —
+        // from ending a game that never started, and the grace period covers a re-render that
+        // unmounts the table for a frame. Nothing else resets the record here: `boardStones()`
+        // answers `null` (unknown) rather than `[]` (empty) when there are no cells at all, so
+        // tickDom's "board cleared" path does not fire and the moves are still there to archive.
+        if (!goneSince) goneSince = performance.now();
+        else if (performance.now() - goneSince > GONE_GRACE_MS) endGame('棋盘已撤下（对局结束）');
       } else if (activeMoves().length >= 200 && boardFull()) {
         // Guarded by the move count: a full board can only happen at the very end, and the
         // count keeps a mis-selected 225-node grid from ending a game on the first tick.
@@ -933,6 +1114,7 @@
         endGame('超时兜底（' + Math.round(STALL_MS / 60000) + ' 分钟无落子）');
       } else {
         fiveSince = 0;
+        goneSince = 0;
       }
     }
     paintStatus();
@@ -1173,6 +1355,15 @@
       var pos = record.moves.length - 1;
       var last = record.moves[pos];
       if (!last || last[0] !== actualMove.col || last[1] !== 14 - actualMove.row) return;
+      // 0.4.5 §三 / 修复4 — 开局排除 DOES apply on this path, but deliberately NOT as the
+      // `if (pos < S.openingCutoff) return;` the spec sketches. The engine call is already
+      // skipped: analyzeStep computes `isOpening` from the `playerIdx` we send below and returns
+      // before `eng.configure`/`analyzePosition`. What the round trip still does is create the
+      // step ROW — offscreen's live session is the report, `gm-step-finish` builds the archived
+      // report straight out of `live.steps`, and the viewer renders one table row per entry. So
+      // returning early here would silently drop the opening rows from the report and shrink its
+      // `totalMoves`, which §3.5.4 ("统计结果与修复前完全一致") forbids. The message costs a
+      // postMessage; the row is what the operator reads.
       var resp = await askOffscreen({
         type: 'gm-step',
         jobId: liveJob.id,
@@ -1353,6 +1544,14 @@
     if (liveJob) { liveJob.status = '已中止'; liveJob = null; }
     liveStopped = null;
     gameEpoch++;
+    // 0.4.6 §一 — the remembered names belong to the game that just ended. Keeping them past this
+    // point would let a papergames.io game with no readable row inherit the previous game's
+    // players, which is a wrong name that looks like a right one.
+    nameMemo = null;
+    // 0.4.4 §七/§十二 — the chat side is per-game too: the 30s announcement window, the
+    // 「本局忽略」 choice and the 提问 record all restart. `chat.lang` deliberately survives
+    // (see resetChatForGame).
+    resetChatForGame();
   }
 
   // 记录里有没有「我们亲眼看过落子」的手。`inferred` 是唯一可靠判据（合并进来的手 t 为 null，
@@ -1384,8 +1583,29 @@
     // --gm-max is what caps the panel: 86vh while the height is auto, the dragged height
     // once the operator has resized it. Keeping it in a variable means the resize code
     // never has to fight a hard-coded max-height.
-    ':host{all:initial;position:fixed;top:12px;right:12px;width:580px;--gm-max:86vh;z-index:2147483647;display:block;',
+    //
+    // 0.4.6 §二.2 — RTL. The panel's CSS needed almost nothing: it is built from flex rows and
+    // symmetric padding, so it carries no `margin-left` / `border-right` / `text-align:left` at
+    // all, and the header's button order mirrors on its own once the direction is right. Two
+    // things did need attention:
+    //
+    //  · the anchor corner is `inset-inline-end` rather than `right`, so a fresh Arabic operator
+    //    gets the panel on the mirrored side. A SAVED position still wins, because the drag code
+    //    writes inline `left`/`right` — deliberately: where the operator put the panel is a
+    //    physical choice and should not be re-mirrored on a language switch.
+    //  · `all:initial` resets `direction` to ltr, which DEFEATS the `dir` attribute content.js
+    //    sets on this host. The `dir` attribute is only a presentational hint (specificity 0) and
+    //    an author declaration beats it, so the direction has to be re-asserted from the
+    //    attribute itself — see the two `:host([dir=…])` rules below. Without them the panel
+    //    would render left-to-right under Arabic and every logical property above would be a
+    //    no-op.
+    ':host{all:initial;position:fixed;top:12px;inset-inline-end:12px;width:580px;--gm-max:86vh;z-index:2147483647;display:block;',
     'font:13px/1.5 "Segoe UI","Microsoft YaHei",sans-serif;color:#e6edf3}',
+    // These two must come AFTER the `font:…}` above, which is what closes the `:host{` block —
+    // the rule is split across two array entries, so anything inserted between them lands INSIDE
+    // `:host{ … }` as a bogus declaration and takes the rest of the block down with it.
+    ':host([dir="rtl"]){direction:rtl}',
+    ':host([dir="ltr"]){direction:ltr}',
     '*{box-sizing:border-box}',
     '.gm{background:#161b22;border:1px solid #2a3441;border-radius:10px;box-shadow:0 10px 34px rgba(0,0,0,.55);overflow:hidden;display:flex;flex-direction:column;max-height:var(--gm-max);position:relative}',
     // Resized: the height is explicit, so the box fills it and .body does the scrolling.
@@ -1439,6 +1659,22 @@
     // Buttons inside the drag bar must not look draggable.
     '.hd .lk,.hd .x,.hd .mn{cursor:pointer}',
     '.hd .mn,.hd .x{-webkit-user-select:none;user-select:none}',
+    // 0.4.5 §二 — the 🌐 / ⚙ menus. A dropdown rather than a native <select>: the header is the
+    // panel's drag surface, and a select inside it swallows the drag and paints in the OS theme.
+    // `position:fixed` (not absolute) so it is not clipped by the panel's own overflow, and it is
+    // positioned from the button's rect at open time — which is also what lets it survive a drag
+    // while open. It keeps the panel's dark palette: the panel is a page overlay with its own
+    // theme, deliberately independent of the browser/IDE theme behind it.
+    '.hd .lk.on{color:#e6edf3}',
+    '.ctx{position:fixed;z-index:5;display:none;min-width:196px;max-height:70vh;overflow:auto;',
+    'padding:4px;border:1px solid #2a3441;border-radius:6px;background:#1a2029;',
+    'box-shadow:0 8px 26px rgba(0,0,0,.5);font-size:12px}',
+    '.ctx.show{display:block}',
+    '.ctx .it{display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:4px;',
+    'color:#c9d4e2;cursor:pointer;white-space:nowrap}',
+    '.ctx .it:hover{background:#243040}',
+    '.ctx .it .ck{flex:0 0 12px;color:#7aa2ff}',
+    '.ctx .it[aria-checked=true]{color:#e6edf3}',
     '.x{color:#8b98a5;cursor:pointer;font-size:15px;line-height:1;padding:2px 4px}',
     '.x:hover{color:#e6edf3}',
     '.mn{color:#8b98a5;cursor:pointer;font-size:15px;line-height:1;padding:2px 6px}',
@@ -1494,6 +1730,26 @@
     'button:disabled{opacity:.45;cursor:default}',
     '.ft{padding:5px 10px;border-top:1px solid #2a3441;color:#6e7b8a;font-size:10px;display:flex;gap:10px}',
     '.note{color:#f1c40f;font-size:11px;margin-top:6px}',
+    // ---- 0.4.4 §12/§14: the 提问记录 / 声明确认 panel ----
+    // It sits between `.body` and `.ft` inside the same 580px column, so it inherits the panel's
+    // width and scrolls with the rest rather than floating.
+    '.cpnl{border-top:1px solid #2a3441;max-height:210px;overflow:auto}',
+    '.cpnl .chd{padding:6px 10px;color:#c8d2dc;font-size:12px;display:flex;align-items:center;border-bottom:1px solid #22303c}',
+    '.cpnl .chd .sp,.cpnl .cft .sp{flex:1}',
+    '.cpnl .cbody{padding:8px 10px;color:#c8d2dc;font-size:11px;line-height:1.5}',
+    '.cpnl .ctext{margin-top:6px;padding:6px 8px;background:#0f151b;border:1px solid #22303c;border-radius:3px;color:#9aa7b4;font-size:11px}',
+    '.cpnl .cr{display:flex;gap:8px;align-items:flex-start;padding:6px 10px;border-bottom:1px solid #1b2530;font-size:11px}',
+    '.cpnl .cq{color:#9aa7b4;flex:0 0 46%}',
+    '.cpnl .ca{color:#c8d2dc;flex:1;word-break:break-word}',
+    '.cpnl .cv{flex:0 0 auto;color:#6e7b8a}',
+    '.cpnl .cv.up{color:#e74c3c}',
+    '.cpnl .cv.dn{color:#2ecc71}',
+    '.cpnl .cempty{padding:10px;color:#6e7b8a;font-size:11px}',
+    // §7.3 — a failed send, kept on screen after the footer's 5 seconds have gone.
+    '.cpnl .cwarn{padding:6px 10px;color:#e8a33d;font-size:11px;line-height:1.5;border-top:1px solid #3a2f1c}',
+    '.cpnl .cft{padding:6px 10px;color:#6e7b8a;font-size:11px;display:flex;align-items:center;gap:8px}',
+    '.cpnl .cft .lk{color:#7aa2ff;cursor:pointer}',
+    '.hd .lk[data-ask-state=off]{color:#4a5563;cursor:default}',
     '.ok{color:#4ec97b;font-size:11px;margin-top:6px}',
     '.err{color:#e74c3c;font-size:11px;margin-top:6px;word-break:break-all}',
   ].join('');
@@ -1517,6 +1773,17 @@
           '<span class="lk" data-act="open-viewer">' + esc(T('panel|查看器')) + '</span>' +
           '<span class="lk" data-act="copy" data-copy-state="off" title="' +
             esc(T('copy.title')) + '">📋</span>' +
+          // 0.4.5 §二.1/§二.2 — the language and rule menus. Both are always present (unlike 提问)
+          // because they are the only way to correct the two things the extension has to GUESS:
+          // the interface language, and the rule when the site does not imply one.
+          '<span class="lk" data-act="lang" title="' + esc(T('panel|切换语言')) + '">🌐</span>' +
+          '<span class="lk" data-act="rule" title="' + esc(T('panel|游戏规则')) + '">⚙</span>' +
+          // 0.4.4 §12 — the 提问 button. Always present so the operator can see WHY it is off
+          // (its title says which of §12's five gates is closed) rather than wondering where the
+          // feature went.
+          '<span class="lk" data-act="ask" data-ask-state="off" title="' +
+            esc(T('panel|当前不可提问（观战 / 聊天栏不可用 / 冷却中 / 风险分不足）')) +
+            '">' + esc(T('panel|提问')) + '</span>' +
           '<span class="lk" data-act="compact" title="' + esc(T('panel|缩略：只显示评估值')) + '">' +
             esc(T('panel|缩略')) + '</span>' +
           '<span class="lk" data-act="min" title="' +
@@ -1533,9 +1800,15 @@
               '</h3><div class="in" data-slot="ctrl"></div></div>' +
           '</div>' +
         '</div>' +
+        // 0.4.4 §12/§14 — the 提问记录 / 声明确认 panel, hidden until it has something to say.
+        '<div class="cpnl" data-slot="chat" style="display:none"></div>' +
         '<div class="ft"><span>Gomoku Detector v' + VERSION + '</span><span data-slot="foot"></span></div>' +
         '<div class="rz" data-act="resize" title="' + esc(T('panel|拖动调整大小')) + '">◢</div>' +
       '</div>' +
+      // 0.4.5 §二 — the two dropdowns live OUTSIDE .gm so the panel's own overflow cannot clip
+      // them, and both stay empty until a menu is opened (paintMenus fills the visible one).
+      '<div class="ctx" data-slot="langmenu" role="menu"></div>' +
+      '<div class="ctx" data-slot="rulemenu" role="menu"></div>' +
       '<div class="gmcp" data-act="restore" title="' + esc(T('panel|点击恢复完整面板')) + '">' +
         '<div class="cprow"><span class="cpk">' + esc(T('panel|黑')) +
           '</span><span class="cpv" data-cp="b">—</span></div>' +
@@ -1557,13 +1830,105 @@
     els.cpW = root.querySelector('[data-cp=w]');
     els.cpBar = root.querySelector('.cpbar>i');
     els.copy = root.querySelector('[data-act=copy]');
+    els.ask = root.querySelector('[data-act=ask]');
+    els.chatPanel = root.querySelector('[data-slot=chat]');
     els.updText = root.querySelector('[data-slot=updtext]');
-    if (root.host) root.host.setAttribute('lang', LANG);
+    if (root.host) {
+      root.host.setAttribute('lang', LANG);
+      root.host.setAttribute('dir', GMI18n.dirFor(LANG));
+    }
+    // 0.4.5 §二 — the shell is rebuilt on a language change, which replaces the dropdown nodes;
+    // an open menu cannot survive that (its anchor was the old button), so it is closed here.
+    openMenu = null;
     attachMiniHandlers();
     paintCopyButton();
+    paintChatButton();
+    paintChatPanel();
+    paintMenus();
     // Re-render happens on a language change too, and the banner's text (and therefore its
     // height, and therefore `--gm-ban`) moves with it.
     applyBanner();
+  }
+
+  // ---------- 0.4.5 §二: the 🌐 language / ⚙ rule dropdowns ----------
+  var openMenu = null;      // 'lang' | 'rule' | null
+
+  // The language list is the SAME source the viewer's #setLang uses (GMI18n.LOCALES + 'auto').
+  // 0.4.6 §2.4: the labels come from `GMI18n.langLabel()`, which renders 「English（英语）」 —
+  // the language's own name plus what the CURRENT language calls it. With 13 entries the bare
+  // endonym list stopped being readable for anyone who does not recognise 「Монгол」 or 「Bahasa
+  // Melayu」; `langLabel` is also the single place that decides the format, so this menu, the
+  // viewer's dropdown and the context menu cannot drift apart.
+  function menuItems(which) {
+    if (which === 'lang') {
+      var langs = [{ v: 'auto', label: T('set|跟随浏览器') }];
+      GMI18n.LOCALES.forEach(function (code) {
+        langs.push({ v: code, label: GMI18n.langLabel(code) });
+      });
+      return langs;
+    }
+    return [
+      { v: 'auto', label: T('panel|自动（按站点推断）') },
+      { v: '0', label: T('panel|自由（无禁手）') },
+      { v: '1', label: T('panel|标准（长连不赢）') },
+      { v: '2', label: T('panel|连珠（有禁手）') },
+    ];
+  }
+
+  function menuCurrent(which) {
+    if (which === 'lang') return S.lang || 'auto';
+    return S.rule == null ? 'auto' : String(S.rule);
+  }
+
+  function paintMenus() {
+    if (!root) return;
+    ['lang', 'rule'].forEach(function (which) {
+      var box = root.querySelector('[data-slot=' + which + 'menu]');
+      if (!box) return;
+      var cur = menuCurrent(which);
+      var html = '';
+      menuItems(which).forEach(function (it) {
+        var on = it.v === cur;
+        html += '<div class="it" data-act="pick-' + which + '" data-v="' + esc(it.v) + '"' +
+          ' role="menuitemradio" aria-checked="' + on + '">' +
+          '<span class="ck">' + (on ? '✓' : '') + '</span>' + esc(it.label) + '</div>';
+      });
+      box.innerHTML = html;
+    });
+  }
+
+  function closeMenus() {
+    if (!root) return;
+    ['lang', 'rule'].forEach(function (which) {
+      var box = root.querySelector('[data-slot=' + which + 'menu]');
+      if (box) box.classList.remove('show');
+      var btn = root.querySelector('[data-act=' + which + ']');
+      if (btn) btn.classList.remove('on');
+    });
+    openMenu = null;
+  }
+
+  function toggleMenu(which) {
+    if (!root) return;
+    if (openMenu === which) { closeMenus(); return; }
+    closeMenus();
+    var box = root.querySelector('[data-slot=' + which + 'menu]');
+    var btn = root.querySelector('[data-act=' + which + ']');
+    if (!box) return;
+    openMenu = which;
+    paintMenus();
+    // Shown before measuring: offsetWidth/Height are 0 while the node is display:none, and a
+    // 0-height reading would skip the flip-above-the-button branch entirely.
+    box.classList.add('show');
+    if (btn) btn.classList.add('on');
+    var r = btn ? btn.getBoundingClientRect() : { right: 240, bottom: 40, top: 20 };
+    var w = box.offsetWidth || 196, h = box.offsetHeight || 0;
+    var vw = window.innerWidth || 1024, vh = window.innerHeight || 768;
+    var left = Math.max(6, Math.min(r.right - w, vw - w - 6));
+    var top = r.bottom + 6;
+    if (h && top + h > vh - 6) top = Math.max(6, r.top - h - 6);
+    box.style.left = left + 'px';
+    box.style.top = top + 'px';
   }
 
   // ---------- 0.4.0 §一.4: the update banner ----------
@@ -1623,6 +1988,17 @@
     (document.body || document.documentElement).appendChild(host);
 
     els.top = root.querySelector('[data-slot=top]');
+    // 0.4.5 §二 — an open dropdown closes on a click anywhere outside the panel. composedPath()
+    // rather than host.contains(): shadow content is NOT a descendant of its host in the light
+    // DOM, so contains() reports every in-panel click as an outside one and the menu would shut
+    // the instant it was clicked. Capture phase, so a page handler that stops propagation cannot
+    // leave the menu stranded open.
+    document.addEventListener('click', function (ev) {
+      if (!openMenu) return;
+      var path = ev.composedPath ? ev.composedPath() : [];
+      if (host && path.indexOf(host) >= 0) return;
+      closeMenus();
+    }, true);
     root.addEventListener('click', function (ev) {
       // A drag that travelled ends in a mouseup, and that mouseup still fires a click.
       // Without this the eval-only panel would expand the instant a drag ended on it.
@@ -1638,12 +2014,37 @@
       // clicks, which is what "the mode switch went unresponsive" looked like.
       var hit = t.closest ? t.closest('[data-act]') : null;
       var act = hit ? hit.getAttribute('data-act') : null;
+      // 0.4.5 §二 — any click that is neither on a menu nor on its button dismisses an open
+      // dropdown, the way a menu is expected to behave. Done before the act dispatch so the
+      // other controls keep working with a menu open.
+      if (openMenu && act !== 'lang' && act !== 'rule' &&
+          act !== 'pick-lang' && act !== 'pick-rule') {
+        closeMenus();
+      }
       if (!act) {
         var q = t.closest && t.closest('.qi');
         if (q) { selectedId = q.getAttribute('data-id'); paint(); }
         return;
       }
       if (act === 'close') { closePanel(); return; }
+      // ---- 0.4.5 §二 ----
+      if (act === 'lang') { toggleMenu('lang'); return; }
+      if (act === 'rule') { toggleMenu('rule'); return; }
+      if (act === 'pick-lang') {
+        // 'auto' is a real value here, not an absence: storage.js resolves it against the
+        // browser language. The repaint is not done by hand — saveSetting fires
+        // chrome.storage.onChanged, which is the one path that repaints every surface (§1.8).
+        saveSetting('lang', hit.getAttribute('data-v'));
+        closeMenus();
+        return;
+      }
+      if (act === 'pick-rule') {
+        var rv = hit.getAttribute('data-v');
+        saveSetting('rule', rv === 'auto' ? null : parseInt(rv, 10));
+        closeMenus();
+        paintControls();
+        return;
+      }
       // 0.3.1: the three states are one field now. `min` shrinks to the shield icon,
       // `compact` shows the eval-only panel, `restore` (compact) and the mini icon's
       // tap both expand back to the full panel.
@@ -1655,6 +2056,16 @@
       if (act === 'upd-open') { openUpdatePage(); return; }
       if (act === 'upd-dismiss') { dismissBanner(); return; }
       if (act === 'copy') { copyResult(); return; }
+      // ---- 0.4.4 §12/§14 ----
+      if (act === 'ask') { askNextQuestion(); return; }
+      if (act === 'chat-close') { chatOpen = false; paintChatPanel(); return; }
+      if (act === 'chat-confirm-yes') {
+        chat.confirmOk = true; chatOpen = false; paintChatPanel(); maybeAnnounce(); return;
+      }
+      if (act === 'chat-confirm-no') {
+        // §12's 「本局忽略」. Recorded on the instance, not in storage: it is a per-game choice.
+        chat.ignored = true; chatOpen = false; paintChatPanel(); return;
+      }
       if (act === 'toggle-more') { moreOpen = !moreOpen; paintControls(); return; }
       if (act === 'analyze') { manualAnalyze(); return; }
       if (act === 'replay') { manualReplay(); return; }
@@ -2107,8 +2518,8 @@
 
     var rep = cur && (cur.report || cur.summary);
     h += '<div class="cards">' +
-      card(T('panel|黑方'), rep && rep.black, '#e6edf3') +
-      card(T('panel|白方'), rep && rep.white, '#e6edf3') +
+      card(T('panel|黑方'), rep && rep.black, '#e6edf3', null, 'B') +
+      card(T('panel|白方'), rep && rep.white, '#e6edf3', null, 'W') +
       card(T('panel|豁免'), rep ? String(rep.forcedCount || 0) : '—', '#9aa7b4', T('panel|冲四强制应手')) +
       card(T('panel|时间模式'), rep ? (rep.hasTime ? T('panel|真实间隔') : T('panel|固定预算')) : '—', '#9aa7b4',
            GMStorage.modeLabel(S.mode)) +
@@ -2146,7 +2557,7 @@
       var risk = '';
       var agg = j.report || j.summary;
       if (agg && agg.black) {
-        risk = Math.round(agg.black.risk) + '/' + Math.round(agg.white ? agg.white.risk : 0);
+        risk = chatAdjusted('B', agg.black.risk) + '/' + (agg.white ? chatAdjusted('W', agg.white.risk) : 0);
       }
       q += '<div class="qi' + (j.id === selectedId ? ' on' : '') + '" data-id="' + j.id + '">' +
         '<span class="no">#' + j.seq + '</span>' +
@@ -2162,15 +2573,28 @@
       : (T('panel|队列 {n}', { n: jobs.length }) + (running() ? T('panel| · 1 运行中') : ''));
   }
 
-  function card(k, agg, color, sub) {
+  // `side` is optional and only meaningful for the two risk cards: 0.4.4 §13's chat adjustment
+  // is folded in here, at the display, because `agg.risk` is Rapfi's own measurement and must
+  // stay untouched (see the §七~§十四 note above).
+  function card(k, agg, color, sub, side) {
     if (!agg) return '<div class="card"><div class="v" style="color:#6e7b8a">—</div><div class="k">' + esc(k) + '</div></div>';
     if (typeof agg === 'string') {
       return '<div class="card"><div class="v" style="color:' + color + ';font-size:13px">' + esc(agg) + '</div>' +
              '<div class="k">' + esc(k) + '</div>' + (sub ? '<div class="s">' + esc(sub) + '</div>' : '') + '</div>';
     }
+    var risk = side ? chatAdjusted(side, agg.risk) : fmtRisk(agg.risk);
+    // Whether to print 「交流 N」 is a question about the ADJUSTMENT, not about the string, and it
+    // must name the SAME side the adjustment landed on. This used to read
+    // `risk !== Math.round(agg.risk)`, which is true for every unrounded float — so a game with no
+    // chat at all still showed 「交流 0」. The first fix asked only `chat.total`, which put the line
+    // on BOTH cards whenever any adjustment existed: the unadjusted card then paired a number that
+    // had not moved with an annotation claiming it had, contradicting §13.3's 「只影响对手」.
+    var adjusted = !!(side && side === chatAdjSide() && chat.total);
     return '<div class="card"><div class="v" style="color:' + riskColor(agg.level) + '">' +
-      Math.round(agg.risk) + '</div><div class="k">' + esc(k) + ' · ' + esc(TO('level', agg.level)) + '</div>' +
-      '<div class="s">' + agg.n + ' ' + esc(T('panel|手')) + '</div></div>';
+      risk + '</div><div class="k">' + esc(k) + ' · ' + esc(TO('level', agg.level)) + '</div>' +
+      '<div class="s">' + agg.n + ' ' + esc(T('panel|手')) +
+        (adjusted ? ' · ' + esc(T('panel|交流 {d}', { d: (chat.total > 0 ? '+' : '') + chat.total })) : '') +
+      '</div></div>';
   }
 
   // A <select> whose value is not among its <option>s silently shows the first option,
@@ -2266,8 +2690,8 @@
   }
 
   // 0.3.1: the eval-only (compact) panel shows just the two risk numbers, updating live.
-  // While a job runs it shows the progress percentage instead; otherwise the rounded
-  // black/white risk, or "—" before the first analysis.
+  // While a job runs it shows the progress percentage instead; otherwise the black/white risk
+  // to one decimal (via `chatAdjusted` → `fmtRisk`), or "—" before the first analysis.
   function paintCompact() {
     if (!root || !els.cpB) return;
     var cur = running() || findJob(selectedId) || jobs[jobs.length - 1] || null;
@@ -2278,14 +2702,855 @@
       els.cpW.textContent = '分析中';
       if (els.cpBar) els.cpBar.style.width = p + '%';
     } else if (rep) {
-      els.cpB.textContent = rep.black ? Math.round(rep.black.risk) : '—';
-      els.cpW.textContent = rep.white ? Math.round(rep.white.risk) : '—';
+      els.cpB.textContent = rep.black ? chatAdjusted('B', rep.black.risk) : '—';
+      els.cpW.textContent = rep.white ? chatAdjusted('W', rep.white.risk) : '—';
       if (els.cpBar) els.cpBar.style.width = '100%';
     } else {
       els.cpB.textContent = '—';
       els.cpW.textContent = '—';
       if (els.cpBar) els.cpBar.style.width = '0';
     }
+  }
+
+  // =====================================================================================
+  // 0.4.4 §七~§十四 — 信息与交流 / F&Q
+  //
+  // Two rules shape everything below.
+  //
+  // (1) NOTHING here may act on the operator's behalf without the operator having said so.
+  //     §7.1 describes the anti-cheat announcement as automatic, but sending words to a real
+  //     opponent under the operator's name cannot be taken back, so the master switch
+  //     (`settings.chatAuto`) defaults to OFF and the announcement additionally asks once per
+  //     game. The 「提问」 button is exempt: that is an explicit click, not a decision the
+  //     extension makes on its own.
+  //
+  // (2) The chat adjustment is a SEPARATE number from the engine's risk score. §13 says a wrong
+  //     answer raises the AI rate, but `report.black.risk` is what Rapfi actually measured —
+  //     overwriting it would make the archive lie about the analysis, and the next re-analysis
+  //     would silently undo the chat. So the adjustment lives in `report.chatAdjust` and is
+  //     applied at DISPLAY time by `chatAdjusted()`.
+  // =====================================================================================
+
+  var CHAT_STATE_KEY = 'chatState';
+  var CHAT_ANNOUNCED_KEY = 'chatAnnounced';
+  var ANNOUNCE_WINDOW_MS = 30000;    // §7.1 进入对局 30 秒内
+  var ASK_TIMEOUT_MS = 60000;        // §12 发送 → 等 60 秒
+  var SEND_RETRIES = 3;              // §7.3 三次重试失败 → 记 note
+  // A sentinel for "the DOM observer says this node is one of ours". It cannot be a real id —
+  // the socket path compares ids as strings — so it is a value no server would ever send.
+  var CHAT_SELF = '__gm_self';
+
+  // The §7.3 selector list, verbatim, plus a last-resort scan for any visible text field inside
+  // a chat-ish container. Unverified against the live site — §7.3 is the only source we have.
+  var CHAT_INPUT_SEL = [
+    '#chat-input',
+    '.chat-input',
+    '[class*="chat"] textarea',
+    '[class*="chat"] input[type="text"]',
+    '[contenteditable="true"][class*="chat"]',
+    'textarea[placeholder*="hat"]',
+    'input[placeholder*="hat"]',
+  ].join(', ');
+
+  var chat = {
+    lang: null,             // §8.2 chatLang — independent of settings.lang
+    senderIsBlack: null,    // §9 — null = unknown, which BLOCKS any adjustment
+    senderHow: null,
+    // The seat identity `senderIsBlack` was computed from. When it changes (a rematch swaps
+    // colours, or the seat names arrive after the first frame) the answer is recomputed.
+    resolvedKey: null,
+    asks: 0,
+    total: 0,
+    history: [],            // §14 提问记录
+    lastSentAt: 0,
+    // §7.3 — did any message of OURS actually reach the box this game? `announced` only records
+    // that we tried, and the anchor (§9 level 3) must not claim a statement went out when the
+    // send failed. Set in sendChatWithRetry's success path.
+    sentAny: false,
+    lastReply: null,
+    // §7.3 — why the last send attempt failed ('noInput' | 'stuck' | 'throw'), or null. Kept so
+    // the panel can explain itself after the footer's 5 seconds are up, instead of a send
+    // failing invisibly — which is the reported symptom («信息未能正常发送»).
+    lastSendWhy: null,
+    gameStartAt: 0,
+    announced: false,
+    confirmShown: false,
+    pending: null,          // the question we are waiting on: {q, askedAt, stage}
+    ignored: false,         // §12 「本局忽略」
+    confirmOk: false,       // the operator said yes to the announcement this game
+    promptShown: false,
+    repliedTo: {},          // de-dupes the socket+DOM double intake of one message
+  };
+
+  function resetChatForGame() {
+    chat.senderIsBlack = null;
+    chat.senderHow = null;
+    chat.resolvedKey = null;
+    chat.asks = 0;
+    chat.total = 0;
+    chat.history = [];
+    chat.lastSentAt = 0;
+    chat.sentAny = false;
+    chat.lastSendWhy = null;
+    chat.lastReply = null;
+    chat.gameStartAt = performance.now();
+    chat.announced = false;
+    chat.confirmShown = false;
+    chat.confirmOk = false;
+    chat.pending = null;
+    chat.ignored = false;
+    chat.promptShown = false;
+    chat.repliedTo = {};
+    // `lang` survives a game on purpose (§8.2 stores it): an opponent who spoke Japanese in the
+    // last game is still likely to speak it in this one.
+  }
+
+  function loadChatState() {
+    try {
+      chrome.storage.local.get([CHAT_STATE_KEY], function (r) {
+        var st = (r && r[CHAT_STATE_KEY]) || {};
+        if (st.lang) chat.lang = st.lang;
+      });
+    } catch (e) { /* no storage (a stripped build) — chatLang simply stays null */ }
+  }
+
+  function saveChatState() {
+    try {
+      var o = {}; o[CHAT_STATE_KEY] = { lang: chat.lang };
+      chrome.storage.local.set(o);
+    } catch (e) {}
+  }
+
+  // ---------- §7.3 transport ----------
+
+  // 0.4.5 §一 — the site's own selector list first (gomoku.com's list is byte-for-byte the one
+  // that used to be hardcoded here), then a last-resort scan that is deliberately
+  // site-agnostic: papergames.io's field is a Material textarea whose only stable handle is
+  // 「Write a message...」, which the /messag/i test below catches even if the class changes.
+  function chatInputEl() {
+    var el = (typeof GMSites !== 'undefined' && GMSites) ? GMSites.chatInputEl() : null;
+    if (el) return el;
+    el = document.querySelector(CHAT_INPUT_SEL);
+    if (el) return el;
+    // Last resort: a visible text field whose own or ancestor class/placeholder mentions chat.
+    var all = document.querySelectorAll('textarea, input[type="text"], [contenteditable="true"]');
+    for (var i = 0; i < all.length; i++) {
+      var n = all[i];
+      if (!n.offsetParent) continue;
+      var hint = (n.className || '') + ' ' + (n.getAttribute('placeholder') || '') + ' ' +
+        ((n.parentElement && n.parentElement.className) || '');
+      if (/chat|messag/i.test(String(hint))) return n;
+    }
+    return null;
+  }
+
+  function chatAvailable() { return !!chatInputEl(); }
+
+  function isTextInput(el) {
+    var tag = String(el.tagName || '').toUpperCase();
+    return tag === 'TEXTAREA' || tag === 'INPUT';
+  }
+
+  /** What the box currently holds — the only honest signal that a send happened. */
+  function boxText(el) {
+    if (!el) return '';
+    return isTextInput(el) ? String(el.value == null ? '' : el.value).trim()
+                           : String(el.textContent || '').trim();
+  }
+
+  /**
+   * Write through the PROTOTYPE's value setter, not `input.value = …`.
+   *
+   * React (and Vue on some builds) installs its own `value` accessor on the element instance and
+   * remembers the last value it rendered. Assigning through that instance descriptor updates the
+   * DOM but leaves the framework's state at "", so the app's change handler runs with an EMPTY
+   * message and the send silently does nothing — which is exactly the reported symptom. Calling
+   * the native setter makes the framework's own dirty-check see a real change.
+   */
+  function setNativeValue(el, text) {
+    var proto = null;
+    var tag = String(el.tagName || '').toUpperCase();
+    // `window`, not a bare `g`: content.js has no such alias (there are two function-scoped
+    // `var g` locals elsewhere in this file, and reaching for either from here would be a
+    // ReferenceError — caught by sendChat's try/catch and reported as 'throw', i.e. every
+    // send failing for a reason that has nothing to do with the page).
+    if (tag === 'TEXTAREA') proto = window.HTMLTextAreaElement && window.HTMLTextAreaElement.prototype;
+    else if (tag === 'INPUT') proto = window.HTMLInputElement && window.HTMLInputElement.prototype;
+    var desc = proto && Object.getOwnPropertyDescriptor(proto, 'value');
+    if (desc && desc.set) desc.set.call(el, text);
+    else el.value = text;
+  }
+
+  /**
+   * Enter, as a full sequence with a readable `keyCode`.
+   *
+   * `new KeyboardEvent('keydown', { keyCode: 13 })` ignores keyCode — the spec drops it and the
+   * event ends up with 0 — so a site that switches on `e.keyCode` (most do) sees nothing. The
+   * property is redefined after construction to put 13 back.
+   */
+  function pressEnter(el) {
+    var kd = new KeyboardEvent('keydown', {
+      key: 'Enter', code: 'Enter', bubbles: true, cancelable: true, composed: true,
+    });
+    try { Object.defineProperty(kd, 'keyCode', { get: function () { return 13; } }); } catch (e) {}
+    try { Object.defineProperty(kd, 'which', { get: function () { return 13; } }); } catch (e) {}
+    el.dispatchEvent(kd);
+    // If the site consumed the keydown it has already sent; the rest is for the ones that
+    // listen on keypress/keyup instead.
+    el.dispatchEvent(new KeyboardEvent('keypress', {
+      key: 'Enter', code: 'Enter', bubbles: true, cancelable: true, composed: true,
+    }));
+    el.dispatchEvent(new KeyboardEvent('keyup', {
+      key: 'Enter', code: 'Enter', bubbles: true, cancelable: true, composed: true,
+    }));
+  }
+
+  var SEND_BTN_WORD = /^(send|发送|送出|傳送|送信|보내기|отправить|envoyer|senden)$/i;
+
+  /** The button a human would click if Enter did nothing. */
+  function sendButtonNear(el) {
+    var box = el.parentElement;
+    for (var up = 0; up < 4 && box; up++) {
+      var btns = box.querySelectorAll('button, [role="button"], a.btn, a[class*="send"]');
+      for (var i = 0; i < btns.length; i++) {
+        var b = btns[i];
+        if (!b.offsetParent) continue;
+        var cls = String(b.className || '') + ' ' + String(b.id || '');
+        if (SEND_BTN_WORD.test(String(b.textContent || '').trim()) || /send/i.test(cls)) return b;
+      }
+      box = box.parentElement;
+    }
+    return null;
+  }
+
+  /**
+   * §7.3 — DOM write + simulated Enter, deliberately NOT `socket.emit`. Emitting would need the
+   * exact event name and payload the server expects, and getting it wrong is indistinguishable
+   * from a protocol violation; typing into the box exercises the same path a human does.
+   *
+   * `done(ok, why)` is asynchronous because the result is VERIFIED rather than assumed: a chat
+   * box that accepted the message is cleared by the app, so text still sitting there after a beat
+   * means nothing was sent. The old version returned `true` for merely having dispatched events,
+   * so every failure was reported as a success and no retry ever ran.
+   */
+  function sendChat(text, done) {
+    var input = chatInputEl();
+    if (!input) { chat.lastSendWhy = 'noInput'; done(false, 'noInput'); return; }
+    try {
+      input.focus();
+      if (isTextInput(input)) {
+        setNativeValue(input, text);
+        input.dispatchEvent(new InputEvent('input', {
+          bubbles: true, inputType: 'insertText', data: text,
+        }));
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+        input.dispatchEvent(new Event('change', { bubbles: true }));
+      } else {
+        input.textContent = text;
+        input.dispatchEvent(new InputEvent('input', {
+          bubbles: true, inputType: 'insertText', data: text,
+        }));
+      }
+      pressEnter(input);
+    } catch (e) {
+      chat.lastSendWhy = 'throw';
+      done(false, 'throw');
+      return;
+    }
+    setTimeout(function () {
+      if (boxText(input) !== text) { chat.lastSendWhy = null; done(true, 'sent'); return; }
+      var btn = sendButtonNear(input);
+      if (!btn) { chat.lastSendWhy = 'stuck'; done(false, 'stuck'); return; }
+      try { btn.click(); } catch (e2) {}
+      setTimeout(function () {
+        var ok = boxText(input) !== text;
+        chat.lastSendWhy = ok ? null : 'stuck';
+        done(ok, ok ? 'sent' : 'stuck');
+      }, 150);
+    }, 120);
+  }
+
+  /**
+   * §7.3 — three attempts, then give up for the rest of the game and say why.
+   *
+   * The ONE place a send is known to have landed. `lastSentAt` (§12's 10-second 「已发过」 gate)
+   * and `sentAny` (§9 level 3's anchor) are both set here and nowhere else, so "did anything we
+   * sent actually go out" has a single answer.
+   */
+  function sendChatWithRetry(text, onFail, onSent) {
+    var n = 0;
+    (function attempt() {
+      sendChat(text, function (ok, why) {
+        if (ok) {
+          chat.lastSentAt = performance.now();
+          chat.sentAny = true;
+          if (onSent) onSent();
+          return;
+        }
+        if (++n >= SEND_RETRIES) {
+          if (onFail) onFail(why);
+          return;
+        }
+        setTimeout(attempt, 1200);
+      });
+    })();
+  }
+
+  // ---------- §9 sender identification ----------
+
+  function detectSender(fromId) {
+    // Level 1 — socket. §9 says `game-start` ships `players[{id, name, color}]` AND a `selfId`;
+    // this compares the two by ID first, falling back to the name. The ids only arrive because
+    // hook.js now forwards `playerIds` — it used to keep just the names, which silently made the
+    // primary level unreachable on the one payload the spec names as its source.
+    var names = playerNames();
+    var players = null;
+    if (socketRec && socketRec.players) {
+      var ids = socketRec.playerIds || {};
+      players = [
+        { id: ids.black != null ? ids.black : null, name: socketRec.players.black, color: 'black' },
+        { id: ids.white != null ? ids.white : null, name: socketRec.players.white, color: 'white' },
+      ];
+    }
+    var bySocket = GMChat.senderFromPlayers(players, (socketRec && socketRec.selfId) || null,
+      names.self || null);
+    if (bySocket != null) return { isBlack: bySocket, how: 'socket' };
+    // Level 2 — DOM seat names vs our own displayed name.
+    var byDom = GMChat.senderFromNames(names.self || null, names.black || null, names.white || null);
+    if (byDom != null) return { isBlack: byDom, how: 'dom' };
+    // Level 3 — the anchor. `sentAny` is set only where a send is known to have landed, so the
+    // anchor is not claimed on the strength of an attempt that failed.
+    if (chat.sentAny) {
+      // Our own colour is the one we are NOT, and we cannot say which we are — so the anchor
+      // resolves the opponent's colour only when our own is already known. It is not, or we
+      // would have returned above. Record the fact instead of guessing.
+      return { isBlack: null, how: 'anchor-unresolved' };
+    }
+    return { isBlack: null, how: 'unknown' };
+  }
+
+  /**
+   * §9 — resolve the OPPONENT's colour proactively, from the socket or the DOM, instead of
+   * waiting for them to speak first.
+   *
+   * This is the difference between the feature working and not. `chat.senderIsBlack` used to be
+   * assigned in exactly one place — inside `onChatMessage`, i.e. only once a message had already
+   * arrived — while §12's `senderUnknown` gate blocks the 「提问」 button on it. So the operator
+   * could not send the first message, and the only thing that could break the deadlock was the
+   * opponent speaking unprompted. The socket already knows both seats at `game-start`; ask it.
+   *
+   * Idempotent and cheap. It recomputes when the identity it resolved FROM changes, because a
+   * rematch can swap colours and the seat names can arrive after the first frame — a stale answer
+   * that stuck would send every adjustment to the wrong side.
+   */
+  function senderKey() {
+    var pl = (socketRec && socketRec.players) || {};
+    var ids = (socketRec && socketRec.playerIds) || {};
+    var nm = playerNames();
+    // The seat IDS are part of the key, not just the names: two players can share a display name
+    // (and a guest has none at all), while an id is what the socket actually matched on.
+    return [(socketRec && socketRec.selfId) || '', pl.black || '', pl.white || '',
+            ids.black == null ? '' : ids.black, ids.white == null ? '' : ids.white,
+            nm.self || ''].join('|');
+  }
+
+  function resolveSenderColour() {
+    var key = senderKey();
+    if (key !== chat.resolvedKey) {
+      chat.resolvedKey = key;
+      // Only discard an answer that came from the seats themselves. One derived from the
+      // announcement anchor does not depend on the seat list, so it survives a key change.
+      if (chat.senderHow == null || chat.senderHow === 'socket' || chat.senderHow === 'dom') {
+        chat.senderIsBlack = null;
+        chat.senderHow = null;
+      }
+    }
+    if (chat.senderIsBlack != null) return chat.senderIsBlack;
+    var who = detectSender(null);
+    if (who && who.isBlack != null) {
+      chat.senderIsBlack = !who.isBlack;
+      chat.senderHow = who.how;
+    }
+    return chat.senderIsBlack;
+  }
+
+  // ---------- message intake ----------
+
+  function isSelfMessage(fromId) {
+    var selfId = socketRec && socketRec.selfId;
+    if (fromId == null || selfId == null) return null;
+    return String(fromId) === String(selfId);
+  }
+
+  /**
+   * One entry point for both transports (socket event and DOM observer). The two can deliver the
+   * SAME message, so a short-lived de-dupe window keys on the text.
+   */
+  function onChatMessage(text, fromId, via) {
+    if (!text) return;
+    var t = String(text).trim();
+    if (!t) return;
+    var now = performance.now();
+    for (var k in chat.repliedTo) {
+      if (!chat.repliedTo.hasOwnProperty(k)) continue;
+      if (now - chat.repliedTo[k] > 8000) delete chat.repliedTo[k];
+    }
+    if (chat.repliedTo[t]) return;
+    chat.repliedTo[t] = now;
+
+    // Our own message: the anchor. It tells us the chat works, and nothing else.
+    if (fromId === CHAT_SELF || isSelfMessage(fromId) === true) {
+      if (t === GMChat.ANNOUNCE) chat.announced = true;
+      return;
+    }
+
+    var who = detectSender(fromId);
+    if (who.isBlack != null && chat.senderIsBlack == null) {
+      // We are the other seat.
+      chat.senderIsBlack = !who.isBlack;
+      chat.senderHow = who.how;
+    }
+
+    handleOpponentMessage(t, now);
+  }
+
+  function handleOpponentMessage(text, now) {
+    // §8.1/§8.2 — the language of the incoming message drives the reply language, and it is
+    // remembered so the NEXT question is asked in it too.
+    var lang = GMChat.detectLang(text);
+    if (lang) {
+      chat.lang = lang;
+      saveChatState();
+    } else if (!chat.lang) {
+      // §8.3 乱码 / 无法识别 → ask where they are from, once.
+      if (chat.lastReply !== 'whereFrom') {
+        var ask = GMChat.pickReply('en', 'whereFrom', null, now);
+        if (ask) {
+          chat.lastReply = 'whereFrom';
+          autoSend(ask);
+        }
+      }
+      return;
+    }
+
+    // §13 — a question is outstanding: this is the answer.
+    if (chat.pending) { gradePending(text, now); return; }
+
+    // §8.3 — otherwise a plain reply in their language, at most one per 10s.
+    if (!S.chatAuto) return;
+    var reply = GMChat.pickReply(chat.lang || 'en', 'greet', chat.lastReply, now);
+    if (!reply) return;
+    chat.lastReply = reply;
+    autoSend(reply);
+  }
+
+  /**
+   * §7.3 — say WHY a send did not go through.
+   *
+   * The spec's literal note is 「聊天栏不可用，已跳过声明」 for every failure. That wording is what
+   * made the operator's report («信息未能正常发送») impossible to act on: a chat box that is
+   * present and swallows the message is a different fault from a box that is not there at all,
+   * and the spec's own §7.3 code cannot tell them apart because it never checks. The reason is
+   * also kept in `chat.lastSendWhy`, which the question panel prints — the footer only holds for
+   * five seconds, and the operator reads the panel.
+   */
+  function sendFailFoot(why) {
+    flashFoot(T('panel|发送失败：{why}。消息未发出。', { why: TO('sendWhy', why || 'stuck') }));
+    if (why === 'noInput') logChatCandidates();
+    paintChatPanel();
+  }
+
+  /**
+   * §7.3 — when the box cannot be found, record what IS on the page.
+   *
+   * §7.3's selector list is the only source we have and it is explicitly unverified, so a failed
+   * lookup is exactly the moment to learn the site's real markup — and the operator is the only
+   * one who can see the console. Called only from the failure path (never from `chatAvailable()`,
+   * which runs every second), so it cannot spam. Console output stays Chinese and untranslated
+   * (§1.7).
+   */
+  function logChatCandidates() {
+    try {
+      var all = document.querySelectorAll('textarea, input[type="text"], [contenteditable="true"]');
+      var seen = [];
+      for (var i = 0; i < all.length && seen.length < 8; i++) {
+        var n = all[i];
+        if (!n.offsetParent) continue;
+        var cls = String(n.className || '').trim().split(/\s+/).filter(Boolean).join('.');
+        var ph = n.getAttribute('placeholder');
+        seen.push(n.tagName.toLowerCase() + (n.id ? '#' + n.id : '') + (cls ? '.' + cls : '') +
+          (ph ? ' [placeholder=' + ph + ']' : ''));
+      }
+      console.log('[detector] 找不到聊天输入框；页面上可见的文本输入候选：' +
+        (seen.length ? seen.join(' | ') : '（一个都没有）'));
+    } catch (e) { /* a stripped document — nothing to report */ }
+  }
+
+  function autoSend(text) {
+    sendChatWithRetry(text, sendFailFoot);
+  }
+
+  // ---------- §12/§13 the question flow ----------
+
+  function opponentRisk() {
+    var rep = currentReport();
+    if (!rep) return null;
+    var side = chatAdjSide();
+    if (!side) return null;
+    var agg = side === 'B' ? rep.black : rep.white;
+    return agg && agg.risk != null ? Math.round(agg.risk) : null;
+  }
+
+  /**
+   * The questions §12 currently allows.
+   *
+   * `allowUnknownColour` is passed by the explicit 「提问」 button and by nothing else. §12 lists
+   * 发送者颜色未定 among the disable conditions and it must stay one for the AUTO prompt, which has
+   * to name the side whose rate crossed 65%. The explicit button is a different case: §9 already
+   * guarantees that an unknown colour moves NOBODY's AI rate (the answer is only recorded as a
+   * note), and without this exception the button can never fire the FIRST message — the colour is
+   * resolved from the seat list or from a message of ours, and we cannot send one until we send
+   * one. That circle is exactly the operator's report («问题没有发送途径»).
+   */
+  function askableQuestions(allowUnknownColour) {
+    // §9 — refresh before deciding. The seat list may have arrived since the last tick, and this
+    // is the one gate the operator can do nothing about from the UI.
+    resolveSenderColour();
+    var rep = currentReport();
+    var opening = (socketRec && socketRec.opening) || (rep && rep.opening) || null;
+    var code = opening && (opening.code || (typeof opening === 'string' ? opening : null));
+    var rate = opponentRisk();
+    var ctx = {
+      now: performance.now(),
+      rate: rate == null ? 0 : rate,
+      spectating: !!(socketRec && socketRec.spectator),
+      chatAvailable: chatAvailable(),
+      senderIsBlack: chat.senderIsBlack,
+      lastSentAt: chat.lastSentAt,
+      askedIds: chat.history.map(function (h) { return h.qid; }),
+    };
+    var out = [];
+    for (var i = 0; i < GM_QUESTIONS.length; i++) {
+      var q = GM_QUESTIONS[i];
+      var why = GMChat.askBlocked(q, ctx);
+      if (why === null || (allowUnknownColour && why === 'senderUnknown')) {
+        out.push({ q: q, rate: rate, code: code });
+      }
+    }
+    return out;
+  }
+
+  function askQuestion(q) {
+    if (!q) return;
+    if (!chatAvailable()) { flashFoot(T('panel|聊天栏不可用，已跳过声明')); return; }
+    // The colour may legitimately still be unknown here (see askableQuestions) — §9 keeps the
+    // answer from moving any AI rate in that case, so this is a warning, not a gate.
+    var unknownColour = chat.senderIsBlack == null;
+    var lang = chat.lang || LANG;
+    var text = GMChat.textOf(q.text, lang);
+    if (!text) return;
+    chat.pending = { q: q, askedAt: performance.now(), stage: 'asked' };
+    sendChatWithRetry(text, function (why) {
+      // Nothing went out, so do not sit waiting 60 seconds for an answer that cannot come.
+      chat.pending = null;
+      sendFailFoot(why);
+    }, function () {
+      // Counted only once the message really left — a failed attempt did not ask anything.
+      chat.asks++;
+      if (unknownColour) flashFoot(T('panel|发送者颜色未确定，本次问答不调整 AI 率'));
+      paintChatPanel();
+    });
+    paintChatPanel();
+  }
+
+  function gradePending(text, now) {
+    var p = chat.pending;
+    if (!p) return;
+    var rep = currentReport();
+    var opening = (socketRec && socketRec.opening) || (rep && rep.opening) || null;
+    var code = opening && (opening.code || (typeof opening === 'string' ? opening : null));
+    var ctx = {
+      rate: opponentRisk() == null ? 0 : opponentRisk(),
+      rateLine: GMChat.RATE_LINE,
+      openingNames: code ? GMChat.openingAnswerNames(code) : [],
+      answeredFollowUp: p.stage === 'followup',
+    };
+    var g = GMChat.grade(p.q, text, ctx);
+
+    // The 「yes」 branch earns a second question rather than a verdict.
+    if (g.verdict === 'followup' && g.followUp) {
+      p.stage = 'followup';
+      p.askedAt = now;
+      var follow = GMChat.textOf(g.followUp, chat.lang || LANG);
+      if (follow) sendChatWithRetry(follow, sendFailFoot);
+      recordChat(p.q, text, 'followup', 0);
+      paintChatPanel();
+      return;
+    }
+
+    // §9 — with the sender unplaced there is nobody to adjust, and §9's instruction for that
+    // state is 「只记 note」. The verdict is still recorded (it is evidence), but with a delta of 0
+    // and without touching the budget: `chatAdjusted` would refuse to apply it anyway, so adding
+    // it here would make the panel's 「累计调整」 advertise a change that never happens.
+    var unplaced = chat.senderIsBlack == null;
+    var applied = unplaced ? { ok: false, delta: 0 } : GMChat.applyBudget(chat.history, g.delta);
+    if (applied.ok) chat.total += applied.delta;
+    recordChat(p.q, text, g.verdict, applied.ok ? applied.delta : 0);
+    chat.pending = null;
+
+    if (g.thanks) {
+      var thanks = GMChat.pickReply(chat.lang || 'en', 'thanks', null, now);
+      if (thanks) sendChatWithRetry(thanks, sendFailFoot);
+    }
+    paintChatPanel();
+    paintStatus();
+  }
+
+  function recordChat(q, answer, verdict, delta) {
+    chat.history.push({
+      qid: q.id,
+      q: GMChat.textOf(q.text, chat.lang || LANG),
+      answer: String(answer || '').slice(0, 200),
+      verdict: verdict,
+      delta: delta,
+      at: Date.now(),
+    });
+    if (chat.history.length > 20) chat.history.shift();
+  }
+
+  /**
+   * The panel's one risk formatter.
+   *
+   * `report.black.risk` is Rapfi's own arithmetic and arrives at full precision — 17.3215408586938
+   * — which is what the two cards used to print, because `chatAdjusted` handed the untouched float
+   * straight back whenever it had no adjustment to apply. One decimal is the operator's call
+   * (2026-09-29): enough to see the chat adjustment move the number, not enough to pretend the
+   * engine resolves hundredths.
+   *
+   * It returns a STRING on purpose. Every caller puts the result into `textContent` or into an
+   * HTML string, and returning a string keeps the rounding in ONE place instead of at four call
+   * sites — which is how the raw float escaped in the first place.
+   */
+  function fmtRisk(risk) {
+    if (risk == null) return risk;
+    var v = Number(risk);
+    return isFinite(v) ? v.toFixed(1) : risk;
+  }
+
+  /**
+   * §13.3 — the ONE side the chat adjustment lands on, or `null` while the sender is unplaced.
+   *
+   * 「只影响对手」 ⇒ this is the OPPONENT's side, and `chat.senderIsBlack` holds the sender's —
+   * i.e. the opponent's — colour. So `true` means the opponent is black and the side that moves is
+   * BLACK. The chain that makes 'B' correct rather than 'W':
+   *   • `senderFromPlayers(players, selfId, selfName)` matches the seat whose id/name is OURS and
+   *     returns OUR colour (pinned in verify-044 §6: `senderFromPlayers(players, 'a1') === true`,
+   *     labelled 「selfId → black」);
+   *   • `resolveSenderColour` then negates it (`chat.senderIsBlack = !who.isBlack`), so what lands
+   *     in the field is the OPPONENT's colour and never ours.
+   * This ternary used to read `true ? 'W'`, which sent every adjustment — and the automatic
+   * prompt's risk lookup — to the player who had NOT answered, directly against §13.3.
+   *
+   * A single helper because this expression used to be copy-pasted verbatim into three places
+   * (the archive record, the auto-prompt's risk lookup, and the display). Three copies of a
+   * mapping that a single character can invert is three chances to blame the wrong player, and
+   * two of them had no test at all.
+   */
+  function chatAdjSide() {
+    return chat.senderIsBlack === true ? 'B' : (chat.senderIsBlack === false ? 'W' : null);
+  }
+
+  /**
+   * §13.3 — the adjustment, applied at DISPLAY time only (see the note at the top).
+   *
+   * Note this is NOT the same question as "was there an adjustment": the caller must ask
+   * `chatAdjSide()` for WHICH card moves and `chat.total` for whether any does. It used to
+   * compare the returned value against `Math.round(agg.risk)`, which is always unequal for a
+   * float — so every card claimed 「交流 0」 even with nothing adjusted. See `card()` below.
+   */
+  function chatAdjusted(side, risk) {
+    if (risk == null) return risk;
+    var v = Number(risk);
+    if (!isFinite(v)) return risk;
+    if (side === chatAdjSide() && chat.total) v = Math.max(0, Math.min(100, v + chat.total));
+    return fmtRisk(v);
+  }
+
+  // ---------- §7 the announcement ----------
+
+  function maybeAnnounce() {
+    if (!S.chatAuto || chat.announced || chat.ignored) return;
+    if (chat.gameStartAt && performance.now() - chat.gameStartAt > ANNOUNCE_WINDOW_MS) return;
+    // §7.1 身份为 registered. A guest or a spectator never announces.
+    if (!socketRec || socketRec.guest || socketRec.spectator) return;
+    if (!chatAvailable()) return;
+    if (!chat.confirmShown) {
+      // The operator's decision (2026-09-29): the first send of each game is confirmed. After
+      // that the switch alone governs, so a 10-game session is not 10 dialogs.
+      chat.confirmShown = true;
+      showChatConfirm();
+      return;
+    }
+    if (!chat.confirmOk) return;
+    // Set BEFORE the send: the send is asynchronous (it verifies itself over ~120–270ms) while
+    // `maybeAnnounce` runs once a second, so without this the next tick would start a second
+    // statement while the first is still in flight.
+    //
+    // It is deliberately NOT reset on failure. The spec is 「三次重试失败 → 浮层记 note，不再重试」
+    // — one attempt per game. Resetting it here (as it used to) let `maybeAnnounce` re-enter on
+    // every tick for the rest of the 30-second window, i.e. up to ~60 sends at a live opponent.
+    chat.announced = true;
+    // `markAnnounced` rides the SUCCESS callback rather than running immediately: §7.1's
+    // `chatAnnounced = { roomId, at }` is what stops a second statement in the same room, and
+    // writing it before the send is known to have landed would record a statement that never
+    // went out as delivered.
+    sendChatWithRetry(GMChat.ANNOUNCE, sendFailFoot, markAnnounced);
+  }
+
+  function markAnnounced() {
+    try {
+      var o = {};
+      o[CHAT_ANNOUNCED_KEY] = { roomId: (socketRec && socketRec.roomId) || null, at: Date.now() };
+      chrome.storage.local.set(o);
+    } catch (e) {}
+  }
+
+  // ---------- §12 auto-prompt ----------
+
+  function maybePromptQuestion() {
+    if (!S.chatAuto || chat.ignored || chat.promptShown || chat.pending) return;
+    var rate = opponentRisk();
+    if (!GMChat.shouldPrompt(rate)) return;
+    chat.promptShown = true;
+    flashFoot(T('panel|被怀疑方 AI 率 {rate}%，可发送验证题', { rate: rate }));
+  }
+
+  // ---------- the overlay UI ----------
+
+  var chatOpen = false;
+
+  var lastAskState = null;
+  function paintChatButton() {
+    if (!els.ask) return;
+    // Same permissive list as the button's own handler — an 'off' state here would grey the
+    // button out (`.hd .lk[data-ask-state=off]` is `cursor:default`) and make the handler's
+    // exception unreachable, which is the whole bug this pair of changes fixes.
+    var ok = askableQuestions(true).length > 0;
+    var st = ok ? 'on' : 'off';
+    // `tickChat` calls this every second, so the DOM is only touched when the answer changes.
+    if (st === lastAskState) return;
+    lastAskState = st;
+    els.ask.setAttribute('data-ask-state', st);
+    els.ask.setAttribute('title', ok
+      ? T('panel|向对手提问，用五子棋常识区分 AI 与人类高手')
+      : T('panel|当前不可提问（观战 / 聊天栏不可用 / 冷却中 / 风险分不足）'));
+  }
+
+  /**
+   * The chat clock, once a second. Every step re-checks its own gate, so running it while
+   * nothing is happening costs a few comparisons.
+   */
+  function tickChat() {
+    if (chat.pending && performance.now() - chat.pending.askedAt > ASK_TIMEOUT_MS) {
+      // §13.4 — 超时未答 = empty, delta 0. It is still RECORDED: "we asked and got nothing" is
+      // evidence the operator wants to see even though it moves no number.
+      var p = chat.pending;
+      chat.pending = null;
+      recordChat(p.q, '', 'empty', 0);
+      paintChatPanel();
+    }
+    startChatObserver();
+    // §9 — the DOM path (our own displayed name) can become readable a beat after the socket
+    // frame, so give it a cheap second chance every tick; it returns at once once resolved.
+    resolveSenderColour();
+    maybeAnnounce();
+    maybePromptQuestion();
+    if (root) paintChatButton();
+  }
+
+  // §8 — the DOM fallback for reading messages. Scoped to the chat container rather than
+  // `document.body`: the game page mutates constantly (clocks, board, score) and a body-wide
+  // observer would run this handler hundreds of times a second.
+  var chatObserver = null;
+  function startChatObserver() {
+    if (chatObserver) return;
+    var input = chatInputEl();
+    if (!input) return;
+    var box = null, n = input;
+    for (var i = 0; i < 4 && n; i++) {
+      n = n.parentElement;
+      if (n && /chat|messag/i.test(String(n.className || ''))) { box = n; break; }
+    }
+    if (!box) return;
+    chatObserver = new MutationObserver(function (muts) {
+      for (var i = 0; i < muts.length; i++) {
+        var added = muts[i].addedNodes;
+        for (var j = 0; j < added.length; j++) {
+          var el = added[j];
+          if (!el || el.nodeType !== 1) continue;
+          var txt = String(el.textContent || '').trim();
+          if (!txt || txt.length > 500) continue;
+          // The node's own class/id is the only sender hint the DOM offers. §9's level 2 resolves
+          // the COLOUR from the seat names; this only answers "is it one of ours?".
+          var hint = String(el.className || '') + ' ' + String(el.id || '') + ' ' +
+            String((el.dataset && (el.dataset.user || el.dataset.sender || el.dataset.name)) || '');
+          onChatMessage(txt, /self|own|mine|me\b/i.test(hint) ? CHAT_SELF : null, 'dom');
+        }
+      }
+    });
+    chatObserver.observe(box, { childList: true, subtree: true });
+  }
+
+  function paintChatPanel() {
+    if (!els.chatPanel) return;
+    if (!chatOpen) { els.chatPanel.innerHTML = ''; els.chatPanel.style.display = 'none'; return; }
+    els.chatPanel.style.display = '';
+    var rows = '';
+    for (var i = chat.history.length - 1; i >= 0; i--) {
+      var h = chat.history[i];
+      rows += '<div class="cr"><span class="cq">' + esc(h.q) + '</span>' +
+        '<span class="ca">' + esc(h.answer) + '</span>' +
+        '<span class="cv ' + (h.delta > 0 ? 'up' : (h.delta < 0 ? 'dn' : '')) + '">' +
+        esc(TO('verdict', h.verdict)) + (h.delta ? ' ' + (h.delta > 0 ? '+' : '') + h.delta : '') +
+        '</span></div>';
+    }
+    els.chatPanel.innerHTML =
+      '<div class="chd">' + esc(T('panel|提问记录')) + '<span class="sp"></span>' +
+        '<span class="lk" data-act="chat-close">' + esc(T('panel|收起')) + '</span></div>' +
+      (rows || '<div class="cempty">' + esc(T('panel|还没有提问记录')) + '</div>') +
+      // §7.3 — a send that failed stays visible here. The footer's note is gone after 5 seconds
+      // and this panel is what the operator is looking at when they wonder why nothing arrived.
+      (chat.lastSendWhy
+        ? '<div class="cwarn">' + esc(T('panel|发送失败：{why}。消息未发出。',
+            { why: TO('sendWhy', chat.lastSendWhy) })) + '</div>'
+        : '') +
+      '<div class="cft">' + esc(T('panel|提问 {n} 次 · 累计调整 {d}', { n: chat.asks, d: chat.total })) +
+        '<span class="sp"></span>' +
+        '<span class="lk" data-act="chat-ask">' + esc(T('panel|提问')) + '</span></div>';
+  }
+
+  /** The 提问 button: opens the record panel and fires the first question §12 allows. */
+  function askNextQuestion() {
+    // The permissive list: an unknown sender colour warns but does not block (see
+    // askableQuestions), otherwise the button could never send the first message of a game.
+    var list = askableQuestions(true);
+    chatOpen = true;
+    if (!list.length) { paintChatPanel(); return; }
+    askQuestion(list[0].q);
+    paintChatPanel();
+  }
+
+  function showChatConfirm() {
+    if (!els.chatPanel) return;
+    chatOpen = true;
+    els.chatPanel.style.display = '';
+    els.chatPanel.innerHTML =
+      '<div class="chd">' + esc(T('panel|自动发送反作弊声明')) + '</div>' +
+      '<div class="cbody">' + esc(T('panel|即将向对手发送这条英文声明，发送后无法撤回：')) +
+        '<div class="ctext">' + esc(GMChat.ANNOUNCE) + '</div></div>' +
+      '<div class="cft"><span class="sp"></span>' +
+        '<span class="lk" data-act="chat-confirm-no">' + esc(T('panel|本局忽略')) + '</span>' +
+        '<span class="lk" data-act="chat-confirm-yes">' + esc(T('panel|发送')) + '</span></div>';
   }
 
   // ---------- 0.3.6 §2: copy the result to the clipboard ----------
@@ -2531,10 +3796,17 @@
   });
 
   startDomObserver();
+  loadChatState();
+  resetChatForGame();
   setInterval(function () {
     startDomObserver();
     tickDom();
     tickStall();
     pollEnd();
+    // 0.4.6 §一 — remember the player names while they are still on screen; papergames.io takes
+    // its player row away together with the board, and the record is built after that.
+    rememberNames();
+    // 0.4.4 — the chat clock. All three are cheap and idempotent; each re-checks its own gate.
+    tickChat();
   }, 1000);
 })();

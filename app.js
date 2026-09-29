@@ -823,6 +823,23 @@ async function analyzeStep(eng, allMoves, playerIdx, actual, opts, budgetMs, rec
     analyzed: true,
     orderKnown: true,
   };
+  // 0.4.5 §三 — 开局排除 skips the ENGINE, not the shape test. This early return is what
+  // makes the live-stepwise path cheap: content.js still calls analyzeStep for every hand,
+  // but the first N per side return here without a single engine call. applyTerminal MUST
+  // still run (0.4.5 §3.4): a live four formed inside the opening is rare but real, and
+  // dropping the test here would let the detector run straight past it.
+  if (step.isOpening) {
+    step.analyzed = false;
+    step.best = null; step.bestStr = '—';
+    step.cands = []; step.candStrs = [];
+    step.top1 = step.top3 = step.top5 = false;
+    step.outsideTop5 = false;
+    step.bestWR = step.actualWR = step.loss = null;
+    step.isSharp = false;
+    step.forcedDefense = false;
+    applyTerminal(step, opts, board || boardFromCoords(allMoves));
+    return step;
+  }
   eng.configure({ rule: opts.rule, thinkMs: budgetMs, threadNum: opts.threadNum });
   const res = await eng.analyzePosition(allMoves.slice(0, -1), 5);
   scoreStep(step, res, actual);
@@ -863,7 +880,11 @@ async function analyzeStepwise(record, opts, onProgress, onStep) {
   const need = [];
   for (let i = 0; i < N; i++) {
     const side = sideAt(i);
-    need.push(scorable(sources[i]) && (suspect === 'both' || side === suspect));
+    // 0.4.5 §三 — 开局排除 belongs here as well as in the aggregation. Without it the first N
+    // hands per side were analysed by the engine and then thrown away by sideAggregate()'s
+    // `!x.isOpening` filter: openingCutoff = 8 wasted 16 engine calls per game.
+    const isOpening = playerIdxByMove[i] < opts.openingCutoff;
+    need.push(scorable(sources[i]) && !isOpening && (suspect === 'both' || side === suspect));
   }
   const total = need.filter(Boolean).length;
   let done = 0;
@@ -902,7 +923,15 @@ async function analyzeStepwise(record, opts, onProgress, onStep) {
         top1: false, top3: false, top5: false, outsideTop5: false,
         bestWR: null, actualWR: null, loss: null, isSharp: false, forcedDefense: false,
       };
+      // 0.4.5 §三/§3.4 — the step we just stopped analysing as an opening hand is exactly the
+      // step that still has to be shape-tested. Only for scorable hands: a prejoin or
+      // ai-suggest stone keeps its old behaviour, because its `side` may be a parity guess and
+      // a shape verdict built on a guessed colour is worse than no verdict.
+      if (playerIdxByMove[i] < opts.openingCutoff && scorable(sources[i])) {
+        applyTerminal(un, opts, boardStones.slice());
+      }
       steps.push(un);
+      if (un.terminal) { onStep && onStep(un); break; }
     }
     onStep && onStep(steps[steps.length - 1]);
   }
@@ -932,6 +961,13 @@ function summarizeSteps(steps, times, opts) {
   // only holds PLAYED moves, so an adjacency here means the capture lost one.
   let issues = 0;
   for (let i = 1; i < steps.length; i++) if (steps[i].side === steps[i - 1].side) issues++;
+  const black = sideAggregate(steps, 'B', hasTime, params);
+  const white = sideAggregate(steps, 'W', hasTime, params);
+  // 0.4.3 §1.2/§1.5: the live summary carries the same two per-side pictures the finished
+  // report does. Without them the segment lines would appear only once the game ended, and
+  // the risk band would visibly change at that moment — which reads as a bug, not a feature.
+  const segments = { B: segmentSide(steps, 'B'), W: segmentSide(steps, 'W') };
+  const typeTh = riskParams(params).t;
   return {
     partial: true,
     totalMoves: steps.length,
@@ -942,8 +978,12 @@ function summarizeSteps(steps, times, opts) {
     orderIssues: issues,
     hasTime,
     suspect: (opts && opts.suspect) || 'both',
-    black: sideAggregate(steps, 'B', hasTime, params),
-    white: sideAggregate(steps, 'W', hasTime, params),
+    black, white,
+    segments,
+    types: {
+      B: black ? classifySide(black.risk, segments.B, steps, 'B', typeTh) : null,
+      W: white ? classifySide(white.risk, segments.W, steps, 'W', typeTh) : null,
+    },
   };
 }
 
@@ -981,6 +1021,10 @@ const BASE_WEIGHTS = {
   evasion: 0.06, winBlunder: 0.04,
 };
 const BASE_THRESHOLDS = {
+  // 0.4.3 §1.1: the ramp aTop1 now reads. `top1Lo`/`top1Hi` are kept because a pre-0.4.3
+  // archive and the `opts.legacyTop1` comparison path still describe themselves with them,
+  // but the detector itself no longer consumes them.
+  topProxLo: 0.50, topProxHi: 0.90,
   top1Lo: 0.72, top1Hi: 0.90,
   acplLo: 0.003, acplHi: 0.015,
   sharpHitLo: 0.65, sharpHitSpan: 0.35,
@@ -995,6 +1039,14 @@ const BASE_THRESHOLDS = {
   evasionMin: 3,        // fewest evasions before the rhythm score means anything
   evasionReg: 0.35,     // stddev / mean ceiling for "a regular rhythm"
   winningWR: 0.85,      // "winning" for the 将胜乱下 signal
+  // 0.4.3 §1.6: the five risk bands' four cut lines, all right-open (75 is AI, 74 is 疑似AI).
+  // The band a game lands in is a summary of the risk score, not a second opinion about it,
+  // so these are configurable and learnable like every other cut but never feed back into the
+  // score itself.
+  typeAiMin: 75,
+  typeSuspectMin: 55,
+  typeProMin: 45,
+  typeExpertMin: 30,
 };
 
 // Resolve learnedParams into the two objects sideAggregate consumes. Unknown or
@@ -1114,9 +1166,13 @@ async function analyzeGame(record, opts, onProgress) {
     playerIdxByMove.push(playerCount);
     if (sources[i] !== 'ai-suggest') playerCount++;
   }
+  // 0.4.5 §三 — the denominator has to exclude the opening hands too, or the progress bar
+  // promises engine calls that are deliberately never made (and 5 + 90*done/analyzedTotal
+  // would stall below 95% for the whole opening).
   const analyzedTotal = moves.filter((_, i) => {
     const side = sideFromStone(record, i) || ((playerIdxByMove[i] % 2 === 0) ? 'B' : 'W');
-    return scorable(sources[i]) && (suspect === 'both' || side === suspect);
+    const isOpening = playerIdxByMove[i] < opts.openingCutoff;
+    return scorable(sources[i]) && !isOpening && (suspect === 'both' || side === suspect);
   }).length;
   let analyzedDone = 0;
 
@@ -1139,7 +1195,8 @@ async function analyzeGame(record, opts, onProgress) {
       analyzed: true,
       orderKnown: scorable(source),
     };
-    const needEngine = scorable(source) && (suspect === 'both' || side === suspect);
+    const needEngine = scorable(source) && !step.isOpening &&
+                       (suspect === 'both' || side === suspect);
     if (needEngine) {
       if (opts.shouldAbort && opts.shouldAbort()) throw new Error('__aborted__');
       const prefix = moves.slice(0, i);
@@ -1150,7 +1207,7 @@ async function analyzeGame(record, opts, onProgress) {
       // the rest carries no signal. The terminal step IS the last hand analysed.
       applyTerminal(step, opts, boardStones);
       analyzedDone++;
-      onProgress && onProgress(5 + 90 * analyzedDone / analyzedTotal,
+      onProgress && onProgress(5 + 90 * (analyzedTotal ? analyzedDone / analyzedTotal : 1),
         i18nErr(side === 'B' ? 'progress.step.black' : 'progress.step.white',
                 { i: playerIdxByMove[i] + 1, n: playerCount }));
       await awaitIfPaused();
@@ -1162,6 +1219,11 @@ async function analyzeGame(record, opts, onProgress) {
       step.outsideTop5 = false;
       step.bestWR = step.actualWR = step.loss = null;
       step.isSharp = false;
+      // 0.4.5 §三/§3.4 — the opening hand whose engine call we just removed is the one that
+      // still has to be shape-tested. Restricted to scorable hands so prejoin / ai-suggest
+      // stones keep their previous behaviour (their `side` may be a parity guess, and a shape
+      // verdict built on a guessed colour is worse than no verdict).
+      if (step.isOpening && scorable(source)) applyTerminal(step, opts, boardStones);
     }
     if (step.terminal) { steps.push(step); break; }
     steps.push(step);
@@ -1186,7 +1248,24 @@ async function analyzeGame(record, opts, onProgress) {
   return report;
 }
 
-function sideAggregate(steps, side, hasTime, params) {
+// 0.4.3 §1.1: how close this hand came to the engine's first choice, as a graded score
+// rather than a yes/no. 1.0 = the top pick, 0.75 = Top2-3, 0.55 = Top4-5, 0 = further down.
+//
+// Why a grade replaces a binary hit: a side that keeps landing on Top2-T5 is playing just as
+// much like the engine as one that lands on Top1, and the 0.3.1 model called the first case
+// "no evidence at all". `aTop1`'s ramp dropped to exactly 0 below 0.72 top-1 agreement, and
+// `sharpHit` counted only top-1 hits among the sharp hands — so BOTH terms collapsed together
+// and a game that read 80+ slid into the 50s. Human play does not hug the engine's first few
+// candidates that tightly; being one candidate off is a coordinate, not a different player.
+const PROX = { top1: 1.0, top3: 0.75, top5: 0.55 };
+function stepProximity(s) {
+  if (s.top1) return PROX.top1;
+  if (s.top3) return PROX.top3;
+  if (s.top5) return PROX.top5;
+  return 0;
+}
+
+function sideAggregate(steps, side, hasTime, params, opts) {
   const { w, t } = riskParams(params);
   // 0.4.2 §2.3: an evasion hand is excluded from the main statistics. That exclusion IS the
   // signal: a deliberately bad move would otherwise dilute the very percentages (Top-1 /
@@ -1200,10 +1279,25 @@ function sideAggregate(steps, side, hasTime, params) {
   const top1 = avg(s.map(x => x.top1 ? 1 : 0));
   const top3 = avg(s.map(x => x.top3 ? 1 : 0));
   const top5 = avg(s.map(x => x.top5 ? 1 : 0));
+  // 0.4.3 §1.1: the graded mean the two 0.3.1 terms now read. Left visible in the report
+  // beside top1/top3/top5 because it is a different number about the same hands, and the
+  // only way to tell "this side always hit Top3" from "this side always hit Top1" in an
+  // archive is to carry it.
+  // 0.4.3 §1.1: if a caller asks for the pre-0.4.3 reading (`opts.legacyTop1`, the comparison
+  // switch §五 #2 asks for), EVERYTHING the graded step feeds goes back to the binary hit —
+  // not just the ramp below. §1.1's diagnosis was that the two terms COLLAPSED TOGETHER ("80+
+  // slid into the 50s"), and a switch that reverses only one of them cannot reproduce the
+  // number it exists to compare against: it would understate the old defect by ~6 points.
+  // So this one flag covers the whole old behaviour, and a test can score the same steps both
+  // ways instead of asserting against a re-implementation of either.
+  const legacy = !!(opts && opts.legacyTop1);
+  const topProx = avg(s.map(stepProximity));
   const losses = s.map(x => x.loss).filter(v => v != null);
   const meanLoss = avg(losses);
   const sharp = s.filter(x => x.isSharp);
-  const sharpHit = sharp.length ? avg(sharp.map(x => x.top1 ? 1 : 0)) : null;
+  const sharpHit = sharp.length
+    ? (legacy ? avg(sharp.map(x => (x.top1 ? 1 : 0))) : avg(sharp.map(stepProximity)))
+    : null;
   const outTop5 = avg(s.map(x => x.outsideTop5 ? 1 : 0));
   const desperateCount = s.filter(x => x.desperate).length;
   // Counted over the side's whole sequence (evasions included, since an evasion is one of
@@ -1223,7 +1317,10 @@ function sideAggregate(steps, side, hasTime, params) {
     }
   }
 
-  const aTop1 = rampUp(top1, t.top1Lo, t.top1Hi);
+  // `top1Lo`/`top1Hi` stay in storage and in the learner (they are still what an old archive
+  // describes itself with), but nothing here reads them unless `legacy` above asks for it.
+  const aTop1 = legacy ? rampUp(top1, t.top1Lo, t.top1Hi)
+                       : rampUp(topProx, t.topProxLo, t.topProxHi);
   const aAcpl = rampDown(meanLoss, t.acplLo, t.acplHi);
   const aSharp = sharp.length >= 3 ? clamp((sharpHit - t.sharpHitLo) / Math.max(0.05, t.sharpHitSpan), 0, 1) : 0.5;
   const aOut = rampDown(outTop5, 0, t.outTop5Hi);
@@ -1260,7 +1357,7 @@ function sideAggregate(steps, side, hasTime, params) {
                     + wEff.evasion * aEvasion + wEff.winBlunder * aWinBlunder), 0, 100);
   const level = risk >= t.riskHigh ? '高风险' : (risk >= t.riskMid ? '可疑' : '低风险');
   return {
-    side, n, top1, top3, top5, meanLoss, sharpHit, outTop5, desperateCount,
+    side, n, top1, top3, top5, topProx, meanLoss, sharpHit, outTop5, desperateCount,
     sharpCount: sharp.length, time, simCount,
     // 0.4.2 §二. n / top1 / meanLoss above deliberately do NOT include these hands; these
     // three fields are the only place they are counted.
@@ -1275,13 +1372,143 @@ function sideAggregate(steps, side, hasTime, params) {
   };
 }
 
+// ---------- 0.4.3 §1.2 分段识别 ----------
+// A "segment" is a maximal run of this side's hands that share the same nearness class, where
+// the class is deliberately BINARY: inside the engine's Top5, or outside it. Not Top1 / Top2-3
+// / Top4-5 — the engine's exact ranking inside its own candidate list is noisy at a fixed
+// time budget, and a classifier built on that noise would change its mind between two runs of
+// the same game. Top5 is a boundary the engine is actually confident about.
+const MIN_SEGMENT = 3;
+
+function segmentSide(steps, side) {
+  // Same population the step table draws: this side's scored, non-opening, non-exempt hands.
+  // Evasion hands stay IN on purpose — a segment is a picture of the game as it was played,
+  // and the operator sees every hand in the table; hiding one from the geometry would put the
+  // green/orange line at a row that does not match the run it describes.
+  const ownIdx = [];
+  steps.forEach(function (s, i) {
+    if (s.side === side && s.analyzed && !s.isOpening && !s.forcedDefense) ownIdx.push(i);
+  });
+  if (ownIdx.length < MIN_SEGMENT) return [];
+
+  // 1. binarise, then run-length encode over THIS SIDE's own sequence (the opponent's hands
+  //    in between are skipped, so a run is "three of my hands", not three table rows). The
+  //    colour array is kept flat and re-encoded after every merge below, because a merge is
+  //    only a merge once the absorbed run shares its neighbour's colour.
+  const kind = ownIdx.map(function (i) { return steps[i].top5 ? 'high' : 'low'; });
+  function rle() {
+    const out = [];
+    let start = 0;
+    for (let k = 1; k <= kind.length; k++) {
+      if (k === kind.length || kind[k] !== kind[start]) {
+        out.push({ from: start, to: k - 1, kind: kind[start] });
+        start = k;
+      }
+    }
+    return out;
+  }
+
+  // 2. absorb every run shorter than MIN_SEGMENT into its longer neighbour, until they are all
+  //    long enough or only one run is left. A two-hand "segment" is a blip, not a phase.
+  //    Re-encoding after each merge is what makes the blip actually disappear: flipping a short
+  //    run into a neighbour of the same colour leaves two ADJACENT same-kind runs if the array
+  //    is not re-encoded, i.e. a boundary line drawn through a uniform stretch — and it would
+  //    also keep measuring that stretch in two pieces, so a length-2 run sitting inside a
+  //    length-7 region would still look "short" and get flipped again.
+  let runs = rle();
+  while (runs.length > 1) {
+    let shortest = -1, shortLen = Infinity;
+    for (let r = 0; r < runs.length; r++) {
+      const len = runs[r].to - runs[r].from + 1;
+      if (len < MIN_SEGMENT && len < shortLen) { shortLen = len; shortest = r; }
+    }
+    if (shortest < 0) break;
+    const prev = shortest > 0 ? runs[shortest - 1] : null;
+    const next = shortest < runs.length - 1 ? runs[shortest + 1] : null;
+    const prevLen = prev ? prev.to - prev.from + 1 : -1;
+    const nextLen = next ? next.to - next.from + 1 : -1;
+    // `prevLen >= nextLen` also handles the two edge cases: at the first run prevLen is -1 (so
+    // `next` wins unless there is none), and there is only one run when both are null — which
+    // the loop condition already excludes.
+    const into = (prevLen >= nextLen) ? prev : next;
+    for (let p = runs[shortest].from; p <= runs[shortest].to; p++) kind[p] = into.kind;
+    runs = rle();
+  }
+
+  // 3. back to global step indices. `from`/`to` address the shared steps array, so a segment
+  //    spans the opponent's intervening rows rather than being a parallel numbering.
+  return runs.map(function (run) {
+    return { from: ownIdx[run.from], to: ownIdx[run.to], kind: run.kind };
+  });
+}
+
+// ---------- 0.4.3 §1.6 区间映射 ----------
+// Five bands on whole points, right-open: 75 is AI, 74 is 疑似AI. All four cuts are read from
+// the thresholds object so learn.js can move them, and every fallback is the §1.6 default —
+// a hand-edited learnedParams must not be able to blank a band out.
+function riskBand(risk, thresholds) {
+  const t = thresholds || BASE_THRESHOLDS;
+  const aiMin = t.typeAiMin != null ? t.typeAiMin : 75;
+  const susMin = t.typeSuspectMin != null ? t.typeSuspectMin : 55;
+  const proMin = t.typeProMin != null ? t.typeProMin : 45;
+  const expMin = t.typeExpertMin != null ? t.typeExpertMin : 30;
+  if (risk >= aiMin) return 'ai';
+  if (risk >= susMin) return 'suspect';
+  if (risk >= proMin) return 'pro';
+  if (risk >= expMin) return 'expert';
+  return 'normal';
+}
+
+// Band -> type code, for the four non-AI bands. The CODES are what travels: `classifySide`
+// runs offscreen (where t() has no dictionary) and the result is stored in the archive and in
+// `manualType`, so what is persisted is a stable identifier and only the DISPLAY goes through
+// TO('type', code). Same shape as app.js's `level` — except that `level` stores its Chinese
+// value because content.js compares it by literal, while nothing compares a type by literal,
+// so the code is the honest thing to store. See locale/zh-CN.js, which registers these.
+const TYPE_OF_BAND = { suspect: 'suspectAi', pro: 'pro', expert: 'expert', normal: 'normal' };
+
+// 0.4.3 §1.5. The band decides everything except which KIND of AI it was, and that comes from
+// the segments: an AI that never left Top5 is a different animal from one that dipped out a
+// few times to look human, and that in turn differs from one that left Top5 repeatedly.
+//
+// §1.5 deliberately defaults the fuzzy edge here, and this is that default: 1-3 low hands is
+// "evasive" (the few dips it takes to break a correlation), 4+ is "strongly evasive".
+function classifySide(risk, segments, steps, side, thresholds) {
+  const band = riskBand(risk, thresholds);
+  if (band !== 'ai') {
+    return { suspect: band, type: TYPE_OF_BAND[band] || 'normal', auto: true, lowSteps: 0 };
+  }
+  let lowSteps = 0;
+  (segments || []).forEach(function (sg) {
+    if (sg.kind !== 'low') return;
+    for (let i = sg.from; i <= sg.to; i++) {
+      if (steps[i] && steps[i].side === side) lowSteps++;
+    }
+  });
+  let type;
+  if (lowSteps === 0) type = 'lowAi';
+  else if (lowSteps <= 3) type = 'evasiveAi';
+  else type = 'strongEvasiveAi';
+  return { suspect: 'ai', type, auto: true, lowSteps };
+}
+
 function buildReport(steps, record, opts) {
   const hasTime = (record.times || []).some(v => v != null);
   const suspect = (opts && opts.suspect) || 'both';
   // 0.3.3: the learned parameters (or null) that produced this report's risk numbers.
   const params = (opts && opts.learned) || null;
-  const black = sideAggregate(steps, 'B', hasTime, params);
-  const white = sideAggregate(steps, 'W', hasTime, params);
+  const black = sideAggregate(steps, 'B', hasTime, params, opts);
+  const white = sideAggregate(steps, 'W', hasTime, params, opts);
+  // 0.4.3 §1.2/§1.5: the two per-side pictures that are not numbers. Both are computed here
+  // from the finished step array — after markEvasion() has run, so an evasion hand is where
+  // the operator will see it — and carried in the report so the viewer, the archive list and
+  // the sample editor all read one computation instead of three.
+  const segments = { B: segmentSide(steps, 'B'), W: segmentSide(steps, 'W') };
+  const typeTh = riskParams(params).t;
+  const types = {
+    B: black ? classifySide(black.risk, segments.B, steps, 'B', typeTh) : null,
+    W: white ? classifySide(white.risk, segments.W, steps, 'W', typeTh) : null,
+  };
   const flagged = steps.filter(x =>
     x.analyzed && x.orderKnown !== false && !x.isOpening &&
     (x.outsideTop5 || (x.isSharp && !x.top1) || (x.loss != null && x.loss > 0.12) || x.desperate)
@@ -1331,6 +1558,14 @@ function buildReport(steps, record, opts) {
       featureCount: (params.features || []).length,
     } : null,
     steps, black, white, flagged,
+    // 0.4.3 §4.2/§4.3. `manualSegments` / `manualType` are the operator's overrides and start
+    // empty on a fresh analysis; storage.js preserves them when a report is re-slimmed, so an
+    // archive that was edited keeps its edits. `segments` and `types` are always the AUTOMATIC
+    // result — the viewer prefers the manual value when there is one, which is what makes
+    // 恢复自动分段 a matter of setting the override back to null.
+    segments, types,
+    manualSegments: { B: null, W: null },
+    manualType: { B: null, W: null },
   };
 }
 
@@ -1343,6 +1578,10 @@ if (typeof module !== 'undefined' && module.exports) {
     // 0.4.2 §二: the evasion pass and its per-side figures, exported so the unit tests can
     // drive the two thresholds directly instead of only through a full analysis.
     markEvasion, evasionStats,
+    // 0.4.3 §1.1/§1.2/§1.5: the proximity grade, the segmenter and the classifier. Exported
+    // for the same reason — a test that had to re-implement segmentSide() to check it would
+    // be testing its own copy, and the two could drift.
+    stepProximity, segmentSide, riskBand, classifySide, MIN_SEGMENT,
     getEngine, defaultThreadNum, resolveThreadNum, engineInfo, warmEngine,
     // 0.3.4 活四：导出形状识别与判定，供单元测试直接驱动（不再依赖引擎胜率）
     liveFourHolder, applyTerminal, boardFromCoords, scanThreats,

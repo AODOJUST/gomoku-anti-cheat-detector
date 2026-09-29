@@ -268,6 +268,18 @@
   function currentLocale() {
     return (typeof GMI18n !== 'undefined') ? GMI18n.getLocale() : 'zh-CN';
   }
+  // 0.4.4 bug fix — `label(opening, locale)` has always taken a locale argument, but the name
+  // lookup went through `t()`, which resolves against whatever locale is CURRENT. So
+  // `label('D1', 'en')` returned 「直止·寒星」 with no English name unless the caller had already
+  // called `setLocale('en')`. Production happened to do that, and verify-036's helper did too
+  // (`form = (l, code) => { I.setLocale(l); return O.label(code, l); }`), which is why the
+  // contract violation survived two releases. `GMChat.openingAnswerNames()` needs all 8 names
+  // simultaneously and is what finally exposed it.
+  function tIn(locale, key) {
+    if (typeof GMI18n === 'undefined') return key;
+    if (GMI18n.tIn) return GMI18n.tIn(locale, key);
+    return GMI18n.t(key);   // pre-0.4.4 i18n.js: degrade to the old (wrong) behaviour
+  }
   // "直止·寒星" / "直止·寒星（Cold Star）" from either a stored opening object or a bare code
   // (archives keep the code only, so the name has to be recoverable from it).
   //
@@ -303,7 +315,7 @@
       return typeof opening === 'string' ? opening : null;
     }
     var l = locale || currentLocale();
-    var local = t('opening.' + o.code);
+    var local = tIn(l, 'opening.' + o.code);
     var cat = o.category;
     // `local === o.name` is the case for ja / ko (they deliberately reuse the RIF 汉字) and for
     // zh-CN, whose table simply mirrors the source: both mean "the local form adds nothing".

@@ -49,6 +49,93 @@
   // verdict computed from the fields it does have; that also keeps the list badge and the
   // detail row from disagreeing about a game. Kept in step with viewer's other mirrors of
   // app-side rules: `quality` is display-only, nothing here feeds a score.
+  // =====================================================================
+  // 0.4.3 §1.5: the AI class
+  // =====================================================================
+  // The codes app.js's classifySide() produces and stores. The value persisted is the CODE and
+  // only the display goes through TO('type', code) — the same arrangement `idLabel.registered`
+  // uses, and the one that lets app.js (which runs offscreen, with no dictionary) name a class
+  // at all. `type.*` therefore needs an entry in locale/zh-CN.js and in _tools/i18n-extra.js;
+  // see the note there.
+  var TYPE_CODES = ['lowAi', 'evasiveAi', 'strongEvasiveAi', 'suspectAi', 'pro', 'expert', 'normal'];
+  // Code -> CSS class. Kept as a map rather than string surgery (`lowAi` -> `low-ai`) because
+  // a generated class name is exactly the kind of thing that silently produces an unstyled
+  // badge when one code is renamed.
+  var TYPE_CLASS = {
+    lowAi: 'low-ai', evasiveAi: 'evasive-ai', strongEvasiveAi: 'strong-evasive-ai',
+    suspectAi: 'suspect-ai', pro: 'pro', expert: 'expert', normal: 'normal',
+  };
+  // What a reader should show for one side: the operator's override wins, then the report's
+  // automatic result, then the archive's lifted copy (storage.js's resolveType writes that so
+  // the list can badge a card it never opened). Returns null when neither exists — a
+  // pre-0.4.3 archive — which every caller must render as "nothing", not as 普通玩家: claiming
+  // a clean verdict we never computed is the one thing this must not do.
+  function typeOf(obj, side) {
+    var rep = (obj && obj.report) || {};
+    var mt = rep.manualType;
+    if (mt && typeof mt[side] === 'string' && mt[side]) return { type: mt[side], manual: true };
+    var t = rep.types && rep.types[side];
+    if (t && t.type) return { type: t.type, manual: false };
+    var e = obj && obj.types && obj.types[side];
+    if (e && e.type) return { type: e.type, manual: !!e.manual };
+    return null;
+  }
+  function typeBadge(obj, side, withSide) {
+    var r = typeOf(obj, side);
+    if (!r) return '';
+    return '<span class="tbadge ' + (TYPE_CLASS[r.type] || 'normal') + '">' +
+      (withSide ? sideTag(side) + ' ' : '') + esc(TO('type', r.type)) +
+      (r.manual ? '<span class="man" title="' + esc(T('viewer|人工指定')) + '">*</span>' : '') +
+      '</span>';
+  }
+  // 0.4.3 §1.5: the badge line under a list card's metadata. §1.5 asks for the suspected side
+  // only — a game checked against one player must not show a class it never computed for the
+  // other — and for nothing at all when neither side has a class (a pre-0.4.3 archive), rather
+  // than a row of dashes on every old card.
+  function typeLine(obj, suspect) {
+    var h = '';
+    ['B', 'W'].forEach(function (side) {
+      if (suspect === 'B' || suspect === 'W') { if (suspect !== side) return; }
+      var b = typeBadge(obj, side, true);
+      if (b) h += b + ' ';
+    });
+    h = h.trim();
+    return h ? '<span class="ty" title="' + esc(T('viewer|类型徽章')) + '">' + h + '</span>' : '';
+  }
+  // 0.4.3 §1.5: 「AI 分类：黑 × 白 ×」 plus the dropdown that overrides it. One renderer for
+  // the archive detail and the sample detail so the two cannot drift; `save` is the caller's
+  // storage writer and `after` the caller's repaint.
+  function renderTypeRow(el, obj, save, after) {
+    if (!el) return;
+    var rep = (obj && obj.report) || {};
+    if (!rep.black && !rep.white) { el.innerHTML = ''; return; }
+    var h = '<span>' + T('viewer|AI 分类') + '：</span>';
+    // NOTE the aggregate keys are `black` / `white`, while the side codes are 'B' / 'W'. Indexing
+    // `rep[side]` here reads `rep['B']`, which no report has — the guard above passes (the report
+    // DOES have a black and a white aggregate) and then both iterations bail, leaving nothing but
+    // the label. A wrong-index that looks like "the feature is missing" rather than throwing.
+    ['B', 'W'].forEach(function (side) {
+      if (!rep[side === 'B' ? 'black' : 'white']) return;
+      var cur = (rep.manualType && rep.manualType[side]) || '';
+      h += '<span class="tside">' + typeBadge(obj, side, true) +
+        '<select data-type-side="' + side + '">' +
+          '<option value=""' + (cur ? '' : ' selected') + '>' + T('viewer|自动') + '</option>' +
+          TYPE_CODES.map(function (c) {
+            return '<option value="' + c + '"' + (cur === c ? ' selected' : '') + '>' +
+              esc(TO('type', c)) + '</option>';
+          }).join('') +
+        '</select></span>';
+    });
+    el.innerHTML = h;
+    el.querySelectorAll('select[data-type-side]').forEach(function (sel) {
+      sel.onchange = function () {
+        save(sel.dataset.typeSide, sel.value || null).then(function () {
+          if (after) after();
+        });
+      };
+    });
+  }
+
   function qualityOf(explicit, orderIssues, unordered, dropped) {
     if (explicit === 'good' || explicit === 'partial' || explicit === 'suspect') return explicit;
     if (orderIssues) return 'suspect';
@@ -355,6 +442,13 @@
     // `renderSampleDetail`, which returns early), so the test has to be here.
     if (curArchive) renderDetail();
     if (curSample) renderSampleDetail();
+    // 0.4.3 §1.3/§1.5: the four segment legends, the two AI-class rows and the sample editor's
+    // score cards are built entirely in JS, so `apply(document)` cannot reach them — the same
+    // defect the two comments above describe, in three more panes. The type rows are rebuilt by
+    // `renderDetail` / `renderSampleDetail` just above; the legends and the editor's scores are
+    // owned by no renderer, so they are repainted here.
+    renderSegLegends();
+    if (editing) renderSeScores(seReport);
   }
 
   // =====================================================================
@@ -384,18 +478,88 @@
     setField($('setMinMoves'), S.minArchiveMoves);
     setField($('setLang'), S.lang || 'auto');
     $('setAuto').checked = !!S.autoAnalyze;      // a checkbox has no half-edited state
+    $('setChatAuto').checked = !!S.chatAuto;     // 0.4.4 §七/§八 master switch, default off
+    fillLlmForm();
+  }
+
+  // ---- 0.4.4 §十六: the LLM API panel ----
+  // The field defaults come from `GMLLM.DEFAULTS`, never from a literal here: the request code
+  // reads the same object, and two copies of "what does an unset timeout mean" is exactly the
+  // kind of drift this project has been bitten by before.
+  function llmCfg() { return Object.assign({}, GMLLM.DEFAULTS, S.llm || {}); }
+
+  var LLM_FIELDS = [
+    ['setLlmEnabled', 'enabled', function (e) { return !!e.checked; }],
+    ['setLlmEndpoint', 'endpoint', function (e) { return String(e.value).trim(); }],
+    ['setLlmKey', 'apiKey', function (e) { return String(e.value).trim(); }],
+    ['setLlmModel', 'model', function (e) { return String(e.value).trim(); }],
+    ['setLlmTimeout', 'timeout', function (e) { return Math.max(1000, parseInt(e.value, 10) || GMLLM.DEFAULTS.timeout); }],
+    ['setLlmLimit', 'monthlyLimit', function (e) { return Math.max(1, parseInt(e.value, 10) || GMLLM.DEFAULTS.monthlyLimit); }],
+  ];
+
+  function fillLlmForm() {
+    var cfg = llmCfg();
+    if ($('setLlmEnabled')) $('setLlmEnabled').checked = !!cfg.enabled;
+    setField($('setLlmEndpoint'), cfg.endpoint);
+    setField($('setLlmKey'), cfg.apiKey);
+    setField($('setLlmModel'), cfg.model);
+    setField($('setLlmTimeout'), cfg.timeout);
+    setField($('setLlmLimit'), cfg.monthlyLimit);
+    refreshLlmUsage();
+  }
+
+  function refreshLlmUsage() {
+    var el = $('setLlmUsage');
+    if (!el) return;
+    GMLLM.loadUsage().then(function (u) {
+      var parts = [T('viewer|本月已用 {u} / {n} 次', { u: u.used, n: llmCfg().monthlyLimit })];
+      if (u.fails) parts.push(T('viewer|连续失败 {n} 次', { n: u.fails }));
+      if (u.disabledUntil > Date.now()) {
+        parts.push(T('viewer|已自动禁用至 {t}', { t: new Date(u.disabledUntil).toLocaleTimeString() }));
+      }
+      el.textContent = parts.join(' · ');
+    });
+  }
+
+  function bindLlmFields() {
+    LLM_FIELDS.forEach(function (f) {
+      var el = $(f[0]);
+      if (!el) return;
+      var field = f[1], read = f[2], timer = null;
+      // Not `bindSetting(el, 'llm', …)`: that helper dedupes on `v === last`, and every call here
+      // hands it a freshly-built object, so the dedupe could never fire. The write still goes
+      // through `G.saveSetting('llm', …)` so it rides GMStorage's serialised chain like every
+      // other setting rather than racing it.
+      function commit() {
+        if (timer) { clearTimeout(timer); timer = null; }
+        var cur = llmCfg();
+        cur[field] = read(el);
+        lastSelfWrite = Date.now();
+        G.saveSetting('llm', cur).then(function (s) {
+          S = s;
+          refreshLlmUsage();
+          flashSaved();
+        });
+      }
+      el.addEventListener('input', function () { if (timer) clearTimeout(timer); timer = setTimeout(commit, 250); });
+      el.addEventListener('change', commit);
+      el.addEventListener('blur', commit);
+    });
   }
 
   // ---- 0.3.6 §1.2: the language dropdown ----
-  // Built from GMI18n.LOCALES instead of being written into viewer.html, so a ninth language
-  // costs one entry in i18n.js plus one table and cannot leave this list behind. The labels
-  // are endonyms (locale/*.js), so the list reads the same under every UI language.
+  // Built from GMI18n.LOCALES instead of being written into viewer.html, so a fourteenth language
+  // costs one entry in i18n.js plus one table and cannot leave this list behind.
+  //
+  // 0.4.6 §2.4: the labels go through `GMI18n.langLabel()` — 「English（英语）」, the endonym plus
+  // what the current language calls it. The endonym-only list was fine at eight entries; at
+  // thirteen it asks the operator to recognise 「Монгол」 and 「Bahasa Melayu」 unaided.
   function fillLangSelect() {
     var sel = $('setLang');
     if (!sel) return;
     var html = '<option value="auto">' + esc(T('set|跟随浏览器')) + '</option>';
     GMI18n.LOCALES.forEach(function (code) {
-      html += '<option value="' + code + '">' + esc(T('lang.' + code)) + '</option>';
+      html += '<option value="' + code + '">' + esc(GMI18n.langLabel(code)) + '</option>';
     });
     sel.innerHTML = html;
   }
@@ -620,10 +784,44 @@
   // stored so it can never display a value the archive gate does not use.
   bindSetting($('setMinMoves'), 'minArchiveMoves', function (e) { return G.clampMinMoves(e.value); });
   bindSetting($('setAuto'), 'autoAnalyze', function (e) { return !!e.checked; });
+  // 0.4.4 §七/§八 — the master switch for automatic outbound chat. Without this binding the
+  // flag existed in storage, was read by content.js three times, and could never be turned on:
+  // the §7 announcement and the §8 replies were unreachable dead code. Default stays false.
+  bindSetting($('setChatAuto'), 'chatAuto', function (e) { return !!e.checked; });
   // A language change is written like any other setting; the repaint comes from the
   // storage.onChanged broadcast (§1.8), which is also what keeps the toolbar menu's checkmark
   // and this dropdown from disagreeing when the change was made on the other entry point.
   bindSetting($('setLang'), 'lang', function (e) { return e.value; });
+  bindLlmFields();
+
+  // §十八 — the host permission is `optional_host_permissions`, so it must be requested from a
+  // user gesture. This click is that gesture; without it the fetch fails as a bare network error
+  // with nothing in the UI to explain why.
+  if ($('setLlmTest')) {
+    $('setLlmTest').onclick = async function () {
+      var btn = $('setLlmTest');
+      btn.disabled = true;
+      try {
+        var cfg = llmCfg();
+        if (!cfg.apiKey) { alert(T('viewer|请先填写 API Key。')); return; }
+        var granted = await GMLLM.hasHostPermission(cfg.endpoint);
+        if (!granted) granted = await GMLLM.requestHostPermission(cfg.endpoint);
+        if (!granted) { alert(T('viewer|未授予访问该 Endpoint 的权限，无法调用。')); return; }
+        var out = await GMLLM.call('Reply with the single word: ok', { maxTokens: 8 });
+        alert(T('viewer|连接成功：{t}', { t: String(out).trim().slice(0, 80) || '（空）' }));
+      } catch (e) {
+        alert(T('viewer|连接失败：{t}', { t: GMI18n.trError(String((e && e.message) || e)) }));
+      } finally {
+        btn.disabled = false;
+        refreshLlmUsage();
+      }
+    };
+  }
+  if ($('setLlmReset')) {
+    $('setLlmReset').onclick = function () {
+      GMLLM.resetUsage().then(function () { refreshLlmUsage(); flashSaved(); });
+    };
+  }
 
   $('setClearArchives').onclick = async function () {
     var list = await G.loadArchives();
@@ -1271,6 +1469,387 @@
   // Everything between the leading "#" cell and the trailing mark/annotation cell. Split out
   // in 0.3.3 because the sample step table shows the same columns with a multi-label
   // annotation cell instead of the archive's binary mark — the two tables must never drift.
+  // =====================================================================
+  // 0.4.3 §1.2–§1.4: segments
+  // =====================================================================
+  // The rail's geometry comes from `report.segments` (automatic) or `report.manualSegments`
+  // (the operator's, which wins when present). SEGMAP is a render-time index rebuilt once per
+  // render and read by the four row builders — the step tables are rebuilt on every annotation
+  // click, and a linear scan of the segment list per row would be O(rows × segments) for no
+  // reason.
+  var SEGMAP = { B: {}, W: {} };
+
+  // Accepts either a report or a wrapper carrying one (`curArchive`, `curSample`, the editor's
+  // `{report: seReport}` stand-in) — the four renderers hold different things and a tri-state
+  // argument would be a bug waiting to happen.
+  function asReport(x) {
+    if (!x) return {};
+    return (x.report && typeof x.report === 'object') ? x.report : x;
+  }
+  // The population a segment is computed over, mirrored from app.js segmentSide(). Evasion
+  // hands stay IN, for the reason documented there: the rail is a picture of the game as it
+  // was played, and the operator sees every hand as a row.
+  function ownIdxOf(rep, side) {
+    var out = [];
+    ((asReport(rep).steps) || []).forEach(function (s, i) {
+      if (s.side === side && s.analyzed && !s.isOpening && !s.forcedDefense) out.push(i);
+    });
+    return out;
+  }
+  // The override wins when it exists, otherwise the automatic result. `Array.isArray` rather
+  // than a truthiness test so an explicitly empty manual list is honoured instead of silently
+  // falling back to the automatic rail.
+  function segsOf(obj, side) {
+    var rep = asReport(obj);
+    var ms = rep.manualSegments;
+    if (ms && Array.isArray(ms[side])) return ms[side];
+    var a = rep.segments;
+    return (a && Array.isArray(a[side])) ? a[side] : [];
+  }
+  function buildSegMap(obj) {
+    var map = { B: {}, W: {} };
+    ['B', 'W'].forEach(function (side) {
+      segsOf(obj, side).forEach(function (sg, k) {
+        for (var i = sg.from; i <= sg.to; i++) {
+          map[side][i] = { kind: sg.kind === 'low' ? 'low' : 'high', seg: k, first: i === sg.from, last: i === sg.to };
+        }
+      });
+    });
+    SEGMAP = map;
+    return map;
+  }
+  // The 4px rail class, plus the boundary rule. A boundary only shows where a segment STARTS,
+  // and never on the very first row — a 2px line above everything is just noise.
+  function markSeg(tr, side, i) {
+    var m = (SEGMAP[side] || {})[i];
+    if (!m) return tr;
+    tr.classList.add(m.kind === 'low' ? 'seg-low' : 'seg-high');
+    if (m.first && m.seg > 0) tr.classList.add('seg-start');
+    return tr;
+  }
+  function handleHtml(side, i, seg, edge) {
+    return '<span class="segh" data-side="' + side + '" data-i="' + i + '" data-seg="' + seg +
+      '" data-edge="' + edge + '" title="' + esc(T('viewer|拖动调整分段边界')) + '"></span>';
+  }
+  // §1.4's drag handles, drawn inside the row they move so the operator never has to translate
+  // between a handle and the hand it belongs to. Only a table whose report can be PERSISTED
+  // gets them: 回放详情 and 样本详情 save at once, 样本编辑器 carries the edit into
+  // `editing.report` where 保存 writes it. 检测's report is a throwaway draft, so it shows the
+  // rail (which is informative) and no handle — a handle that silently discards its edit is
+  // worse than no handle.
+  function handlesFor(side, i, table) {
+    if (side !== 'B' && side !== 'W') return '';
+    if (!table || !segContext(table)) return '';
+    var m = (SEGMAP[side] || {})[i];
+    if (!m) return '';
+    var h = '';
+    if (m.first) h += handleHtml(side, i, m.seg, 'from');
+    if (m.last) h += handleHtml(side, i, m.seg, 'to');
+    return h;
+  }
+  // One legend builder for the four step tables, so a fifth can never be added without one —
+  // and so the two strings are reached as the `viewer|` keys §4.5 names.
+  function renderSegLegends() {
+    var html = '<span class="seg-key seg-high"></span>' + T('viewer|段：全程 Top5 内') +
+               '<span class="seg-key seg-low"></span>' + T('viewer|段：含出 Top5');
+    ['segLegDetect', 'segLegDetail', 'segLegSample', 'segLegEditor'].forEach(function (id) {
+      var el = $(id);
+      if (el) el.innerHTML = html;
+    });
+  }
+
+  // A manual edit is written through GMStorage, which mutates the STORED copy — not the object
+  // the detail pane is currently rendering. So the order is always "reload, re-point, re-render":
+  // skip the middle step and the list (built from the freshly loaded array) shows the new value
+  // while the detail pane, two inches away and rendering the stale object, still shows the old
+  // one. That is exactly the badge/detail disagreement `saveArchiveType` refreshes the lifted
+  // `types` copy to prevent, arriving by another door.
+  // `refreshArchives` is async, so both halves have to be awaited before `archives` is current.
+  async function refetchArchive() {
+    if (!curArchive) return;
+    await refreshArchives();
+    var hit = archives.filter(function (a) { return a.id === curArchive.id; })[0];
+    if (hit) curArchive = hit;
+    if (curArchive) renderDetail();
+  }
+  async function refetchSample() {
+    if (!curSample) return;
+    await refreshSamples();
+    var hit = samples.filter(function (s) { return s.id === curSample.id; })[0];
+    if (hit) curSample = hit;
+    if (curSample) renderSampleDetail();
+  }
+
+  // Where a manual edit belongs, and how it is written. Returns null for the 检测 tab,
+  // which is what disables the handles and the context menu there.
+  function segContext(table) {
+    if (table === 'dTbl' && curArchive) {
+      return {
+        obj: curArchive,
+        persist: function (side, segs) { return G.saveArchiveSegments(curArchive.id, side, segs); },
+        repaint: function () { return refetchArchive(); },
+      };
+    }
+    if (table === 'sTbl' && curSample) {
+      return {
+        obj: curSample,
+        persist: function (side, segs) { return G.saveSampleSegments(curSample.id, side, segs); },
+        repaint: function () { return refetchSample(); },
+      };
+    }
+    if (table === 'seTbl' && seReport) {
+      return {
+        obj: { report: seReport },
+        persist: function (side, segs) {
+          if (!seReport.manualSegments) seReport.manualSegments = { B: null, W: null };
+          seReport.manualSegments[side] = segs;
+          if (editing) editing.report = seReport;    // 保存 writes it from here
+          return Promise.resolve(seReport);
+        },
+        repaint: function () { renderSeTable(); },
+      };
+    }
+    return null;
+  }
+
+  function posMapOf(own) {
+    var m = {};
+    own.forEach(function (g, p) { m[g] = p; });
+    return m;
+  }
+  // The list an edit starts from: the manual one when it exists, otherwise a COPY of the
+  // automatic segmentation — so the first drag of an automatic rail does not mutate the
+  // automatic result the report and the learner still describe.
+  function materialiseSegs(obj, side) {
+    return segsOf(obj, side).map(function (s) { return { from: s.from, to: s.to, kind: s.kind }; });
+  }
+  // Positions (index into this side's own hands) back to global step indices. Everything the
+  // operator manipulates is positional — "the fifth of my hands" — because a raw step index
+  // counts the opponent's moves too and would make the handles land in the wrong place.
+  function psegsToGlobal(psegs, own) {
+    return psegs.map(function (s) { return { from: own[s.from], to: own[s.to], kind: s.kind }; });
+  }
+  // The colour of a piece is derived from the hands it actually contains, never inherited: a
+  // hand-picked range can span both classes, and the rail has to keep meaning something. Ties
+  // go to `high`, matching app.js.
+  function rangeSeg(rep, own, fromP, toP) {
+    var high = 0, n = 0;
+    for (var p = fromP; p <= toP; p++) {
+      var st = ((rep && rep.steps) || [])[own[p]];
+      if (!st) continue;
+      n++;
+      if (st.top5) high++;
+    }
+    return { from: fromP, to: toP, kind: (n && high * 2 >= n) ? 'high' : 'low' };
+  }
+
+  // ---- drag ----
+  var segDrag = null;
+  // Capture phase at document level on purpose: all four step tables already have bubble-phase
+  // click handlers that would read a handle press as a row jump (检测) or a note toggle
+  // (样本详情 / 编辑器), and a capture listener on the row's own tbody would still let that
+  // tbody's own bubble listener run. Document capture is the one place that beats them.
+  document.addEventListener('mousedown', function (e) {
+    var h = e.target && e.target.closest ? e.target.closest('.segh') : null;
+    if (!h) return;
+    e.preventDefault();
+    e.stopPropagation();
+    segDragBegin(h);
+  }, true);
+  document.addEventListener('click', function (e) {
+    if (!(e.target && e.target.closest && e.target.closest('.segh'))) return;
+    e.preventDefault();
+    e.stopPropagation();
+  }, true);
+
+  function segDragBegin(h) {
+    var tbl = h.closest('table');
+    var c = segContext(tbl && tbl.id);
+    if (!c) return;
+    var side = h.dataset.side;
+    var seg = parseInt(h.dataset.seg, 10);
+    var own = ownIdxOf(c.obj.report, side);
+    var pmap = posMapOf(own);
+    var segs = materialiseSegs(c.obj, side);
+    var ok = true;
+    var psegs = segs.map(function (s) {
+      var a = pmap[s.from], b = pmap[s.to];
+      if (a == null || b == null) { ok = false; return null; }
+      return { from: a, to: b, kind: s.kind === 'low' ? 'low' : 'high' };
+    });
+    if (!ok || psegs.length < 2) return;
+    // A handle on a segment's FIRST row moves the boundary above it; on the LAST row, the one
+    // below. The two outer edges of the side's whole sequence have nothing to trade with, so
+    // those handles are inert — which is why this is the only place a handle is dropped.
+    var k = h.dataset.edge === 'from' ? seg - 1 : seg;
+    if (!(k >= 0 && k < psegs.length - 1)) return;
+    segDrag = { c: c, side: side, k: k, own: own, psegs: psegs, table: tbl.id, moved: false };
+    document.body.classList.add('seg-dragging');
+    document.addEventListener('mousemove', segDragMove, true);
+    document.addEventListener('mouseup', segDragEnd, true);
+  }
+
+  function segDragMove(e) {
+    if (!segDrag) return;
+    var tr = null;
+    if (document.elementFromPoint) {
+      var el = document.elementFromPoint(e.clientX, e.clientY);
+      tr = el && el.closest ? el.closest('tr') : null;
+    }
+    if (!tr || tr.dataset.step == null) return;
+    var g = parseInt(tr.dataset.step, 10);
+    var own = segDrag.own;
+    // The side's own position for the hovered row: how many of its hands sit at or before it.
+    // A row belonging to the OPPONENT maps to the same position as the last own hand above it,
+    // which is what the operator means when dragging across an interleaved sequence.
+    var p = 0;
+    for (var i = 0; i < own.length; i++) { if (own[i] <= g) p = i + 1; else break; }
+    var ps = segDrag.psegs, k = segDrag.k;
+    // Both sides of the boundary keep at least one hand (§1.4: the manual floor is 1). A drag
+    // that would empty either is CLAMPED rather than refused, so the preview always tracks the
+    // pointer instead of jumping.
+    var lo = ps[k].from + 1, hi = ps[k + 1].to;
+    p = Math.max(lo, Math.min(hi, p));
+    if (p === ps[k + 1].from) return;
+    ps[k].to = p - 1;
+    ps[k + 1].from = p;
+    segDrag.moved = true;
+    paintSegPreview();
+  }
+
+  function paintSegPreview() {
+    if (!segDrag) return;
+    var map = {};
+    psegsToGlobal(segDrag.psegs, segDrag.own).forEach(function (sg, k) {
+      for (var i = sg.from; i <= sg.to; i++) {
+        map[i] = { kind: sg.kind, seg: k, first: i === sg.from };
+      }
+    });
+    var tb = document.querySelector('#' + segDrag.table + ' tbody');
+    if (!tb) return;
+    tb.querySelectorAll('tr').forEach(function (tr) {
+      tr.classList.remove('seg-high', 'seg-low', 'seg-start');
+      if (tr.dataset.side !== segDrag.side || tr.dataset.step == null) return;
+      var m = map[parseInt(tr.dataset.step, 10)];
+      if (!m) return;
+      tr.classList.add(m.kind === 'low' ? 'seg-low' : 'seg-high');
+      if (m.first && m.seg > 0) tr.classList.add('seg-start');
+    });
+  }
+
+  function segDragEnd() {
+    document.removeEventListener('mousemove', segDragMove, true);
+    document.removeEventListener('mouseup', segDragEnd, true);
+    document.body.classList.remove('seg-dragging');
+    var d = segDrag;
+    segDrag = null;
+    if (!d || !d.moved) return;              // a press with no movement is not an edit
+    // §1.4: on release the new boundary is written; the preview is already what is on screen,
+    // so the repaint below only re-renders the handles at their new rows.
+    d.c.persist(d.side, psegsToGlobal(d.psegs, d.own)).then(function () { d.c.repaint(); },
+      function () { d.c.repaint(); });       // a failed write must not leave a stale rail
+  }
+
+  // ---- §1.4 right-click ----
+  // Delegated per table, like the annotation handler, because the rows are rebuilt every render.
+  STEP_TABLES.forEach(function (t) {
+    var tb = document.querySelector('#' + t + ' tbody');
+    if (!tb) return;
+    tb.addEventListener('contextmenu', function (e) {
+      var c = segContext(t);
+      if (!c) return;                        // 检测's draft has nowhere to save an edit
+      var tr = e.target && e.target.closest ? e.target.closest('tr') : null;
+      if (!tr || tr.dataset.step == null) return;
+      var side = tr.dataset.side;
+      if (side !== 'B' && side !== 'W') return;
+      e.preventDefault();
+      openSegMenu(e, c, side, parseInt(tr.dataset.step, 10));
+    });
+  });
+
+  function openSegMenu(ev, c, side, stepIdx) {
+    var rep = c.obj.report || {};
+    var hasManual = !!(rep.manualSegments && Array.isArray(rep.manualSegments[side]));
+    showCtx(
+      '<div class="it" data-a="new">' + T('viewer|创建分段') + ' <span class="k">▸</span></div>' +
+      (hasManual ? '<div class="it" data-a="reset">' + T('viewer|恢复自动分段') + '</div>' : ''),
+      ev.clientX, ev.clientY);
+    ctx.querySelectorAll('.it').forEach(function (it) {
+      it.onclick = function (e2) {
+        e2.stopPropagation();               // we are about to replace ctx.innerHTML
+        var act = it.dataset.a;
+        closeCtx();
+        if (act === 'reset') { applySegEdit(c, side, null); return; }
+        openSegCreateMenu(e2, c, side, stepIdx);
+      };
+    });
+  }
+
+  function openSegCreateMenu(ev, c, side, stepIdx) {
+    showCtx(
+      '<div class="it" data-a="one">' + T('viewer|单步分段') + '</div>' +
+      '<div class="it" data-a="tail">' + T('viewer|到本段末尾') + '</div>' +
+      '<div class="it" data-a="custom">' + T('viewer|自定义范围') + '</div>',
+      ev.clientX, ev.clientY);
+    ctx.querySelectorAll('.it').forEach(function (it) {
+      it.onclick = function (e2) {
+        e2.stopPropagation();
+        var act = it.dataset.a;
+        closeCtx();
+        createSegment(c, side, stepIdx, act);
+      };
+    });
+  }
+
+  function createSegment(c, side, stepIdx, mode) {
+    var own = ownIdxOf(c.obj.report, side);
+    var pmap = posMapOf(own);
+    var p = pmap[stepIdx];
+    if (p == null) return;
+    var psegs = materialiseSegs(c.obj, side).map(function (s) {
+      return { from: pmap[s.from], to: pmap[s.to], kind: s.kind };
+    }).filter(function (s) { return isFinite(s.from) && isFinite(s.to); });
+    // A report with no automatic segmentation at all — a pre-0.4.3 archive, or a game too
+    // short for the 3-hand minimum. Seed one run over the whole side so the operator can still
+    // carve a segment out of it; `rangeSeg` below re-colours every piece from the hands it
+    // contains, so the seed's own colour never leaks into the result.
+    if (!psegs.length) {
+      if (!own.length) return;
+      psegs = [{ from: 0, to: own.length - 1, kind: 'high' }];
+    }
+    var hit = -1;
+    for (var i = 0; i < psegs.length; i++) if (p >= psegs[i].from && p <= psegs[i].to) hit = i;
+    if (hit < 0) return;
+
+    var fromP = p, toP = p;
+    if (mode === 'tail') toP = psegs[hit].to;
+    if (mode === 'custom') {
+      var def = (p + 1) + '-' + (toP + 1);
+      var ans = prompt(T('viewer|该段包含哪几步？（当前手 {n}，默认 1 步）', { n: p + 1 }), def);
+      if (ans == null) return;
+      var m = /^\s*(\d+)\s*(?:-\s*(\d+))?\s*$/.exec(ans);
+      if (!m) return;
+      fromP = clamp(parseInt(m[1], 10) - 1, 0, own.length - 1);
+      toP = m[2] ? clamp(parseInt(m[2], 10) - 1, 0, own.length - 1) : fromP;
+      if (fromP > toP) { var t0 = fromP; fromP = toP; toP = t0; }
+    }
+    // Split the containing run at both ends of [fromP, toP], re-colouring every resulting
+    // piece from its own hands.
+    var rep = c.obj.report;
+    var out = [];
+    psegs.forEach(function (sg, k) {
+      if (k !== hit) { out.push(rangeSeg(rep, own, sg.from, sg.to)); return; }
+      if (fromP > sg.from) out.push(rangeSeg(rep, own, sg.from, fromP - 1));
+      out.push(rangeSeg(rep, own, fromP, toP));
+      if (toP < sg.to) out.push(rangeSeg(rep, own, toP + 1, sg.to));
+    });
+    applySegEdit(c, side, psegsToGlobal(out, own));
+  }
+
+  function applySegEdit(c, side, glob) {
+    c.persist(side, glob).then(function () { c.repaint(); });
+  }
+
   function stepCellsHtml(s) {
     var badges = [];
     if (s.source === 'prejoin') badges.push('<span class="badge b-pre">' + T('viewer|还原') + '</span>');
@@ -1301,27 +1880,43 @@
       '<td>' + badges.join(' ') + '</td>';
   }
 
-  function rowHtml(s, idx) {
-    return '<td>' + (s.moveNo == null ? '—' : s.moveNo) + '</td>' +
+  function rowHtml(s, idx, table) {
+    return '<td>' + handlesFor(s.side, idx, table) + (s.moveNo == null ? '—' : s.moveNo) + '</td>' +
       stepCellsHtml(s) +
       '<td class="ma" data-i="' + (idx == null ? '' : idx) + '">' + maCell(s.manualAI) + '</td>';
   }
 
   // 0.3.5 §2.4: every step table colours the WHOLE row by the side that played it, so a hand
-  // can be followed across all fifteen columns. The class goes on the <tr>; the badges and
+  // can be followed across all sixteen columns. The class goes on the <tr>; the badges and
   // annotation buttons inside keep their own colours (see viewer.html). All four step tables
   // share this one helper so a new table can never be added without it.
-  function markSide(tr, s) {
-    if (s && (s.side === 'B' || s.side === 'W')) tr.classList.add('side-' + s.side);
+  //
+  // 0.4.3 §1.3/§1.4: it also stamps the row with the step index and side — the drag handles
+  // and the segment context menu are delegated (the rows are rebuilt on every render), and the
+  // DOM row number is NOT the step index once the opponent's hands are interleaved — and
+  // applies the segment rail.
+  function markSide(tr, s, idx) {
+    if (s && (s.side === 'B' || s.side === 'W')) {
+      tr.classList.add('side-' + s.side);
+      tr.dataset.side = s.side;
+      if (idx != null) tr.dataset.step = idx;
+      markSeg(tr, s.side, idx);
+    }
     return tr;
   }
 
   function appendRow(s, idx) {
     var tb = document.querySelector('#tbl tbody');
+    if (!tb) return;
     var tr = document.createElement('tr');
+    // The incremental live path appends the newest step without an index; deriving it here
+    // keeps every row addressable by step, which is what the segment rail and its handles
+    // read. O(n) once per hand is nothing next to the engine call that produced it.
+    if (idx == null) idx = report ? report.steps.indexOf(s) : -1;
+    if (idx < 0) idx = null;
     if (isFlagged(s)) tr.classList.add('flagged');
-    markSide(tr, s);
-    tr.innerHTML = rowHtml(s, idx);
+    markSide(tr, s, idx);
+    tr.innerHTML = rowHtml(s, idx, 'tbl');
     tb.appendChild(tr);
   }
 
@@ -1426,10 +2021,29 @@
     // numbers would disagree with the final ones the moment a learned model is in play.
     report.black = sideAggregate(report.steps, 'B', report.hasTime, curLearned);
     report.white = sideAggregate(report.steps, 'W', report.hasTime, curLearned);
+    // 0.4.3 §1.2/§1.3: the last boundary can move when a hand is added, and the rows already
+    // on screen were classified against the previous segmentation — so the map is rebuilt and
+    // every existing row re-striped before the new one is appended. `manualSegments` is not
+    // touched: this pane's report is a draft with no editor, so the automatic rail is all
+    // there is to recompute.
+    report.segments = { B: segmentSide(report.steps, 'B'), W: segmentSide(report.steps, 'W') };
+    buildSegMap(report);
+    restripeSegs('tbl');
     renderScoreCards();
     appendRow(report.steps[report.steps.length - 1]);
     curStep = draftMoves.length;
     renderBoardView();
+  }
+  // Re-apply the segment rail to the rows already in a table, without rebuilding them. Used by
+  // the live incremental path above and by nothing else.
+  function restripeSegs(table) {
+    var tb = document.querySelector('#' + table + ' tbody');
+    if (!tb) return;
+    tb.querySelectorAll('tr').forEach(function (tr) {
+      tr.classList.remove('seg-high', 'seg-low', 'seg-start');
+      if (tr.dataset.step == null) return;
+      markSeg(tr, tr.dataset.side, parseInt(tr.dataset.step, 10));
+    });
   }
   function renderAllSteps() {
     renderScoreCards();
@@ -1446,6 +2060,9 @@
       '<tr><td>' + T('viewer|被迫防守豁免') + '</td><td colspan="2">' + T('viewer|{n} 手', { n: report.forcedCount || 0 }) + '</td></tr>' +
       '</table>';
     document.querySelector('#tbl tbody').innerHTML = '';
+    // 0.4.3 §1.3: the segment index has to exist before the rows are built — every row asks it
+    // for its rail colour and for its handles.
+    buildSegMap(report);
     report.steps.forEach(function (s, i) { appendRow(s, i); });
   }
 
@@ -1629,12 +2246,22 @@
   // be the same string. A default-named archive stores the whole generated sentence
   // ("A VS B  黑72/白85  全局  42手  2026-09-27 14:33") as its name, so printing a.name
   // verbatim above a subtitle that repeats mode/moves/time reads as a glitch.
+  //
+  // 0.4.6 §一 — THREE levels, and the last one is no longer "unnamed game". A 42-move game with a
+  // risk score of 85 was showing the English "Unnamed game" as its title purely because no name
+  // had been collected, which reads as "this archive is broken" when the record itself is fine.
+  // An unnamed game and an unreadable one are different things, and the title should say which:
+  // 「黑方 VS 白方」 states exactly as much as we know, and never less than the record holds.
+  // The per-side halves fall back too, so a half-read pair prints 「Alice VS 白方」 rather than
+  // 「Alice VS ?」 — the "?" told the operator nothing that the label does not say better.
   function displayName(a) {
     var p = a.players || {};
-    if (a.name !== G.defaultArchiveName(a)) return a.name;
-    if (p.black || p.white) return (p.black || '?') + ' VS ' + (p.white || '?');
-    if (p.self || p.opponent) return (p.self || '?') + ' VS ' + (p.opponent || '?');
-    return T('viewer|未命名对局');
+    // `a.name &&` guards an archive whose name was never written: without it a missing name would
+    // compare unequal to the default and be returned as-is, i.e. a blank title.
+    if (a.name && a.name !== G.defaultArchiveName(a)) return a.name;
+    if (p.black || p.white) return (p.black || T('viewer|黑方')) + ' VS ' + (p.white || T('viewer|白方'));
+    if (p.self || p.opponent) return (p.self || T('viewer|黑方')) + ' VS ' + (p.opponent || T('viewer|白方'));
+    return T('viewer|黑方') + ' VS ' + T('viewer|白方');
   }
 
   function renderList() {
@@ -1725,6 +2352,7 @@
           (isDefault ? '' : '<span class="meta">' +
             esc(T('viewer|原命名：{name}', { name: G.defaultArchiveName(a) })) + '</span>') +
           '<span class="meta" style="' + (isDefault ? '' : 'margin-top:1px') + '">' + esc(meta) + '</span>' +
+          typeLine(a, a.suspect) +
         '</span>' +
         (a.category ? '<span class="cat">' + esc(a.category) + '</span>' : '') +
         '</div>';
@@ -2263,6 +2891,19 @@
                 { missing: unordered, scored: scored, total: a.totalMoves || 0 })
             : T('viewer|数据不全'))
         : T('viewer|完整');
+    // 0.4.4 §十四 — 「交流检测」. Only present when there WAS a chat exchange: an archive from a
+    // game with no questions has nothing to say here, and a row reading 「0 次 · 0」 on every
+    // archive would train the operator to ignore the row that matters.
+    var chatRow = [];
+    if (rep.chatAdjust && rep.chatAdjust.asks) {
+      var ca = rep.chatAdjust;
+      chatRow.push([T('viewer|交流检测'),
+        // `{n}` and not `{q}`: the panel says the same sentence, and the dictionary is keyed by
+        // TEXT, so a different placeholder name would force a second row saying the same thing.
+        T('viewer|提问 {n} 次 · 累计调整 {d}', { n: ca.asks, d: (ca.total > 0 ? '+' : '') + ca.total })]);
+      if (ca.side) chatRow.push([T('viewer|调整对象'), ca.side === 'B' ? T('panel|黑方') : T('panel|白方')]);
+      if (ca.how) chatRow.push([T('viewer|发送者识别'), TO('senderHow', ca.how)]);
+    }
     var facts = [
       [T('viewer|总手数'), T('viewer|{n} 手', { n: a.totalMoves || 0 })],
       [T('viewer|计入手数'), T('viewer|{n} 手', { n: scored })],
@@ -2316,13 +2957,21 @@
         ? T('viewer|已学习（{t} · 样本 {n} · 特征库 {f}）',
             { t: G.beijingTime(rep.learned.trainedAt), n: rep.learned.sampleCount, f: rep.learned.featureCount })
         : T('viewer|0.3.1 默认')],
+      // 0.4.6 §一 — 'dom-pair' and 'dom-pair-order' are two DIFFERENT claims about the same
+      // reading, so they get two labels. On papergames.io the two names sit side by side with no
+      // colour and no "you"/"opponent" wording, and their order is NOT self-first; the pair is
+      // only trustworthy once the account menu has said which of the two we are. 'dom-pair' means
+      // that happened; 'dom-pair-order' means the names are right but which one is us is a guess,
+      // which is exactly what an operator staring at a swapped "A VS B" needs to be told.
       [T('viewer|玩家名来源'), {
         socket: T('viewer|socket 事件'), dom: T('viewer|页面 DOM'),
+        'dom-pair': T('viewer|并排两名（已定向）'),
+        'dom-pair-order': T('viewer|并排两名（顺序未定）'),
         none: T('viewer|未取到（命名已降级）'),
       }[recMeta.nameSource]
         || '—'],
       [T('viewer|数据来源'), srcLabel || recMeta.source || '—'],
-    ];
+    ].concat(chatRow);
     $('dMetrics').innerHTML = '<table class="facts">' + facts.map(function (kv) {
       var warn = String(kv[1]).charAt(0) === '⚠';
       var cls = warn ? ' class="warn"' : (kv[0] === T('viewer|人工标记') ? ' class="ma-row"' : '');
@@ -2368,13 +3017,19 @@
     $('dSlider').max = steps.length;
     $('dSlider').value = dStep;
     $('dJump').value = dStep;
+    // 0.4.3 §1.3/§1.5: the rail's index and the class row are both built here, before any row
+    // is rendered, so every row can ask one place for its colour and its handles.
+    buildSegMap(a);
+    renderTypeRow($('dType'), a,
+      function (side, v) { return G.saveArchiveType(a.id, side, v); },
+      function () { return refetchArchive(); });
     var tb = document.querySelector('#dTbl tbody');
     tb.innerHTML = '';
     steps.forEach(function (s, i) {
       var tr = document.createElement('tr');
       if (isFlagged(s)) tr.classList.add('flagged');
-      markSide(tr, s);
-      tr.innerHTML = rowHtml(s, i);
+      markSide(tr, s, i);
+      tr.innerHTML = rowHtml(s, i, 'dTbl');
       tb.appendChild(tr);
     });
     renderDetailBoard();
@@ -2708,6 +3363,7 @@
         '<span class="body">' +
           '<span class="nm">' + esc(s.name || T('viewer|未命名样本')) + '</span>' +
           '<span class="meta">' + esc(meta) + '</span>' +
+          typeLine(s, s.suspect) +
         '</span>' + tagHtml +
         '</div>';
     }).join('');
@@ -2943,10 +3599,11 @@
     return h;
   }
 
-  function sRowHtml(s, idx, sample) {
+  function sRowHtml(s, idx, sample, table) {
     var noteMark = (G.annotationsOf(sample)[s.moveNo] || {}).note ? ' <span style="color:var(--yellow)">✎</span>' : '';
     return '<td class="sno" data-i="' + (idx == null ? '' : idx) + '" title="' + T('viewer|点开填写单步备注') + '" ' +
-        'style="cursor:pointer">' + (s.moveNo == null ? '—' : s.moveNo) + noteMark + '</td>' +
+        'style="cursor:pointer">' + handlesFor(s.side, idx, table) +
+        (s.moveNo == null ? '—' : s.moveNo) + noteMark + '</td>' +
       stepCellsHtml(s) +
       '<td class="annotations" data-i="' + (idx == null ? '' : idx) + '">' + annCellHtml(sample, s.moveNo) + '</td>';
   }
@@ -3064,13 +3721,18 @@
     $('sSlider').max = steps.length;
     $('sSlider').value = sStep;
     $('sJump').value = sStep;
+    // 0.4.3 §1.3/§1.5
+    buildSegMap(s);
+    renderTypeRow($('sType'), s,
+      function (side, v) { return G.saveSampleType(s.id, side, v); },
+      function () { return refetchSample(); });
     var tb = document.querySelector('#sTbl tbody');
     tb.innerHTML = '';
     steps.forEach(function (st, i) {
       var tr = document.createElement('tr');
       if (isFlagged(st)) tr.classList.add('flagged');
-      markSide(tr, st);
-      tr.innerHTML = sRowHtml(st, i, s);
+      markSide(tr, st, i);
+      tr.innerHTML = sRowHtml(st, i, s, 'sTbl');
       tb.appendChild(tr);
     });
     renderSampleBoard();
@@ -3451,6 +4113,9 @@
     renderSeTags();
     renderSeBoard();
     renderSeTable();
+    // 0.4.3 §2.1: an already-analysed sample must show its scores the instant the editor opens,
+    // not only after a fresh run — re-opening a reviewed draft is the common case.
+    renderSeScores(seReport);
     updateSeInputInfo();
   }
 
@@ -3568,16 +4233,60 @@
     $('seInput').value = seDraft.map(function (m) { return coordToShare(m.c); }).join('');
   }
 
+  // 0.4.3 §2.1: the sample editor showed the per-step verdicts but never the number they add
+  // up to — an operator could analyse a draft and still have nowhere to read its risk score.
+  // The cards mirror the detect pane's markup and the table reuses `summaryTableHtml(rep,{sim})`,
+  // so the editor, the sample detail and the replay detail cannot print three readings of one
+  // game. Called from seRun's success path and again by `openSampleEditor` when the sample
+  // already carries a report, so re-entering an analysed draft shows its scores immediately.
+  function renderSeScores(rep) {
+    var box = $('seScores');
+    if (!box) return;
+    var sum = $('seSummary');
+    if (!rep || (!rep.black && !rep.white)) {
+      box.innerHTML = '<div class="hint">' + T('viewer|分析后显示') + '</div>';
+      if (sum) sum.innerHTML = '—';
+      return;
+    }
+    box.innerHTML = '';
+    // A null side is normal — one player may not survive the filters — and it has to read as
+    // 未分析 rather than being dropped, or B and W would silently swap columns between games.
+    [rep.black, rep.white].forEach(function (a) {
+      var div = document.createElement('div'); div.className = 'card';
+      if (!a) {
+        div.innerHTML = '<div class="big" style="color:#6e7b8a">—</div>' +
+          '<div class="lab">' + T('viewer|未分析') + '</div>';
+      } else {
+        div.innerHTML = '<div class="big lv-' + a.level + '">' + a.risk.toFixed(0) + '</div>' +
+          '<div class="lab">' + sideName(a.side) + ' · ' + TO('level', a.level) + '</div>' +
+          '<div class="contrib">n=' + a.n + ' · T1=' + pct(a.top1) + '</div>';
+      }
+      box.appendChild(div);
+    });
+    if (sum) {
+      // `steps` empty but an aggregate present is not reachable today (sideAggregate needs
+      // steps to exist) — the guard is here so a future reader never gets an empty `<table>`
+      // where the summary should be, and it reuses the spec's own wording.
+      sum.innerHTML = (rep.steps || []).length
+        ? summaryTableHtml(rep, { sim: true })
+        : '<div class="hint">' + T('viewer|没有可用于统计的手。') + '</div>';
+    }
+  }
+
   function renderSeTable() {
     var tb = document.querySelector('#seTbl tbody');
     if (!tb) return;
     tb.innerHTML = '';
-    var steps = (seReport && seReport.steps) || [];
+    // 0.4.3 §1.3/§1.4: this table gets handles too — the edit lands in `editing.report`, which
+    // 保存 writes, so it is a deferred save rather than a discard.
+    var rep = seReport || {};
+    buildSegMap(rep);
+    var steps = rep.steps || [];
     steps.forEach(function (st, i) {
       var tr = document.createElement('tr');
       if (isFlagged(st)) tr.classList.add('flagged');
-      markSide(tr, st);
-      tr.innerHTML = sRowHtml(st, i, editing);
+      markSide(tr, st, i);
+      tr.innerHTML = sRowHtml(st, i, editing, 'seTbl');
       tb.appendChild(tr);
     });
     updateSeAnnHint();
@@ -3618,6 +4327,9 @@
   function invalidateSeAnalysis() {
     seReport = null;
     editing.report = null;
+    // 0.4.3 §2.1: a stale score is the same defect as a stale verdict — the cards must fall
+    // back to 「分析后显示」 the moment the board they described stops existing.
+    renderSeScores(null);
     renderSeTable();
   }
 
@@ -3764,6 +4476,8 @@
       seStep = seDraft.length;
       renderSeTable();
       renderSeBoard();
+      // 0.4.3 §2.1: the score cards and the metric summary update the moment the run finishes.
+      renderSeScores(seReport);
       if (seReport.terminal) {
         // Same wording rule as the detect tab: 「分析完成」 stays at the front so anything
         // polling for the completion phrase is not fooled by a legitimate early stop.
@@ -4066,5 +4780,9 @@
     // 「检测更新」 button do that.
     fillVersionRow();
     refreshUpdateBanner();
+    // 0.4.3 §1.3: the four tables' segment legends are static markup in viewer.html but their
+    // text lives in the dictionary, so they are filled once here — a later language switch goes
+    // through `repaintForLang`.
+    renderSegLegends();
   })();
 })();

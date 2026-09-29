@@ -67,12 +67,29 @@
     thinkMs: 2000,          // 检测思考时间（逐步分析的预算上限）
     aiThinkMs: null,        // AI 思考时间，null = 跟随 thinkMs
     openingCutoff: 8,       // 开局排除手数
+    // 0.4.5 §二.2 — 游戏规则. null = 「自动」, i.e. infer from the site (gomoku.com's /renju/
+    // path → 连珠, everything else → 自由). 0 自由 / 1 标准 / 2 连珠 = the operator's explicit
+    // choice, which wins. papergames.io has no renju mode at all, so without this a 连珠 game
+    // played there could never be analysed under 禁手.
+    rule: null,
     threadNum: 0,           // 引擎线程数；0 = 自动（clamp(floor(hardwareConcurrency/2), 1, 16)）
     autoAnalyze: true,      // 对局结束自动分析
     minArchiveMoves: 14,    // 少于这么多手不写存档（5–30）
     // 0.3.6 §1.3 — 'auto' means "follow the browser UI language". It is a setting value, not
     // a locale: `GMI18n.resolveLang()` is what turns it into one of the 8 concrete locales.
     lang: 'auto',
+    // 0.4.4 §七~§十二 — the master switch for AUTOMATIC outbound chat: the §7 anti-cheat
+    // announcement and the §8 language-matched replies. Both put words in the operator's mouth
+    // in front of a real opponent, which cannot be taken back, so the default is OFF even though
+    // §7.1 describes the announcement as automatic. The operator confirmed this deviation
+    // (2026-09-29): 「默认关，首次确认一次」. The §12 「提问」 button is NOT gated by this — it is
+    // an explicit click, not something the extension decides to do.
+    chatAuto: false,
+    // 0.4.4 §十六 — the LLM panel. The DEFAULTS live in llm.js (GMLLM.DEFAULTS) because the
+    // service worker loads that file too; a second literal here would drift. `llm.js` is loaded
+    // before this file (manifest order), so the reference resolves. `{}` in a broken build is
+    // deliberate: the panel then shows blanks instead of inventing values.
+    llm: (g.GMLLM && g.GMLLM.DEFAULTS) ? Object.assign({}, g.GMLLM.DEFAULTS) : {},
   };
 
   var MIN_MOVES_LO = 5;
@@ -414,10 +431,75 @@
     });
   }
 
+  // ---------- 0.4.3 §1.4/§1.5: the two operator overrides ----------
+  // Hand-drawn segments and a hand-picked AI class. Both live INSIDE `report` (so they travel
+  // with the report through 存档 → 样本 and through an export, and the detail pane, the sample
+  // editor and the learner all read one place) and both start as null, which is exactly what
+  // makes 恢复自动分段 / 恢复自动分类 a matter of setting the override back to null rather than
+  // deleting a field.
+  //
+  // §1.4 sketches a single `saveSegments(archiveId | sampleId, side, segments)`. Archives and
+  // samples live under two different storage keys with two different shapes, and an id does
+  // not say which library it came from — so the "which library" half cannot be inferred. The
+  // viewer always knows which pane is open, and these entry points make it say so.
+  function mutateReport(kind, id, fn) {
+    return enqueue(async function () {
+      var isArch = kind !== 'sample';
+      var list = isArch ? await loadArchives() : await loadSamples();
+      var hit = null;
+      for (var i = 0; i < list.length; i++) {
+        if (list[i].id === id) { hit = list[i]; break; }
+      }
+      if (!hit) return null;
+      if (!hit.report || typeof hit.report !== 'object') hit.report = {};
+      fn(hit);
+      if (isArch) await writeArchives(list); else await writeSamples(list);
+      return hit;
+    });
+  }
+
+  function segSlot(report) {
+    if (!report.manualSegments || typeof report.manualSegments !== 'object') {
+      report.manualSegments = { B: null, W: null };
+    }
+    return report.manualSegments;
+  }
+  function typeSlot(report) {
+    if (!report.manualType || typeof report.manualType !== 'object') {
+      report.manualType = { B: null, W: null };
+    }
+    return report.manualType;
+  }
+
+  function saveArchiveSegments(id, side, segments) {
+    return mutateReport('archive', id, function (a) {
+      segSlot(a.report)[side] = copySegList(segments);
+    });
+  }
+  function saveSampleSegments(id, side, segments) {
+    return mutateReport('sample', id, function (s) {
+      segSlot(s.report)[side] = copySegList(segments);
+    });
+  }
+  // `value` is a type code (see app.js TYPE_OF_BAND / classifySide) or null to drop back to
+  // the automatic answer. The archive's lifted `types` copy is refreshed in the same write so
+  // the list badge and the detail row can never disagree about which one is authoritative.
+  function saveArchiveType(id, side, value) {
+    return mutateReport('archive', id, function (a) {
+      typeSlot(a.report)[side] = (typeof value === 'string' && value) ? value : null;
+      var lifted = (a.types && typeof a.types === 'object') ? a.types : (a.types = { B: null, W: null });
+      lifted[side] = resolveType(a.report, side);
+    });
+  }
+  function saveSampleType(id, side, value) {
+    return mutateReport('sample', id, function (s) {
+      typeSlot(s.report)[side] = (typeof value === 'string' && value) ? value : null;
+    });
+  }
+
   // Categories are never stored on their own — they are derived from the archives,
   // so a category disappears exactly when its last member does.
-  function listCategories(list) {
-    var seen = {}, out = [];
+  function listCategories(list) {    var seen = {}, out = [];
     for (var i = 0; i < (list || []).length; i++) {
       var c = list[i].category;
       if (c && !seen[c]) { seen[c] = true; out.push(c); }
@@ -569,6 +651,10 @@
     // the entry or the record carries, so a pre-0.4.2 archive (code only) answers the 大类
     // filter too.
     entry.openingFamily = openingFamilyOf(entry);
+    // 0.4.3 §4.3: re-lift the AI class whenever raw.types is missing (an archive exported by
+    // a pre-0.4.3 build, or hand-written) so buildArchive and normalizeArchive cannot produce
+    // two entries that disagree about the same game.
+    entry.types = { B: resolveType(entry.report, 'B'), W: resolveType(entry.report, 'W') };
     return entry;
   }
 
@@ -1076,7 +1162,12 @@
     evasion: 0.06, winBlunder: 0.04,
   };
   var DEFAULT_THRESHOLDS = {
-    top1Lo: 0.72, top1Hi: 0.90,     // aTop1 ramp: at/below Lo -> 0, at/above Hi -> 1
+    // 0.4.3 §1.1: the ramp aTop1 reads now that it is fed a graded proximity instead of a
+    // top-1 rate. `top1Lo`/`top1Hi` below are kept — a pre-0.4.3 archive and the
+    // `opts.legacyTop1` comparison path still describe themselves with them — but the
+    // detector no longer consumes them.
+    topProxLo: 0.50, topProxHi: 0.90, // aTop1 proximity ramp
+    top1Lo: 0.72, top1Hi: 0.90,     // 0.3.1 top-1 ramp, retained for compatibility
     acplLo: 0.003, acplHi: 0.015,   // aAcpl ramp: lower loss is better
     sharpHitLo: 0.65, sharpHitSpan: 0.35,
     outTop5Hi: 0.03,                // aOut ramp
@@ -1090,6 +1181,10 @@
     evasionMin: 3,                  // fewest evasions before the rhythm score means anything
     evasionReg: 0.35,               // stddev / mean ceiling for "a regular rhythm"
     winningWR: 0.85,                // "winning" for the 将胜乱下 signal
+    // 0.4.3 §1.6: the four cut lines behind the five risk bands. Right-open on whole points —
+    // 75 is AI, 74 is 疑似AI. A band is a summary of the risk score, not a second opinion
+    // about it: nothing here feeds back into the score.
+    typeAiMin: 75, typeSuspectMin: 55, typeProMin: 45, typeExpertMin: 30,
   };
   // 0.3.3 §3.5: below this many samples 重新学习 is disabled outright; below LOW it runs
   // but is labelled unreliable. The two are separate so a 6-sample run is still allowed
@@ -1170,11 +1265,19 @@
   // 0.3.6: a name is display text frozen at creation time (nothing matches against it), so it
   // is built in the language active then. `players`, `outcome` and `mode` keep their canonical
   // stored values — only the framing around them is translated.
+  //
+  // 0.4.6 §一: this function never wrote "unnamed" — the reported "unnamed game" came from
+  // viewer.js's displayName(), which is where the real fix is. What was still wrong here is the
+  // half-filled COLOUR pair: `black` known and `white` not produced no pair at all, throwing away
+  // the one name the record actually had. The self/opponent branch below has always covered its
+  // own half; this makes the colour branch do the same.
   function defaultArchiveName(a) {
     var p = a.players || {};
     var pair = '';
     if (p.black && p.white) pair = p.black + ' VS ' + p.white + '  ';
     else if (p.self || p.opponent) pair = (p.self || '?') + ' VS ' + (p.opponent || '?') + '  ';
+    else if (p.black || p.white) pair = (p.black || T('archive|黑')) + ' VS ' + (p.white || T('archive|白')) + '  ';
+    // 完全无名时不写 pair —— 手数 + 时间 + 风险分已足够识别
     // A drawn game has no winner to name, which used to leave the title identical to a game
     // that simply never ended. Saying 和棋 is the whole difference.
     var outcome = a.outcome === 'draw' ? T('archive|和棋') + '  ' : '';
@@ -1236,6 +1339,88 @@
     return COL[p[0]] + (15 - p[1]);
   }
 
+  // ---------- 0.4.3 §1.2/§1.4/§1.5: segments and AI types ----------
+  // Both are per-side, both are persisted inside `report`, and both come in an automatic and
+  // an operator-edited flavour. The copies below exist so the stored object never aliases a
+  // live array an editor may still be mutating (a drag commits a new array, but there is no
+  // reason to depend on that), and so a hand-edited storage blob cannot smuggle extra fields
+  // into a shape every reader walks.
+  function copySegList(list) {
+    if (!Array.isArray(list)) return null;
+    var out = [];
+    for (var i = 0; i < list.length; i++) {
+      var s = list[i];
+      if (!s || typeof s !== 'object') continue;
+      var from = Number(s.from), to = Number(s.to);
+      if (!isFinite(from) || !isFinite(to) || from > to) continue;
+      out.push({ from: from, to: to, kind: s.kind === 'low' ? 'low' : 'high' });
+    }
+    return out.length ? out : null;
+  }
+  function copySegs(ms) {
+    ms = ms || {};
+    return { B: copySegList(ms.B), W: copySegList(ms.W) };
+  }
+  function copyManualType(mt) {
+    mt = mt || {};
+    return {
+      B: (typeof mt.B === 'string' && mt.B) ? mt.B : null,
+      W: (typeof mt.W === 'string' && mt.W) ? mt.W : null,
+    };
+  }
+  // The automatic classification, copied field by field so the archive carries a plain object
+  // rather than a reference to the analysis result. `auto` is stored explicitly: it is what
+  // tells a later reader that nobody has overridden this yet.
+  function copyTypes(ts) {
+    ts = ts || {};
+    var out = { B: null, W: null };
+    ['B', 'W'].forEach(function (side) {
+      var x = ts[side];
+      if (!x || !x.type) return;
+      out[side] = {
+        suspect: x.suspect || null, type: x.type, auto: x.auto !== false,
+        lowSteps: isFinite(x.lowSteps) ? x.lowSteps : 0,
+      };
+    });
+    return out;
+  }
+  // The type a reader should show for one side: the operator's override when there is one,
+  // otherwise the automatic result. Used by buildArchive() to lift the answer onto the entry —
+  // the list draws a badge without opening the detail, so it cannot afford to walk the report.
+  function resolveType(rep, side) {
+    var r = rep || {};
+    var mt = copyManualType(r.manualType);
+    if (mt[side]) return { type: mt[side], manual: true };
+    var t = copyTypes(r.types)[side];
+    return t ? { type: t.type, manual: false } : null;
+  }
+
+  // 0.4.4 §14. `chatHistory` is capped at 20 entries by content.js and each entry is a handful
+  // of short strings, so the pair costs a few hundred bytes at most — well inside the archive
+  // budget, and far smaller than the `steps` array beside it.
+  function copyChatAdjust(v) {
+    if (!v) return null;
+    return {
+      side: v.side === 'B' || v.side === 'W' ? v.side : null,
+      asks: v.asks || 0,
+      total: v.total || 0,
+      how: typeof v.how === 'string' ? v.how : null,
+    };
+  }
+  function copyChatHistory(v) {
+    if (!Array.isArray(v)) return [];
+    return v.slice(0, 20).map(function (h) {
+      return {
+        qid: String(h.qid || ''),
+        q: String(h.q || '').slice(0, 200),
+        answer: String(h.answer || '').slice(0, 200),
+        verdict: String(h.verdict || ''),
+        delta: h.delta || 0,
+        at: h.at || null,
+      };
+    });
+  }
+
   function slimReport(rep) {
     if (!rep) return null;
     var agg = function (a) {
@@ -1243,6 +1428,9 @@
       return {
         side: a.side, n: a.n, risk: a.risk, level: a.level,
         top1: a.top1, top3: a.top3, top5: a.top5, meanLoss: a.meanLoss,
+        // 0.4.3 §1.1: the graded mean aTop1 reads. Kept beside top1/top3/top5 because it is a
+        // different number about the same hands and it is what the score was actually made of.
+        topProx: a.topProx,
         sharpHit: a.sharpHit, sharpCount: a.sharpCount, outTop5: a.outTop5,
         desperateCount: a.desperateCount,
         // 0.4.2 §二: how many of this side's hands were evasions, how regular their rhythm was
@@ -1261,12 +1449,22 @@
     return {
       createdAt: rep.createdAt || null,
       mode: rep.mode || null,
-      suspects: rep.suspect || null,
+      // `buildReport` names it `suspect` (singular); this function writes it as `suspects`
+      // (plural). Nothing reads the plural form today, but the asymmetry made slimReport
+      // non-idempotent — and `normalizeArchive` feeds a report read back from storage
+      // straight in here, so a second pass turned the setting into null. Read both, exactly
+      // as the two fields below already do.
+      suspects: (rep.suspect != null ? rep.suspect : rep.suspects) || null,
       // Already-slimmed input (0.3.3's 存档 → 转为样本 path feeds an archive's stored report
-      // straight back in) carries these two under their slimmed names, not inside `opts`.
-      // Reading both keeps slimReport idempotent instead of silently dropping them.
-      optThinkMs: rep.opts ? rep.opts.thinkMs : (rep.optThinkMs != null ? rep.optThinkMs : null),
-      openingCutoff: rep.opts ? rep.opts.openingCutoff : (rep.openingCutoff != null ? rep.openingCutoff : null),
+      // straight back in, and normalizeArchive does the same on every read) carries these two
+      // under their slimmed names, not inside `opts`. Reading both keeps slimReport idempotent
+      // instead of silently dropping them — and the DIRECT name has to be tested FIRST to
+      // achieve that: with `rep.opts` in front, a report whose `opts` exists but lacks the key
+      // wrote `undefined`, which the next pass turned into `null`.
+      optThinkMs: rep.optThinkMs != null ? rep.optThinkMs
+                 : (rep.opts && rep.opts.thinkMs != null ? rep.opts.thinkMs : null),
+      openingCutoff: rep.openingCutoff != null ? rep.openingCutoff
+                 : (rep.opts && rep.opts.openingCutoff != null ? rep.opts.openingCutoff : null),
       totalMoves: rep.totalMoves || 0,
       scoredCount: rep.scoredCount || 0,
       prejoinCount: rep.prejoinCount || 0,
@@ -1297,6 +1495,20 @@
       // game, so an archive has to say which one it came from or the two are
       // indistinguishable in the list.
       learned: rep.learned || null,
+      // 0.4.3 §4.2/§4.3. `segments` and `types` are always the AUTOMATIC answer; the two
+      // `manual*` objects are the operator's overrides and stay null until an edit happens.
+      // Both survive a re-slim (this runs on every load, and on the 存档 → 样本 conversion),
+      // so an edited archive is not silently reset by a round trip — the same idempotence the
+      // `optThinkMs` / `openingCutoff` pair above exists for.
+      segments: { B: copySegList((rep.segments || {}).B) || [], W: copySegList((rep.segments || {}).W) || [] },
+      manualSegments: copySegs(rep.manualSegments),
+      types: copyTypes(rep.types),
+      manualType: copyManualType(rep.manualType),
+      // 0.4.4 §14 — the chat exchange. Same idempotence requirement as the block above:
+      // normalizeArchive feeds a STORED report back through here on every read, so a blind
+      // `rep.chatAdjust` would survive only until the first round trip.
+      chatAdjust: copyChatAdjust(rep.chatAdjust),
+      chatHistory: copyChatHistory(rep.chatHistory),
       black: agg(rep.black), white: agg(rep.white),
       steps: (rep.steps || []).map(slimStep),
     };
@@ -1385,6 +1597,11 @@
     // the name of a specific opening, and there is not one) but a known family, so the list
     // badge can say 直止/斜止 and the 大类 filter can find it.
     entry.openingFamily = openingFamilyOf(entry);
+    // 0.4.3 §4.3: the per-side AI class, lifted onto the entry. The list draws a badge for a
+    // game it never opened, so it cannot walk `entry.report` per card; `resolveType` returns
+    // null when the report predates 0.4.3, and the list then shows nothing rather than
+    // guessing a class out of a bare risk number.
+    entry.types = { B: resolveType(entry.report, 'B'), W: resolveType(entry.report, 'W') };
     return entry;
   }
 
@@ -1541,6 +1758,11 @@
     deleteArchive: deleteArchive,
     renameArchive: renameArchive,
     categorizeArchive: categorizeArchive,
+    // 0.4.3 §1.4/§1.5: the four operator-override writers.
+    saveArchiveSegments: saveArchiveSegments,
+    saveSampleSegments: saveSampleSegments,
+    saveArchiveType: saveArchiveType,
+    saveSampleType: saveSampleType,
     listCategories: listCategories,
     renameCategory: renameCategory,
     deleteCategory: deleteCategory,

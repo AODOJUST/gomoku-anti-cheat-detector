@@ -9,8 +9,8 @@
  * 0.3.6 §1.8 requires a language change to repaint the panel and the viewer WITHOUT a reload
  * (background.js only writes `settings.lang` and relies on `chrome.storage.onChanged`). A
  * lazy "load the one locale you need" design would therefore need a fetch at switch time and
- * would still need the old table to redraw. Eight tables of ~400 short strings is well under
- * 200KB, so all eight are registered up front and `setLocale()` is a pointer swap.
+ * would still need the old table to redraw. Thirteen tables of ~900 short strings is well under
+ * 400KB, so all thirteen are registered up front and `setLocale()` is a pointer swap.
  *
  * ---------------------------------------------------------------------------
  * Keys, not strings, in storage
@@ -38,11 +38,18 @@
   'use strict';
   if (g.GMI18n) return;
 
-  var LOCALES = ['zh-CN', 'zh-TW', 'ja', 'ko', 'en', 'ru', 'fr', 'de'];
+  var LOCALES = ['zh-CN', 'zh-TW', 'ja', 'ko', 'en', 'ru', 'fr', 'de',
+                 'vi', 'es', 'ms', 'ar', 'mn'];
   var DEFAULT = 'zh-CN';
+
+  // 0.4.6 §二.2 — the right-to-left set. Kept as a list rather than a single `ar` test so that a
+  // future RTL language (he, fa, ur) is a one-line change here instead of a hunt for `=== 'ar'`.
+  var RTL = ['ar'];
 
   var dict = {};         // { 'zh-CN': { 'key': '...' }, ... }
   var current = DEFAULT;
+
+  function dirFor(locale) { return RTL.indexOf(locale) >= 0 ? 'rtl' : 'ltr'; }
 
   function register(locale, table) {
     if (!locale || !table) return;
@@ -54,15 +61,27 @@
   // `lang` would change the host page's font resolution and any `:lang()` rule it has, so we
   // only tag our own subtree (content.js sets `lang` on the panel root) and leave the page
   // alone. Exposed for the test harness, which asserts both branches.
+  //
+  // 0.4.6 §二.2 extends the same reasoning to `dir`, and there it matters far more: setting
+  // `dir="rtl"` on the HOST document would mirror gomoku.com's own board and chat around us,
+  // which is not our UI to mirror and would look like a bug on the site. So our own documents get
+  // `<html dir>`, and the host gets a `data-gm-dir` attribute that content.js copies onto the
+  // panel's shadow host. The panel is the only thing we own on that page.
   function ownsDocument() {
     return typeof location !== 'undefined' && location.protocol === 'chrome-extension:';
   }
 
   function setLocale(locale) {
     current = LOCALES.indexOf(locale) >= 0 ? locale : DEFAULT;
+    var dir = dirFor(current);
     if (typeof document !== 'undefined' && document.documentElement) {
-      if (ownsDocument()) document.documentElement.lang = current;
-      else document.documentElement.setAttribute('data-gm-lang', current);
+      if (ownsDocument()) {
+        document.documentElement.lang = current;
+        document.documentElement.dir = dir;
+      } else {
+        document.documentElement.setAttribute('data-gm-lang', current);
+        document.documentElement.setAttribute('data-gm-dir', dir);
+      }
     }
     return current;
   }
@@ -86,8 +105,10 @@
     return i >= 0 ? String(key).slice(i + 1) : key;
   }
 
-  function t(key, vars) {
-    var s = (dict[current] && dict[current][key]) ||
+  // The lookup itself. `t` and `tIn` are thin wrappers over this so the fallback chain exists
+  // in exactly one place — a second copy would drift the moment one of them learned a new rule.
+  function tCore(locale, key, vars) {
+    var s = (dict[locale] && dict[locale][key]) ||
             (dict[DEFAULT] && dict[DEFAULT][key]) ||
             fallback(key);
     if (vars) {
@@ -97,6 +118,16 @@
     }
     return s;
   }
+
+  function t(key, vars) { return tCore(current, key, vars); }
+
+  // 0.4.4: translate in an EXPLICIT locale, leaving `current` untouched. Needed by
+  // `GMOpening.label(code, locale)`, which takes a locale argument but used to resolve the
+  // opening name against whatever locale happened to be current — so `label('D1','en')` returned
+  // the Chinese name unless someone had called `setLocale('en')` first. verify-036 never caught
+  // it because its helper did exactly that (`form = (l, code) => { I.setLocale(l); … }`). The
+  // chat engine does catch it: `GMChat.openingAnswerNames()` needs all 8 names at once.
+  function tIn(locale, key, vars) { return tCore(locale, key, vars); }
 
   // Translates a stored canonical value. Tags, annotation labels, risk levels, job statuses
   // and end reasons are IDENTITY values that live in storage and are compared by literal in
@@ -159,6 +190,47 @@
       if (LOCALES[i] === prefix || LOCALES[i].indexOf(prefix + '-') === 0) return LOCALES[i];
     }
     return DEFAULT;
+  }
+
+  // ---- language names in a picker (0.4.6 §2.3) ----
+  // "English（英语）": the language's own name, then what the CURRENT language calls it. The
+  // endonym comes from the locale table (`lang.en` = "English"), NOT from Intl — Intl answers
+  // 「中文（中国）」 for zh-CN and lower-cases 「русский」 / 「español」 / 「монгол」, whereas the table
+  // carries the hand-picked form the picker has always shown (简体中文, Русский, Español, Монгол)
+  // and which the existing dropdowns already display. Intl supplies only the LOCAL half — the part
+  // that would otherwise need hand-maintaining for 13 languages — and the whole thing degrades to
+  // the bare endonym when Intl.DisplayNames is missing (Chrome < 81).
+  //
+  // Two notes on the format, because §2.3's prose and its code say slightly different things:
+  //   · the spec's example table writes the CURRENT language's own entry as 「日本語（日本語）」,
+  //     but its own implementation plan returns the bare name when native === local. The code is
+  //     followed here — a stutter is not information.
+  //   · the parenthetical is also dropped when the local name is already INSIDE the endonym
+  //     (「简体中文」+「中文」, 「繁體中文」+「中文」), which in a Chinese UI is the same stutter in a
+  //     different shape. This one is a refinement beyond the spec, kept because it can only
+  //     suppress a string that is literally a substring of the text already shown.
+  function intlLangName(locale, code) {
+    try {
+      if (typeof Intl === 'undefined' || !Intl.DisplayNames) return null;
+      // Look the BASE tag up: Intl renders 'zh-CN' as 「中文（中国）」 / "Chinese (China)", and the
+      // region adds nothing a language picker needs — especially when the region is the one the
+      // operator is already in.
+      var tag = String(code).split('-')[0];
+      var n = new Intl.DisplayNames([locale], { type: 'language' }).of(tag);
+      return n && n !== tag ? String(n) : null;
+    } catch (e) { return null; }
+  }
+
+  function langLabel(code, override) {
+    var cur = override || current;
+    var native = (dict[DEFAULT] && dict[DEFAULT]['lang.' + code]) ||
+                 (dict[cur] && dict[cur]['lang.' + code]) || null;
+    if (!native) native = intlLangName(code, code) || String(code);
+    if (code === cur) return native;
+    var local = intlLangName(cur, code);
+    if (!local || local === native) return native;
+    if (native.indexOf(local) >= 0 || local.indexOf(native) >= 0) return native;
+    return native + '（' + local + '）';
   }
 
   // ---- error codes (§1.7 决策 3) ----
@@ -298,7 +370,7 @@
   }
 
   // Missing-key audit for the test harness: every key the code asks for must exist in all
-  // eight tables, otherwise a language silently falls back to Chinese. Source-text keys are
+  // thirteen tables, otherwise a language silently falls back to Chinese. Source-text keys are
   // skipped for zh-CN by construction — their Chinese text IS the key, so there is nothing to
   // define; every other locale must carry an entry or that string will show up in Chinese.
   function audit() {
@@ -324,11 +396,15 @@
   g.GMI18n = {
     LOCALES: LOCALES,
     DEFAULT: DEFAULT,
+    RTL: RTL,
     register: register,
     setLocale: setLocale,
     getLocale: getLocale,
     ownsDocument: ownsDocument,
+    dirFor: dirFor,
+    langLabel: langLabel,
     t: t,
+    tIn: tIn,
     has: has,
     hasIn: hasIn,
     hasAny: hasAny,

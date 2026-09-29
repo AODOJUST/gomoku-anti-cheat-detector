@@ -45,12 +45,26 @@
   // names learned from the previous game-start are carried in here. Without this the
   // second game of a series would archive as "黑72/白85" with no names.
   var knownPlayers = { black: null, white: null };
+  // 0.4.4 §九 — the seat IDS, carried across a rematch for the same reason.
+  //
+  // `game-start` ships `players[{ id, name, color }]` (the recon note in the comments below has
+  // said so since 0.3.x) and this file used to keep only the NAME, throwing the id away. That is
+  // precisely the field §9's socket level needs: `selfId` is an id, and an id cannot be compared
+  // with a name — so the primary identification route was unreachable on the one payload the
+  // spec names as its source, and a nameless guest could never be identified at all.
+  var knownIds = { black: null, white: null };
   var knownRoom = null;
 
   function rememberPlayers(p) {
     if (!p) return;
     if (p.black) knownPlayers.black = p.black;
     if (p.white) knownPlayers.white = p.white;
+  }
+
+  function rememberIds(p) {
+    if (!p) return;
+    if (p.black != null) knownIds.black = p.black;
+    if (p.white != null) knownIds.white = p.white;
   }
 
   function reset(reason) {
@@ -67,6 +81,7 @@
       dropped: 0,                // stones forgotten because the board lost them
       replayed: 0,               // duplicate events ignored (socket reconnect replays)
       players: { black: knownPlayers.black, white: knownPlayers.white },
+      playerIds: { black: knownIds.black, white: knownIds.white },
       nameSource: knownPlayers.black || knownPlayers.white ? 'socket' : null,
       roomId: knownRoom,
       winner: null,
@@ -94,25 +109,30 @@
   }
 
   // ---------- board read (the MAIN world shares the page's DOM) ----------
-  // online.js builds  .board-intersection[data-row][data-col]  cells and appends
-  // a single  .stone.black-stone | .stone.white-stone  child to the played ones.
+  // 0.4.5 §一 — the selectors and the stone encoding now come from sites.js, which the manifest
+  // injects into this same world ahead of hook.js. On gomoku.com that is exactly the
+  // .board-intersection[data-row][data-col] / .stone.black-stone this used to hardcode; on
+  // papergames.io it is a <table> of td.cell-<row>-<col> whose stone is an <svg class="symbol">
+  // wrapping a circle-dark (black) / circle-light (white).
+  //
+  // `null` still means "no board here / not built yet" and `[]` means "empty", which is the
+  // distinction absorbStones() and the empty-board watchdog are written against.
+  //
+  // A MISSING sites.js is a different thing entirely and must not look the same: the read
+  // abstains, and since `null` is a legitimate answer the whole DOM-seeding path goes quiet —
+  // every stone already on the board is simply never recorded, with no error anywhere. (That is
+  // exactly what verify-midgame caught when its harness injected hook.js alone: 0 stones, no
+  // throw.) Warn once so a packaging regression is visible instead of silent.
+  var warnedNoSites = false;
   function readBoardDom() {
-    var cells = document.querySelectorAll('#online-player-board .board-intersection');
-    if (!cells.length) cells = document.querySelectorAll('.board-grid-container .board-intersection');
-    // A spectator board is wrapped differently but the intersections are still the board.
-    if (!cells.length) cells = document.querySelectorAll('.board-intersection');
-    if (!cells.length) return null;
-    var out = [];
-    for (var i = 0; i < cells.length; i++) {
-      var cell = cells[i];
-      var st = cell.querySelector('.stone');
-      if (!st) continue;
-      var cls = st.classList;
-      var stone = cls.contains('black-stone') ? BLACK : cls.contains('white-stone') ? WHITE : 0;
-      if (!stone) continue;
-      out.push({ row: parseInt(cell.dataset.row, 10), col: parseInt(cell.dataset.col, 10), stone: stone });
+    if (typeof GMSites === 'undefined' || !GMSites) {
+      if (!warnedNoSites) {
+        warnedNoSites = true;
+        console.warn('[detector] sites.js is not loaded in the MAIN world — board reads will abstain');
+      }
+      return null;
     }
-    return out;
+    return GMSites.boardStones();
   }
 
   // ---------- reconciliation ----------
@@ -250,7 +270,13 @@
       replayed: rec.replayed,
       orderIssues: orderIssues(),
       players: rec.players,
+      // 0.4.4 §九 — the ids beside the names, so content.js can match `selfId` against a real
+      // seat id instead of only against a display name. Same `{black, white}` shape.
+      playerIds: rec.playerIds,
       nameSource: rec.nameSource,
+      // 0.4.4 §九 — captured opportunistically; see takeSelfId(). null means "the site never told
+      // us", which the content script treats as "fall back to DOM / anchor", never as "no one".
+      selfId: rec.selfId == null ? null : rec.selfId,
       roomId: rec.roomId,
       winner: rec.winner,
       draw: !!rec.draw,
@@ -263,6 +289,15 @@
   function emit(kind) {
     try {
       window.dispatchEvent(new CustomEvent(EV_EVENT, { detail: JSON.stringify({ kind: kind, data: snapshot() }) }));
+    } catch (e) {}
+  }
+
+  // 0.4.4 §八 — chat rides on its own kind instead of inside `snapshot()`. It is not part of the
+  // game record, it arrives far more often than a move, and folding it in would make every
+  // listener re-parse the whole move list once per message.
+  function emitChat(chat) {
+    try {
+      window.dispatchEvent(new CustomEvent(EV_EVENT, { detail: JSON.stringify({ kind: 'chat', chat: chat }) }));
     } catch (e) {}
   }
 
@@ -323,9 +358,16 @@
           var p = d.players[i];
           if (!p) continue;
           var nm = p.name || p.playerName || p.nickname || null;
-          if (!nm) continue;
-          if (p.color === 'black' || p.color === 1) { rec.players.black = nm; got = true; }
-          else if (p.color === 'white' || p.color === 2) { rec.players.white = nm; got = true; }
+          // 0.4.4 §九 — the id, under the spellings a server might use for it.
+          var pid = p.id != null ? p.id
+                  : (p.playerId != null ? p.playerId : (p.uid != null ? p.uid : null));
+          var side = (p.color === 'black' || p.color === 1) ? 'black'
+                   : ((p.color === 'white' || p.color === 2) ? 'white' : null);
+          if (!side) continue;
+          // A payload with an id but no name still counts as "got": §9 can identify the seat
+          // from the id alone, and the guest case has no name to fall back on.
+          if (nm) { rec.players[side] = nm; got = true; }
+          if (pid != null) { rec.playerIds[side] = pid; got = true; }
         }
       }
 
@@ -364,6 +406,7 @@
         }
         if (rec.players.black || rec.players.white) rec.nameSource = 'socket';
         rememberPlayers(rec.players);
+        rememberIds(rec.playerIds);
         emit('players');
       };
     }
@@ -373,6 +416,50 @@
     ['game-start', 'game-init', 'game-joined', 'rematch-start', 'player-info',
      'player-info-updated', 'players-updated'].forEach(function (evt) {
       sock.on(evt, onNames(evt));
+    });
+
+    // ---- 0.4.4 §九 level 1: which of the two seats is us ----
+    // The recon note records that `game-start` ships `players = [{ id, name, color }]` but not
+    // whether it also ships a `selfId`. Rather than guess, it is captured from ANY event that
+    // carries one, and `null` is a legitimate answer — the content script then falls through to
+    // the DOM and the announcement-anchor levels instead of blaming a random player.
+    function takeSelfId(d) {
+      if (!d) return false;
+      var v = d.selfId != null ? d.selfId : (d.self && d.self.id);
+      if (v == null) return false;
+      if (rec.selfId === v) return false;
+      rec.selfId = v;
+      return true;
+    }
+
+    // ---- 0.4.4 §八: reading the opponent's chat ----
+    // The socket carries a message BEFORE the DOM paints it and with the sender attached, so it
+    // is the better source; the content script keeps a MutationObserver as the fallback for the
+    // case where the site sends chat over a channel we did not guess. The event NAME is not
+    // documented anywhere we can see, hence the list — subscribing to an event the server never
+    // sends costs nothing on a Socket.IO client.
+    var CHAT_EVENTS = ['chat-message', 'chat-msg', 'chat', 'message', 'new-message',
+      'room-message', 'receive-message', 'chat-received'];
+
+    function takeChat(d, evt) {
+      if (!d) return;
+      var text = typeof d === 'string' ? d
+        : (d.text || d.message || d.content || d.msg ||
+           (d.data && (d.data.text || d.data.message)) || null);
+      if (typeof text !== 'string' || !text.replace(/\s+/g, '')) return;
+      var from = d.from != null ? d.from
+        : (d.sender != null ? d.sender
+          : (d.userId != null ? d.userId : (d.playerId != null ? d.playerId : null)));
+      emitChat({ text: String(text).slice(0, 500), fromId: from == null ? null : String(from), evt: evt });
+    }
+
+    function onChat(evt) { return function (d) { takeChat(d, evt); }; }
+
+    CHAT_EVENTS.forEach(function (evt) { sock.on(evt, onChat(evt)); });
+
+    // The same `onNames` list is where a selfId would ride along, so run it from there too.
+    ['game-start', 'game-init', 'game-joined', 'rematch-start'].forEach(function (evt) {
+      sock.on(evt, function (d) { if (takeSelfId(d)) emit('players'); });
     });
 
     sock.on('move-made', function (d) {
@@ -531,6 +618,21 @@
   }
 
   // online.js builds the socket inside its own DOMContentLoaded handler, so we poll.
+  //
+  // 0.4.5 §一 — a site that does not put its socket on the page declares `watchSocket: false` and
+  // this loop never starts. papergames.io is that site: the recon caught its Socket.IO handshake
+  // (`wss://papergames.io/socket.io/?EIO=4&transport=websocket`) but the client lives inside an
+  // Angular service, so `window.socket` and `window.io` are both undefined and there is nothing
+  // here to attach to. Polling for two minutes to attach to nothing is pure noise, and DOM
+  // collection carries that site on its own. A missing GMSites keeps the old behaviour.
+  var watchSocket = true;
+  try {
+    if (typeof GMSites !== 'undefined' && GMSites && GMSites.current()) {
+      watchSocket = GMSites.current().watchSocket !== false;
+    }
+  } catch (e) { watchSocket = true; }
+  if (!watchSocket) return;
+
   var tries = 0;
   var timer = setInterval(function () {
     tries++;

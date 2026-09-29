@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Gomoku Anti-Cheat Detector",
-  "version": "0.4.2",
-  "description": "Records gomoku.com games, runs Rapfi engine offscreen, detects AI-assisted play, and archives games for replay in 8 languages.",
+  "version": "0.4.6",
+  "description": "Records gomoku.com and papergames.io games, runs Rapfi offscreen, detects AI-assisted play, and archives replays in 13 languages.",
   "permissions": [
     "storage",
     "offscreen",
@@ -11,7 +11,12 @@
   "host_permissions": [
     "https://gomoku.com/*",
     "https://www.gomoku.com/*",
+    "https://papergames.io/*",
+    "https://www.papergames.io/*",
     "https://raw.githubusercontent.com/*"
+  ],
+  "optional_host_permissions": [
+    "https://*/*"
   ],
   "content_security_policy": {
     "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'"
@@ -26,9 +31,12 @@
     {
       "matches": [
         "https://gomoku.com/*",
-        "https://www.gomoku.com/*"
+        "https://www.gomoku.com/*",
+        "https://papergames.io/*",
+        "https://www.papergames.io/*"
       ],
       "js": [
+        "sites.js",
         "hook.js"
       ],
       "run_at": "document_start",
@@ -37,7 +45,9 @@
     {
       "matches": [
         "https://gomoku.com/*",
-        "https://www.gomoku.com/*"
+        "https://www.gomoku.com/*",
+        "https://papergames.io/*",
+        "https://www.papergames.io/*"
       ],
       "js": [
         "i18n.js",
@@ -49,8 +59,17 @@
         "locale/ru.js",
         "locale/fr.js",
         "locale/de.js",
+        "locale/vi.js",
+        "locale/es.js",
+        "locale/ms.js",
+        "locale/ar.js",
+        "locale/mn.js",
+        "llm.js",
         "storage.js",
+        "sites.js",
         "openings.js",
+        "questions.js",
+        "chat.js",
         "content.js"
       ],
       "run_at": "document_idle"

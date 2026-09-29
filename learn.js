@@ -41,6 +41,9 @@
     evasion: 0.06, winBlunder: 0.04,
   };
   var FALLBACK_THRESHOLDS = {
+    // 0.4.3 §1.1: the ramp aTop1 reads. top1Lo/top1Hi stay for a pre-0.4.3 archive and for the
+    // `opts.legacyTop1` comparison path, but nothing the detector runs reads them any more.
+    topProxLo: 0.50, topProxHi: 0.90,
     top1Lo: 0.72, top1Hi: 0.90,
     acplLo: 0.003, acplHi: 0.015,
     sharpHitLo: 0.65, sharpHitSpan: 0.35,
@@ -49,6 +52,8 @@
     simWeight: 0.10,
     // 0.4.2 §4.3
     evasionLoss: 0.20, goodLoss: 0.05, evasionMin: 3, evasionReg: 0.35, winningWR: 0.85,
+    // 0.4.3 §1.6
+    typeAiMin: 75, typeSuspectMin: 55, typeProMin: 45, typeExpertMin: 30,
   };
 
   // 0.3.3 §3.5. Kept in sync with storage.js (which the viewer reads to gate the button);
@@ -71,6 +76,7 @@
     evasion: '回避手', winBlunder: '将胜乱下',
   };
   var THRESHOLD_LABEL = {
+    topProxLo: '接近度下界', topProxHi: '接近度上界',
     top1Lo: 'Top1 下界', top1Hi: 'Top1 上界',
     acplLo: 'ACPL 优（低损）', acplHi: 'ACPL 差（高损）',
     sharpHitLo: '唯一手命中下界', sharpHitSpan: '唯一手跨度',
@@ -79,6 +85,9 @@
     evasionLoss: '回避手损失阈值', goodLoss: '好棋损失上限',
     evasionMin: '规律性最小回避数', evasionReg: '规律性标准差上限',
     winningWR: '将胜胜率阈值',
+    // 0.4.3 §1.6
+    typeAiMin: 'AI 档线', typeSuspectMin: '疑似AI 档线',
+    typeProMin: '职业选手 档线', typeExpertMin: '高手玩家 档线',
   };
 
   // ---------- small stats helpers ----------
@@ -110,6 +119,17 @@
     }
     if (!dx || !dy) return 0;
     return num / Math.sqrt(dx * dy);
+  }
+
+  // 0.4.3 §1.1, mirrored from app.js stepProximity(): how close this hand came to the engine's
+  // first choice. 1.0 = Top1, 0.75 = Top2-3, 0.55 = Top4-5, 0 = further down. Both 0.3.1 terms
+  // that used to read a binary top-1 hit read this now, which is what stops a side that keeps
+  // landing on Top2-T5 from scoring as if it had no engine agreement at all.
+  function proximity(s) {
+    if (s.top1) return 1.0;
+    if (s.top3) return 0.75;
+    if (s.top5) return 0.55;
+    return 0;
   }
 
   // Higher input -> higher sub-score. Guarded so a learned lo/hi pair can never divide by
@@ -300,6 +320,9 @@
   // side filter.
   var METRIC_FN = {
     top1: function (s) { return s.top1 ? 1 : 0; },
+    // 0.4.3 §1.1: the same grade the risk model consumes, so the F1 grid search reports a cut
+    // for the number the detector actually uses instead of for the retired top-1 rate.
+    proximity: function (s) { return proximity(s); },
     top3: function (s) { return s.top3 ? 1 : 0; },
     top5: function (s) { return s.top5 ? 1 : 0; },
     loss: function (s) { return s.loss == null ? null : s.loss; },
@@ -413,10 +436,13 @@
     var steps = all.filter(function (x) { return !x.evasion; });
     if (!steps.length) return null;
     var top1 = mean(steps.map(function (x) { return x.top1 ? 1 : 0; }));
+    var topProx = mean(steps.map(proximity));
     var losses = steps.map(function (x) { return x.loss; }).filter(function (v) { return v != null; });
     var meanLoss = mean(losses);
     var sharp = steps.filter(function (x) { return x.isSharp; });
-    var sharpHit = sharp.length ? mean(sharp.map(function (x) { return x.top1 ? 1 : 0; })) : null;
+    // 0.4.3 §1.1: graded, exactly as app.js computes it. A sharp hand that landed on Top2-3 is
+    // engine-like precision and used to be scored as zero.
+    var sharpHit = sharp.length ? mean(sharp.map(proximity)) : null;
     var outTop5 = mean(steps.map(function (x) { return x.outsideTop5 ? 1 : 0; }));
     var desperateCount = steps.filter(function (x) { return x.desperate; }).length;
 
@@ -432,7 +458,7 @@
       }
     }
 
-    var aTop1 = rampUp(top1, th.top1Lo, th.top1Hi);
+    var aTop1 = rampUp(topProx, th.topProxLo, th.topProxHi);
     var aAcpl = rampDown(meanLoss, th.acplLo, th.acplHi);
     var aSharp = sharp.length >= 3
       ? clamp((sharpHit - th.sharpHitLo) / Math.max(0.05, th.sharpHitSpan), 0, 1) : 0.5;
@@ -452,7 +478,8 @@
       top1: aTop1, acpl: aAcpl, sharp: aSharp, out: aOut, desperate: aDesperate, time: aTime,
       evasion: aEvasion, winBlunder: aWinBlunder,
       // raw, un-ramped aggregates — the ramp anchors are learned from these
-      n: steps.length, rawTop1: top1, rawLoss: meanLoss, rawSharpHit: sharpHit, rawOutTop5: outTop5,
+      n: steps.length, rawTop1: top1, rawTopProx: topProx, rawLoss: meanLoss,
+      rawSharpHit: sharpHit, rawOutTop5: outTop5,
       hasSharp: sharp.length >= 3,
       evasionCount: ev.count, evasionRegularity: ev.regularity, winBlunderCount: ev.winBlunders,
     };
@@ -549,9 +576,13 @@
     if (!agg.pos.length || !agg.neg.length) return null;
     var out = {};
 
-    var mp = mean(agg.pos.map(function (p) { return p.sub.rawTop1; }));
-    var mn = mean(agg.neg.map(function (n) { return n.sub.rawTop1; }));
-    if (mp - mn > 0.02) { out.top1Lo = r3(mn); out.top1Hi = r3(Math.max(mn + 0.05, mp)); }
+    // 0.4.3 §1.1: anchored on the PROXIMITY means, because proximity is what the ramp reads
+    // now. Anchoring the old top-1 rate here would emit a pair of cuts the detector never
+    // consults — a "learned" run that silently changed nothing, which is worse than no run.
+    // The retired top1Lo/top1Hi keep whatever value they already had.
+    var mp = mean(agg.pos.map(function (p) { return p.sub.rawTopProx; }));
+    var mn = mean(agg.neg.map(function (n) { return n.sub.rawTopProx; }));
+    if (mp - mn > 0.02) { out.topProxLo = r3(mn); out.topProxHi = r3(Math.max(mn + 0.05, mp)); }
 
     var lp = mean(agg.pos.map(function (p) { return p.sub.rawLoss; }));
     var ln = mean(agg.neg.map(function (n) { return n.sub.rawLoss; }));
@@ -604,7 +635,25 @@
     var mid = (mean(pos.map(function (p) { return p.v; })) + mean(neg.map(function (n) { return n.v; }))) / 2;
     var best = pickCut(grid, mid);
     var riskHigh = Math.round(best.t);
-    return { riskHigh: riskHigh, riskMid: Math.round(riskHigh * 40 / 70), f1: best.f1 };
+    var out = { riskHigh: riskHigh, riskMid: Math.round(riskHigh * 40 / 70), f1: best.f1 };
+    // 0.4.3 §1.6: the same F1-optimal AI/human cut is the honest anchor for the AI band's lower
+    // edge (§1.6 asks for these cuts to be learnable), and the three lower edges keep the §1.6
+    // LADDER relative to it — so the whole ladder moves together instead of letting two bands
+    // land on the same point. A degenerate corpus that would collapse or invert the ladder
+    // keeps the defaults: three bands sharing one number is worse than not learning at all.
+    var dAi = th.typeAiMin - th.riskHigh;
+    var dSus = th.typeAiMin - th.typeSuspectMin;
+    var dPro = th.typeAiMin - th.typeProMin;
+    var dExp = th.typeAiMin - th.typeExpertMin;
+    var aiMin = clamp(Math.round(riskHigh + dAi), 1, 99);
+    var susMin = clamp(aiMin - dSus, 1, 99);
+    var proMin = clamp(aiMin - dPro, 1, 99);
+    var expMin = clamp(aiMin - dExp, 1, 99);
+    if (aiMin > susMin && susMin > proMin && proMin > expMin) {
+      out.typeAiMin = aiMin; out.typeSuspectMin = susMin;
+      out.typeProMin = proMin; out.typeExpertMin = expMin;
+    }
+    return out;
   }
 
   // ---------- orchestrator (0.3.3 §3.4) ----------
@@ -635,7 +684,16 @@
     var ramp = optimizeRampThresholds(list, baseT) || {};
     var thresholds = mergeKnown(beforeT, ramp);
     var cuts = optimizeRiskCuts(list, weights, thresholds);
-    if (cuts) { thresholds.riskHigh = cuts.riskHigh; thresholds.riskMid = cuts.riskMid; }
+    if (cuts) {
+      thresholds.riskHigh = cuts.riskHigh;
+      thresholds.riskMid = cuts.riskMid;
+      // 0.4.3 §1.6: the band edges ride along with the 高风险 line. Only present when the
+      // learnt ladder stayed strictly ordered (see optimizeRiskCuts); otherwise the defaults
+      // stand.
+      ['typeAiMin', 'typeSuspectMin', 'typeProMin', 'typeExpertMin'].forEach(function (k) {
+        if (cuts[k] != null) thresholds[k] = cuts[k];
+      });
+    }
 
     // A: per-metric cut lines. Reported and stored for the diff table and for the feature
     // library's threshold, but the detector consumes the ramps above — these answer
@@ -689,10 +747,16 @@
     });
   }
 
-  var THRESHOLD_KEYS = ['top1Lo', 'top1Hi', 'acplLo', 'acplHi', 'sharpHitLo', 'sharpHitSpan',
+  var THRESHOLD_KEYS = ['topProxLo', 'topProxHi',
+                        // 0.3.1's top-1 cuts. Retired from the detector in 0.4.3 §1.1 but still
+                        // stored and still listed, so an operator comparing an old learnedParams
+                        // with a new one can see that nothing here was silently repurposed.
+                        'top1Lo', 'top1Hi', 'acplLo', 'acplHi', 'sharpHitLo', 'sharpHitSpan',
                         'outTop5Hi', 'riskHigh', 'riskMid',
                         // 0.4.2 §4.3
-                        'evasionLoss', 'goodLoss', 'evasionMin', 'evasionReg', 'winningWR'];
+                        'evasionLoss', 'goodLoss', 'evasionMin', 'evasionReg', 'winningWR',
+                        // 0.4.3 §1.6
+                        'typeAiMin', 'typeSuspectMin', 'typeProMin', 'typeExpertMin'];
 
   function diffThresholds(before, after) {
     return THRESHOLD_KEYS.map(function (k) {
@@ -727,6 +791,9 @@
     sampleWeight: sampleWeight,
     sideFilter: sideFilter,
     stepGap: stepGap,
+    // 0.4.3 §1.1: exported so a test can assert the mirror against app.js's stepProximity
+    // directly instead of inferring it from a risk number.
+    proximity: proximity,
     featureVector: featureVector,
     featureMatch: featureMatch,
     buildFeatureLibrary: buildFeatureLibrary,

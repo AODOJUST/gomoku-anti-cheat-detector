@@ -44,13 +44,31 @@
     --ui-detail-radius:7px;       /* 原 6px  ×1.2 ×0.85 */
   }
   *{box-sizing:border-box}
+  /* ---- 0.4.6 §二.2: RTL ----
+     Arabic (and any future RTL locale) mirrors the whole shell by flipping `dir` on <html>
+     — i18n.js's setLocale() does that, because this document is ours. Nothing below is
+     duplicated per direction: the layout uses LOGICAL properties throughout
+     (`margin-inline-start` / `border-inline-start` / `text-align:start`), which resolve
+     against `dir` and so already mean the right edge in both. The physical names are used
+     nowhere in this file; if you add a rule, use the logical one.
+
+     What is deliberately NOT mirrored: the BOARD. A gomoku board's coordinates are fixed —
+     h8 is the same intersection whatever language the operator reads — so the canvas keeps
+     its orientation and only the labels around it follow the text direction. Mirroring the
+     board would silently move every move in the replay.
+
+     Arabic numerals: Western (0123456789) are forced, not the Eastern Arabic forms, because
+     the same digits are printed for coordinates, move counts and risk scores and the app
+     parses what it prints. `lining-nums` also keeps them from rendering as old-style
+     figures, which several Arabic fonts default to for body text. */
+  html[lang="ar"]{font-variant-numeric:lining-nums}
   body{margin:0;font-family:"Segoe UI",Microsoft YaHei,sans-serif;background:var(--bg);color:var(--txt);font-size:var(--ui-detail-font)}
   /* 0.3.5 §2.2: the nav stays put. Nothing above it may scroll-container it — body/.wrap
      carry no overflow, and the two scroll boxes (.scroll / .archive-grid) are below it. */
   header{position:sticky;top:0;z-index:100;padding:14px var(--ui-shell-padding);background:var(--panel);border-bottom:1px solid var(--line);display:flex;align-items:center;gap:var(--ui-shell-gap);flex-wrap:wrap}
   header h1{font-size:var(--ui-detail-large);margin:0;font-weight:600;white-space:nowrap}
   header h1 .sub{font-size:var(--ui-detail-small);color:var(--mut);font-weight:400}
-  #status{font-size:var(--ui-detail-small);color:var(--mut);margin-left:auto}
+  #status{font-size:var(--ui-detail-small);color:var(--mut);margin-inline-start:auto}
   .wrap{padding:var(--ui-shell-gap) var(--ui-shell-padding);max-width:1560px;margin:0 auto}
   .main-row{display:flex;gap:var(--ui-shell-gap);align-items:flex-start;flex-wrap:wrap}
   .left-col{flex:0 0 auto;max-width:100%;display:flex;flex-direction:column;gap:var(--ui-shell-gap)}
@@ -69,7 +87,7 @@
   button.sec{background:#2a3441}
   button.danger{background:#7a2a2a}
   button:disabled{opacity:.5;cursor:not-allowed}
-  label{font-size:var(--ui-detail-small);color:var(--mut);display:inline-flex;align-items:center;gap:6px;margin-right:14px}
+  label{font-size:var(--ui-detail-small);color:var(--mut);display:inline-flex;align-items:center;gap:6px;margin-inline-end:14px}
   select,input[type=number],input[type=text],input[type=datetime-local]{background:#0d1117;color:var(--txt);border:1px solid var(--line);border-radius:var(--ui-detail-radius);padding:8px 10px;font-size:var(--ui-detail-small)}
   input[type=checkbox]{accent-color:var(--blue);width:20px;height:20px}
   #progress{height:10px;background:#0d1117;border-radius:5px;overflow:hidden;margin-top:var(--ui-detail-padding)}
@@ -128,9 +146,50 @@
   .b-desp{background:var(--orange);color:#fff}
   .b-ai{background:#3c5ee7;color:#fff}
   .b-pre{background:#4a5568;color:#fff}
+  /* 0.4.3 §1.3: the segment rail. A 4px line down the left edge of every step row — green
+     while the side stayed inside the engine's Top5, orange once it stepped outside. The point
+     is that a run of hands reads as a run, instead of as N separate ✓ columns the eye has to
+     re-tally. The two colours are the ones §1.3 names; they are aliases of --green / --orange
+     so the hex lives in exactly one place. */
+  :root{--seg-high:#2ecc71;--seg-low:#e67e22}
+  tr.seg-high>td:first-child{border-inline-start:4px solid var(--seg-high)}
+  tr.seg-low>td:first-child{border-inline-start:4px solid var(--seg-low)}
+  /* Segment boundary: a heavier rule across the whole row, so two adjacent runs of opposite
+     colour are not read as one long one. Only the FIRST row of a segment carries it. */
+  tr.seg-start>td{border-top:2px solid var(--line)}
+  .seg-legend{margin-bottom:6px}
+  .seg-key{display:inline-block;width:4px;height:11px;vertical-align:-1px;margin:0 5px 0 10px}
+  .seg-key:first-child{margin-inline-start:0}
+  .seg-key.seg-high{background:var(--seg-high)}
+  .seg-key.seg-low{background:var(--seg-low)}
+  /* 0.4.3 §1.4: the drag handles that move a segment boundary. They are drawn on the row they
+     belong to rather than as separate widgets, because the boundary IS a row — anything else
+     would make the operator translate between a handle and the hand it moves. Only the first
+     and last row of a segment get one; the middle is left alone so the table stays readable. */
+  .segh{display:inline-block;width:8px;height:11px;margin-inline-end:2px;vertical-align:-1px;
+        cursor:ns-resize;background:repeating-linear-gradient(180deg,var(--mut) 0 2px,transparent 2px 5px)}
+  .segh:hover{background:var(--txt)}
+  /* 0.4.3 §1.5: the AI class badge. Colours carry the same meaning the risk dot does — red for
+     the three AI kinds, amber for 疑似AI, cool neutrals for the three human kinds, so a clean
+     game is not decorated in alarm colours. */
+  .tbadge{padding:1px 8px;border-radius:10px;font-size:var(--ui-detail-small);white-space:nowrap}
+  .tbadge.low-ai{background:#7f1d1d;color:#ffd9d9}
+  .tbadge.evasive-ai{background:#9a3412;color:#ffe4d1}
+  .tbadge.strong-evasive-ai{background:#7c2d12;color:#ffd9d9}
+  .tbadge.suspect-ai{background:#3f3208;color:#f5d97a}
+  .tbadge.pro{background:#16233d;color:#8fb6ff}
+  .tbadge.expert{background:#1d3b2a;color:#7fe0a3}
+  .tbadge.normal{background:#2a3441;color:#c3ccd6}
+  /* The `*` that says a class was set by hand rather than derived. Its own element, not a
+     character glued onto the label, so a long translated label cannot swallow it. */
+  .tbadge .man{opacity:.9;margin-inline-start:3px}
+  .type-row{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin-top:8px;font-size:var(--ui-detail-small);color:var(--mut)}
+  .type-row select{min-height:0;padding:3px 6px;font-size:var(--ui-detail-small)}
+  .type-row .tside{display:inline-flex;align-items:center;gap:4px;margin-inline-end:10px}
+  .acard .ty{display:block;margin-top:3px;font-size:var(--ui-detail-small)}
   .hint{font-size:var(--ui-detail-small);color:var(--mut);line-height:1.6}
   .contrib{font-size:var(--ui-detail-small);color:var(--mut)}
-  .facts td{text-align:left;white-space:normal;padding:5px 0;border:0;font-size:var(--ui-detail-small);width:auto}
+  .facts td{text-align:start;white-space:normal;padding:5px 0;border:0;font-size:var(--ui-detail-small);width:auto}
   .facts td:first-child{color:var(--mut);width:150px}
   .facts tr.warn td{color:var(--yellow)}
   .btn-row{display:flex;gap:var(--ui-shell-gap);flex-wrap:wrap;align-items:center}
@@ -153,7 +212,7 @@
   /* The ▼ sits inside the <th>, so it must not look like part of the label; the header row
      is where the cursor already means "sort" in the list panes, hence a distinct glyph with
      its own hover state rather than a clickable header. */
-  .col-toggle{display:inline-block;margin-right:5px;font-size:9px;opacity:.4;cursor:pointer;
+  .col-toggle{display:inline-block;margin-inline-end:5px;font-size:9px;opacity:.4;cursor:pointer;
               vertical-align:middle;user-select:none}
   .col-toggle:hover{opacity:1;color:var(--blue)}
   .colmenu{position:fixed;z-index:200;background:#1f2733;border:1px solid var(--line);
@@ -280,7 +339,7 @@
      the second column, not below card 1, so without a number the order reads as random. */
   /* 0.3.5 §2.3: the box grows with the text it holds (see .archive-grid .acard above). */
   .archive-grid .dno{display:inline-flex;align-items:center;justify-content:center;
-                min-width:26px;height:26px;margin-right:10px;flex:none;
+                min-width:26px;height:26px;margin-inline-end:10px;flex:none;
                 background:#0d1117;border:1px solid var(--line);border-radius:6px;
                 font-size:calc(var(--ui-detail-small) * 1.2);color:var(--mut)}
   /* 0.3.4 二.2 批量选择：勾选框 + 选中态。选中态必须一眼可辨，否则批量删除点下去前
@@ -315,7 +374,7 @@
   .ann-btn.on[data-label="豁免"]{background:#245c39;border-color:#4ec97b}
   .ann-btn.on[data-label="冲四"]{background:#7a4a2a;border-color:#d0a050}
   /* The per-step note row, revealed by clicking anywhere on the step row (§2.2). */
-  tr.step-note>td{padding:6px 10px;text-align:left;background:#141a22}
+  tr.step-note>td{padding:6px 10px;text-align:start;background:#141a22}
   tr.step-note textarea{height:46px;font-size:var(--ui-detail-small)}
   tr.step-note .snote-hint{color:var(--mut);font-size:var(--ui-detail-small)}
   /* 标签 (§1.6): a chip is a toggle. Preset and custom chips are visually distinct so a
@@ -336,8 +395,8 @@
      about intent rather than a verdict on strength. */
   .badge.b-evasion{background:#0e7490;color:#e6f7fb}
   /* The learning before/after table. Two numeric columns with a signed delta. */
-  .ltable td,.ltable th{padding:5px 12px;text-align:left;white-space:nowrap}
-  .ltable td.num{text-align:right;font-family:Consolas,monospace}
+  .ltable td,.ltable th{padding:5px 12px;text-align:start;white-space:nowrap}
+  .ltable td.num{text-align:end;font-family:Consolas,monospace}
   .ltable .up{color:var(--red)} .ltable .down{color:var(--green)} .ltable .same{color:var(--mut)}
   .lbox{background:#0d1117;border:1px solid var(--line);border-radius:var(--ui-detail-radius);
         padding:var(--ui-detail-padding) 14px;margin-top:var(--ui-detail-padding)}
@@ -356,7 +415,7 @@
   .ctx .it.danger{color:#ff8c7f}
   .ctx .sep{height:1px;background:var(--line);margin:6px 4px}
   .ctx .ti{padding:6px 16px 10px;color:var(--mut);font-size:var(--ui-detail-small);letter-spacing:.4px}
-  .ctx .it .k{margin-left:auto;color:var(--mut);font-size:var(--ui-detail-small)}
+  .ctx .it .k{margin-inline-start:auto;color:var(--mut);font-size:var(--ui-detail-small)}
 
   /* ---- modal ---- */
   .mask{position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9998;display:flex;align-items:center;justify-content:center}
@@ -376,12 +435,12 @@
   /* 数据完整性提示. A mid-join game is complete ON THE BOARD but partial in the DATA, and
      every figure below is read differently because of it — so it sits above them, not as
      one more row inside the metrics table. */
-  .warnbox{background:#2a2113;border:1px solid #6b5416;border-left:5px solid var(--yellow);
+  .warnbox{background:#2a2113;border:1px solid #6b5416;border-inline-start:5px solid var(--yellow);
            border-radius:var(--ui-detail-radius);padding:var(--ui-detail-padding) var(--ui-shell-padding);
            margin-top:16px;font-size:var(--ui-detail-font);line-height:1.7}
   .warnbox b{display:block;color:var(--yellow);font-size:var(--ui-detail-large);margin-bottom:4px}
   /* 0.3.1 活四停止 banner: blue, distinct from the yellow data-incompleteness box. */
-  .warnbox.term{border-color:#2c4a7a;border-left-color:var(--blue);background:#16233d}
+  .warnbox.term{border-color:#2c4a7a;border-inline-start-color:var(--blue);background:#16233d}
   .warnbox.term b{color:#7fb0ff}
   .dgrid{display:flex;gap:var(--ui-shell-gap);align-items:flex-start;flex-wrap:wrap;margin-top:var(--ui-detail-padding)}
   /* The board column may shrink — its canvas is max-width:100% — so the info column keeps
@@ -404,7 +463,7 @@
           --bg:#fff;--panel:#fff;--line:#bbb;--txt:#111;--mut:#555}
     body{background:#fff;color:#111;-webkit-print-color-adjust:exact;print-color-adjust:exact}
     .scroll{max-height:none;overflow:visible}
-    .warnbox{background:#fff;border-color:#ccc;border-left-color:#a08000}
+    .warnbox{background:#fff;border-color:#ccc;border-inline-start-color:#a08000}
     .warnbox b{color:#7a6200}
   }
 </style>
@@ -543,6 +602,10 @@
 
     <div class="panel" style="margin-top:12px">
       <h2>步骤细明界面</h2>
+      <!-- 0.4.3 §1.3: filled by renderSegLegends() — the four step tables share one legend
+           builder so a fifth table can never be added without one, and so the two strings are
+           reached as the `viewer|` keys §4.5 names (§1.3 writes them as 段：…). -->
+      <div class="hint seg-legend" id="segLegDetect"></div>
       <div class="scroll"><table id="tbl">
         <thead><tr>
           <th>#</th><th>方</th><th>实际</th><th>最佳</th><th>前5候选(胜率%)</th>
@@ -740,6 +803,10 @@
         <h2>风险分</h2>
         <div class="score" id="dScores"></div>
         <div id="dSummary" class="hint" style="margin-top:10px">—</div>
+        <!-- 0.4.3 §1.5: the per-side AI class, with the operator's override beside it. Filled
+             by renderTypeRow(); kept out of #dSummary because that table is shared verbatim
+             with the detect pane and the sample detail, which have no archive to write to. -->
+        <div id="dType" class="type-row"></div>
       </div>
 
       <div class="dgrid">
@@ -774,6 +841,7 @@
 
       <div class="panel" style="margin-top:12px">
         <h2>步骤明细</h2>
+        <div class="hint seg-legend" id="segLegDetail"></div>
         <div class="scroll"><table id="dTbl">
           <thead><tr>
             <th>#</th><th>方</th><th>实际</th><th>最佳</th><th>前5候选(胜率%)</th>
@@ -912,6 +980,7 @@
         <h2>风险分</h2>
         <div class="score" id="sScores"></div>
         <div id="sSummary" class="hint" style="margin-top:10px">—</div>
+        <div id="sType" class="type-row"></div>
       </div>
 
       <div class="dgrid">
@@ -949,6 +1018,7 @@
         <div class="hint" style="margin-bottom:6px">
           点按钮给该步打标签（可多选，立即保存并递增 version）；点行号展开可填单步备注。
         </div>
+        <div class="hint seg-legend" id="segLegSample"></div>
         <div class="scroll"><table id="sTbl">
           <thead><tr>
             <th>#</th><th>方</th><th>实际</th><th>最佳</th><th>前5候选(胜率%)</th>
@@ -1039,6 +1109,16 @@
             <div class="hint" id="sePmsg"></div>
           </div>
 
+          <!-- 0.4.3 §2.1: the sample editor used to show the step table and the board after an
+               analysis and NOTHING else — no risk figure anywhere, while the detect pane and the
+               replay detail both lead with one. Filled by renderSeScores(), which shares
+               summaryTableHtml with those two panes rather than re-deriving the numbers. -->
+          <div class="panel">
+            <h2>评估结果</h2>
+            <div class="score" id="seScores"><div class="hint">分析后显示</div></div>
+            <div id="seSummary" class="hint" style="margin-top:8px">—</div>
+          </div>
+
           <div class="panel">
             <h2>步骤 4 · 备注与标签</h2>
             <label style="display:block;margin:0 0 6px">名称</label>
@@ -1068,6 +1148,7 @@
         <div class="hint" style="margin-bottom:6px">
           分析前为空。点按钮打标签（可多选），点行号展开填单步备注。
         </div>
+        <div class="hint seg-legend" id="segLegEditor"></div>
         <div class="scroll"><table id="seTbl">
           <thead><tr>
             <th>#</th><th>方</th><th>实际</th><th>最佳</th><th>前5候选(胜率%)</th>
@@ -1113,6 +1194,13 @@
         <div class="set-item">
           <label>开局排除手数</label>
           <div class="fx"><input type="number" id="setOpening" min="0" max="40"></div>
+        </div>
+        <div class="set-item">
+          <label>自动发送聊天</label>
+          <div class="fx">
+            <input type="checkbox" id="setChatAuto">
+            <span class="hint">总开关。开启后进局 30 秒内自动发送一次反作弊声明（每局发送前仍会先问一次），并在对手说话时用对方的语言回一句。默认关闭 —— 这是以你的名义向真人发话，发出去了收不回来。「提问」按钮不受此开关影响。</span>
+          </div>
         </div>
       </div>
       <div class="btn-row" style="margin-top:14px">
@@ -1168,6 +1256,56 @@
       </div>
       <div class="btn-row" style="margin-top:10px">
         <span class="hint">也可以在浏览器工具栏图标上点右键，从「语言」菜单里切换 —— 两条入口写的是同一份设置，改一处两处都会跟着变。</span>
+      </div>
+    </div>
+
+    <!-- 0.4.4 §十六 — LLM API. The defaults are NOT written into the inputs here: they come from
+         GMLLM.DEFAULTS via fillLlmForm(), so the panel and the request code cannot disagree about
+         what "unset" means. -->
+    <div class="panel set-panel">
+      <h2>LLM API</h2>
+      <div class="set-grid">
+        <div class="set-item">
+          <label>启用</label>
+          <div class="fx">
+            <input type="checkbox" id="setLlmEnabled">
+            <span class="hint">用于答案对版判定与语言识别兜底。关闭时全部回退到关键词匹配，问答流程不受影响。</span>
+          </div>
+        </div>
+        <div class="set-item">
+          <label>Endpoint</label>
+          <div class="fx">
+            <input type="text" id="setLlmEndpoint" spellcheck="false" autocomplete="off">
+            <span class="hint">任何 OpenAI 兼容的 chat/completions 地址（OpenAI / DeepSeek / 智谱 / Ollama 均可）。</span>
+          </div>
+        </div>
+        <div class="set-item">
+          <label>API Key</label>
+          <div class="fx">
+            <input type="password" id="setLlmKey" spellcheck="false" autocomplete="off">
+            <span class="hint">只保存在本机 chrome.storage.local，不上传任何服务器；扩展也不会把它写进存档。</span>
+          </div>
+        </div>
+        <div class="set-item">
+          <label>Model</label>
+          <div class="fx"><input type="text" id="setLlmModel" spellcheck="false" autocomplete="off"></div>
+        </div>
+        <div class="set-item">
+          <label>超时（ms）</label>
+          <div class="fx"><input type="number" id="setLlmTimeout" min="1000" step="1000"></div>
+        </div>
+        <div class="set-item">
+          <label>每月上限（次）</label>
+          <div class="fx"><input type="number" id="setLlmLimit" min="1" step="50"></div>
+        </div>
+      </div>
+      <div class="btn-row" style="margin-top:10px">
+        <button class="sec" id="setLlmTest">测试连接</button>
+        <button class="sec" id="setLlmReset">重置用量</button>
+        <span class="hint" id="setLlmUsage">—</span>
+      </div>
+      <div class="btn-row" style="margin-top:6px">
+        <span class="hint">连续 3 次失败会自动禁用 24 小时，避免每次提问都等一次超时。</span>
       </div>
     </div>
 
@@ -1228,8 +1366,16 @@
 <script src="locale/ru.js"></script>
 <script src="locale/fr.js"></script>
 <script src="locale/de.js"></script>
+<script src="locale/vi.js"></script>
+<script src="locale/es.js"></script>
+<script src="locale/ms.js"></script>
+<script src="locale/ar.js"></script>
+<script src="locale/mn.js"></script>
+<script src="llm.js"></script>
 <script src="storage.js"></script>
 <script src="openings.js"></script>
+<script src="questions.js"></script>
+<script src="chat.js"></script>
 <script src="app.js"></script>
 <script src="learn.js"></script>
 <script src="viewer.js"></script>

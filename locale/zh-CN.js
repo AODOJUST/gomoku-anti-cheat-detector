@@ -72,6 +72,37 @@ GMI18n.register('zh-CN', {
   'stopReason.当前方形成活四，对手必败': '当前方形成活四，对手必败',
   'stopReason.对手形成活四，当前方必败': '对手形成活四，当前方必败',
 
+  // ---- AI 分类 (0.4.3 §1.5) ----
+  // app.js's classifySide() runs in the offscreen document, where there is no UI dictionary
+  // at all, so it can only produce a CODE — and that code is what gets persisted in
+  // report.types / entry.types / manualType. Nothing compares it by literal (the panel and the
+  // viewer render it through TO('type', code)), but it is a stored identity value all the same,
+  // which is what puts it here rather than in the text-keyed table. The five bands of §1.6 are
+  // NOT listed: only the three AI classes and the four non-AI classes are ever stored, and the
+  // band names (疑似AI / 职业选手 / …) survive as the type names themselves.
+  'type.lowAi': '低级AI',
+  'type.evasiveAi': '规避型AI',
+  'type.strongEvasiveAi': '强规避AI',
+  'type.suspectAi': '疑似AI',
+  'type.pro': '职业选手',
+  'type.expert': '高手玩家',
+  'type.normal': '普通玩家',
+
+  // 0.4.4 — the runtime codes the chat side emits. Listed here so the BASELINE table can resolve
+  // them; the seven generated tables get them from _tools/i18n-extra.js (same arrangement as the
+  // `type.*` block above).
+  'verdict.correct': '答对', 'verdict.wrong': '答错', 'verdict.unknown': '明确拒答',
+  'verdict.vague': '答非所问', 'verdict.empty': '未作答', 'verdict.no': '否',
+  'verdict.followup': '追问中',
+  'senderHow.socket': 'socket 事件', 'senderHow.dom': '页面 DOM',
+  'senderHow.anchor-unresolved': '声明锚点（未定）', 'senderHow.unknown': '未确定',
+  'llm.notConfigured': '未配置 LLM API', 'llm.quotaExceeded': '本月额度已用尽',
+  'llm.httpError': 'HTTP 错误（{code}）', 'llm.timeout': '请求超时',
+  'llm.autoDisabled': '连续失败已自动禁用', 'llm.bridgeFailed': '调用通道失败',
+  // §7.3 — why a chat send did not go through (see i18n-extra.js for the same three codes).
+  'sendWhy.noInput': '找不到聊天输入框', 'sendWhy.stuck': '聊天输入框未被清空',
+  'sendWhy.throw': '发送脚本报错',
+
   // ---- 开局筛选树。大类（直止 / 斜止）不翻译，见 §1.9 验收 4。
   'open.allDirect': '全部直止',
   'open.allIndirect': '全部斜止',
@@ -158,7 +189,7 @@ GMI18n.register('zh-CN', {
   'learn.noRoleTags': '没有样本带「AI 样本」「人类样本」「黑方AI」或「白方AI」标签，权重无法调整（阈值与特征库仍已更新）。',
 
   // ---- 语言选择 (§1.2). Two entry points consume these: the toolbar right-click menu
-  // (background.js) and the viewer's settings dropdown. The eight `lang.*` values are
+  // (background.js) and the viewer's settings dropdown. The thirteen `lang.*` values are
   // ENDONYMS — every table carries the identical eight strings, because 「日本語」 reads
   // 「日本語」 no matter which language the rest of the UI is in.
   'menu.lang': '语言',
@@ -170,6 +201,11 @@ GMI18n.register('zh-CN', {
   'lang.ru': 'Русский',
   'lang.fr': 'Français',
   'lang.de': 'Deutsch',
+  'lang.vi': 'Tiếng Việt',
+  'lang.es': 'Español',
+  'lang.ms': 'Bahasa Melayu',
+  'lang.ar': 'العربية',
+  'lang.mn': 'Монгол',
 
   // ---- 网络自主更新 (0.4.0 §一). 更新横幅、设置页的「检测更新」按钮与它的三种结果。
   // 版本号走 {v}；releaseNotes 直接显示 version.json 的原文，故意不翻译（它随每次发布变）。
