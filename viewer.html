@@ -371,6 +371,22 @@
   .set-item .fx{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
   .set-item select,.set-item input{flex:1;min-width:0}
   .set-item .set-val{font-family:Consolas,monospace;font-size:var(--ui-detail-font);color:var(--txt)}
+  /* 0.4.8 §3 — the model picker's drawer. Every surface here reads the same tokens as the rest
+     of the page, so it follows the theme like any other control: the spec's sketch wrote the
+     hover wash as a literal `#202834`, which is precisely the half-themed-control defect 0.4.8
+     exists to remove, so it is `--hover` here. */
+  .model-picker{position:relative;display:flex;flex:1;min-width:0}
+  .model-picker input{flex:1;min-width:0}
+  .model-toggle{min-height:0;padding:0 12px;background:var(--btn);color:var(--txt);
+                border:1px solid var(--line);border-radius:var(--ui-detail-radius);cursor:pointer}
+  .model-toggle:hover{background:var(--btn-hover)}
+  .model-dropdown{position:absolute;top:100%;inset-inline:0;margin-top:4px;max-height:320px;overflow-y:auto;
+                  background:var(--float);border:1px solid var(--line);border-radius:var(--ui-detail-radius);
+                  z-index:50;box-shadow:0 8px 24px rgba(0,0,0,.4)}
+  .model-item{padding:8px 12px;cursor:pointer;display:flex;gap:10px;align-items:baseline}
+  .model-item:hover{background:var(--hover)}
+  .model-item .vendor{color:var(--mut);font-size:var(--ui-detail-small);margin-inline-start:auto}
+  .model-empty{padding:8px 12px;color:var(--dim);font-size:var(--ui-detail-small)}
   /* The groups are a stack of full-width panels; the COLUMN COUNT is decided by the grid
      inside them, not by capping the panel, which is what the old 620px column did. */
   .set-panel{margin-top:12px}
@@ -1424,7 +1440,17 @@
         </div>
         <div class="set-item">
           <label>Model</label>
-          <div class="fx"><input type="text" id="setLlmModel" spellcheck="false" autocomplete="off"></div>
+          <div class="fx">
+            <!-- 0.4.8 §3: a searchable drawer, not a dropdown. The input stays a plain text
+                 field so any model an operator's endpoint accepts can still be typed by hand —
+                 an allow-list would be wrong the day a vendor ships a new model name. -->
+            <div class="model-picker">
+              <input type="text" id="setLlmModel" spellcheck="false" autocomplete="off"
+                     placeholder="搜索模型（中/英），或直接输入自定义名">
+              <button class="model-toggle" id="modelToggle" type="button" aria-label="展开模型列表">▾</button>
+              <div class="model-dropdown hidden" id="modelDropdown" role="listbox"></div>
+            </div>
+          </div>
         </div>
         <div class="set-item">
           <label>超时（ms）</label>

@@ -176,11 +176,15 @@ GMI18n.register('es', {
   'archive|黑': 'Negras',
   'archive|手': 'jugadas',
 
+  // ---- attr.aria-label ----
+  'attr.aria-label|展开模型列表': 'Desplegar la lista de modelos',
+
   // ---- attr.placeholder ----
   'attr.placeholder|分享串 / JSON': 'Cadena para compartir / JSON',
   'attr.placeholder|跟随': 'Seguir',
   'attr.placeholder|开局标准，中盘 AI 特征明显': 'Apertura estándar, rasgos de IA claros en el medio juego',
   'attr.placeholder|留空则自动命名': 'Déjalo vacío para nombrar automáticamente',
+  'attr.placeholder|搜索模型（中/英），或直接输入自定义名': 'Buscar modelos (chino/inglés) o escribir un nombre personalizado',
   'attr.placeholder|自定义标签': 'Etiqueta personalizada',
 
   // ---- attr.title ----
@@ -622,6 +626,7 @@ GMI18n.register('es', {
   'viewer|（当前标签：{list}）': ' (etiquetas actuales: {list})',
   'viewer|（第 {p}/{pages} 页）': ' (página {p}/{pages})',
   'viewer|（含 {n} 个 AI 参考手）': ' (incluye {n} jugadas de referencia de IA)',
+  'viewer|（连续 {n}）': ' (racha {n})',
   'viewer|（其中 {n} 个 id 与现有样本重复，已分配新 id）': ' ({n} id duplicaban muestras existentes y se les asignó uno nuevo)',
   'viewer|（其中 {n} 条 id 与现有存档重复，已分配新 id）': ' ({n} id duplicaban archivos existentes y se les asignó uno nuevo)',
   'viewer|（手序未知，不计分）': ' (orden de jugadas desconocido — sin puntuar)',
@@ -703,6 +708,7 @@ GMI18n.register('es', {
   'viewer|第 {m} 手单步备注': 'Nota de la jugada {m}',
   'viewer|第 {m} 手检测提前终止（{reason}），后续未分析。': 'La detección se detuvo antes de tiempo en la jugada {m} ({reason}); el resto no se analizó.',
   'viewer|第 {m} 子（{side}）：中途加入前已存在于盘面，无手序，不计入命中率与时间统计。': 'Piedra {m} ({side}): ya estaba en el tablero antes de unirse a mitad de partida, no tiene orden de jugada y no cuenta para las estadísticas de acierto ni de tiempo.',
+  'viewer|第 {moves} 手': 'Jugada {moves}',
   'viewer|第 {n} / {n} 手 · 末手。点空点继续打谱': 'Jugada {n} / {n} · última jugada. Haz clic en un punto vacío para seguir jugando',
   'viewer|第 {n} / {n} 手 · 末手。点空点继续打谱；点已有子把光标移过去': 'Jugada {n} / {n} · última jugada. Haz clic en un punto vacío para seguir jugando; haz clic en una piedra existente para mover allí el cursor',
   'viewer|第 {p} / {pages} 页 · 每页 {size} 个（{cols} × {rows} 列）': 'Página {p} / {pages} · {size} por página ({cols} × {rows})',
@@ -861,6 +867,7 @@ GMI18n.register('es', {
   'viewer|数据完整性': 'Integridad de los datos',
   'viewer|数据质量': 'Calidad de los datos',
   'viewer|双方': 'Ambos bandos',
+  'viewer|四三被反四': 'Cuatro-tres resuelto con un contra-cuatro',
   'viewer|特征库': 'Biblioteca de características',
   'viewer|特征库条目': 'Entradas de la biblioteca de características',
   'viewer|提示': 'Sugerencia',
@@ -872,7 +879,9 @@ GMI18n.register('es', {
   'viewer|完整': 'Completo',
   'viewer|玩家名来源': 'Origen del nombre del jugador',
   'viewer|唯一手': 'Jugada única',
+  'viewer|唯一手累计命中': 'Jugada única — aciertos totales',
   'viewer|唯一手命中': 'Acierto de jugada única',
+  'viewer|唯一手最长连续命中': 'Jugada única — racha más larga',
   'viewer|未存档（对局过短：{total} / {min} 手）': 'Sin archivar (partida demasiado corta: {total} / {min})',
   'viewer|未分类': 'Sin categoría',
   'viewer|未分析': 'Sin analizar',
@@ -882,6 +891,7 @@ GMI18n.register('es', {
   'viewer|未识别': 'Sin identificar',
   'viewer|未授予访问该 Endpoint 的权限，无法调用。': 'No se concedió permiso para acceder a ese endpoint; no se puede llamar.',
   'viewer|未学习': 'Sin aprender',
+  'viewer|未找到匹配的模型，可直接输入自定义模型名': 'No hay ningún modelo coincidente: escribe directamente un nombre de modelo personalizado',
   'viewer|文件里没有 archives 数组。': 'El archivo no contiene un array archives.',
   'viewer|文件里没有 samples 数组。': 'El archivo no contiene un array samples.',
   'viewer|无备注': 'Sin nota',

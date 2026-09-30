@@ -124,6 +124,88 @@
   // single-thread, or an explicit thread count on a multi build).
   var engineNote = '';
 
+  // =====================================================================================
+  // 0.4.8 §2 — MV3: the run's transient state lives in chrome.storage.session.
+  // =====================================================================================
+  // `chrome.storage.session` (MV3, Chrome 102+) holds data in memory for the life of the
+  // browser session and never writes it to disk. The three facts below are exactly that kind
+  // of fact — which games this session has already archived, whether the live session is
+  // finished for good, and which language the opponent last spoke — and each was either being
+  // written to `local` (where it outlived the session that gave it meaning) or living only in a
+  // module variable (where a reload threw it away).
+  //
+  // The module variables stay as a SYNCHRONOUS MIRROR: the guards that read them
+  // (`if (archivedEpoch[epoch])`, `if (liveStopped)`) sit in hot paths and cannot await. So the
+  // session area is the durable copy and the variable is the working copy, written through
+  // together by the setters below — the same split the panel already uses for settings.
+  //
+  // `gameEpoch` is persisted BESIDE `archivedEpoch` because the two only mean anything
+  // together. The counter used to restart at 1 on every page load, so a restored `{1: true}`
+  // would mark the first game of the new load as already archived and that game's archive
+  // would never be written. Restoring the counter with the marks keeps them pointing at the
+  // same games.
+  var SESSION_KEYS = {
+    archived: 'sessionArchivedEpochs',
+    liveStopped: 'sessionLiveStopped',
+    epoch: 'sessionGameEpoch',
+  };
+
+  function sessionArea() {
+    try {
+      if (chrome && chrome.storage && chrome.storage.session) return chrome.storage.session;
+    } catch (e) { /* no extension storage (a stripped harness) — fall through */ }
+    try {
+      if (chrome && chrome.storage) return chrome.storage.local;
+    } catch (e) { /* ditto */ }
+    return null;
+  }
+
+  function persistSession(patch) {
+    var area = sessionArea();
+    if (!area || !area.set) return;
+    try { area.set(patch); } catch (e) { /* quota, or a detached context: the mirror still works */ }
+  }
+
+  function markEpochArchived(epoch) {
+    if (epoch == null) return;
+    archivedEpoch[epoch] = true;
+    var o = {}; o[SESSION_KEYS.archived] = archivedEpoch;
+    persistSession(o);
+  }
+
+  function setLiveStopped(v) {
+    liveStopped = v || null;
+    var o = {}; o[SESSION_KEYS.liveStopped] = liveStopped;
+    persistSession(o);
+  }
+
+  function bumpGameEpoch() {
+    gameEpoch++;
+    var o = {}; o[SESSION_KEYS.epoch] = gameEpoch;
+    persistSession(o);
+    return gameEpoch;
+  }
+
+  // Restores the three session facts. Called at boot rather than awaited on: every reader
+  // already copes with the pre-restore value (an empty mark set, a null stop, a null chat
+  // language), so a late arrival can only ADD information — it cannot make a reader wrong,
+  // which is what lets this stay fire-and-forget.
+  function hydrateSession() {
+    var area = sessionArea();
+    if (!area || !area.get) return;
+    try {
+      area.get([SESSION_KEYS.archived, SESSION_KEYS.liveStopped, SESSION_KEYS.epoch], function (r) {
+        if (!r) return;
+        var ae = r[SESSION_KEYS.archived];
+        if (ae && typeof ae === 'object') for (var k in ae) if (ae[k]) archivedEpoch[k] = true;
+        var ls = r[SESSION_KEYS.liveStopped];
+        if (ls && typeof ls === 'object' && ls.moveNo != null) liveStopped = ls;
+        var ep = Number(r[SESSION_KEYS.epoch]);
+        if (isFinite(ep) && ep >= 1) gameEpoch = Math.max(gameEpoch, ep);
+      });
+    } catch (e) { /* nothing to restore */ }
+  }
+
   // 0.4.5 §一 — which host we are on, and what its board looks like. Everything site-specific
   // lives in sites.js; this is the only place the rest of the file has to know about it.
   // `GMSites.current()` returns null on an unrecognised host, in which case every board reader
@@ -704,7 +786,7 @@
       lastArchive = null;
       // Short by THE RECORD's own length, not by what was scored. Marked as handled so the
       // finalize path does not re-evaluate it on every later signal.
-      if (job._epoch != null) archivedEpoch[job._epoch] = true;
+      if (job._epoch != null) markEpochArchived(job._epoch);
       console.log('[detector] ' + job.note);
       if (root) paintStatus();
       return null;
@@ -723,7 +805,7 @@
       job.archiveId = entry.id;
       lastArchive = entry;
       lastSkip = null;
-      if (job._epoch != null) archivedEpoch[job._epoch] = true;   // 0.3.7 §一.1
+      if (job._epoch != null) markEpochArchived(job._epoch);   // 0.3.7 §一.1
       console.log('[detector] 已存档：' + entry.name);
       if (root) paintStatus();
       return entry;
@@ -792,7 +874,7 @@
       // session had accumulated no longer lines up with the record, so it is retired — but
       // the game itself continues, so nothing is archived and `gameEpoch` does not move.
       if (liveJob) { liveJob.status = '已中止'; liveJob = null; }
-      liveStopped = null;      // the record no longer matches what was stopped on
+      setLiveStopped(null);    // the record no longer matches what was stopped on
       // Debug line: §1.7's exception says console output stays Chinese and untranslated.
       // It also used to reference an undeclared `src.side`, which threw a ReferenceError out
       // of this listener and skipped the paintStatus() below it — so a mid-game join left the
@@ -1338,7 +1420,7 @@
     // An explicit restart (手动「开始分析」) is the operator overriding the stop, so the
     // 已终止 banner comes down here. Anything else that reaches this point has already
     // been blocked by the liveStopped guard in liveStepFor.
-    liveStopped = null;
+    setLiveStopped(null);
     liveJob = newJob('step-live', '实时逐步');
     liveJob.status = '分析中';
     liveJob._reset = true;
@@ -1420,7 +1502,7 @@
           var tReason = resp.step.stopReason || '活四';
           liveJob.note = T('panel|检测提前终止（第 {n} 手）：{reason}',
             { n: tMoveNo, reason: TO('stopReason', tReason) });
-          liveStopped = { moveNo: tMoveNo, reason: tReason };
+          setLiveStopped({ moveNo: tMoveNo, reason: tReason });
           // 0.3.5: finish NOW instead of waiting for game-end. The old flow left liveJob
           // alive and only called liveFinish() from onGameEnd(), so until that event
           // arrived the panel said 「分析中 · 实时逐步」 next to a note that said 检测停止 —
@@ -1513,7 +1595,7 @@
       // Same short-game rule the archive path uses, applied early so the decision is made
       // once and never re-litigated on the following signals. The session (if any) is retired
       // here too: leaving it alive would let it adopt the next game's moves.
-      archivedEpoch[epoch] = true;
+      markEpochArchived(epoch);
       lastSkip = { moves: total, min: minMoves };
       if (liveJob) { liveJob.status = '已中止'; liveJob = null; }
       console.log('[detector] 收尾跳过（' + reason + '）：仅 ' + total + ' 手，少于 ' + minMoves + ' 手');
@@ -1569,8 +1651,8 @@
   function beginNewGame(reason) {
     if (hasObservedMove()) finalizeGame(reason, true);
     if (liveJob) { liveJob.status = '已中止'; liveJob = null; }
-    liveStopped = null;
-    gameEpoch++;
+    setLiveStopped(null);
+    bumpGameEpoch();
     // 0.4.6 §一 — the remembered names belong to the game that just ended. Keeping them past this
     // point would let a papergames.io game with no readable row inherit the previous game's
     // players, which is a wrong name that looks like a right one.
@@ -2877,8 +2959,14 @@
   }
 
   function loadChatState() {
+    // 0.4.8 §2: the opponent's language is a fact about THIS browser session, not about the
+    // profile — it used to sit in `local`, where it survived a restart and answered the next
+    // opponent in the previous one's language. The session area forgets it when the browser
+    // closes, which is the correct lifetime.
+    var area = sessionArea();
+    if (!area || !area.get) return;
     try {
-      chrome.storage.local.get([CHAT_STATE_KEY], function (r) {
+      area.get([CHAT_STATE_KEY], function (r) {
         var st = (r && r[CHAT_STATE_KEY]) || {};
         if (st.lang) chat.lang = st.lang;
       });
@@ -2886,9 +2974,11 @@
   }
 
   function saveChatState() {
+    var area = sessionArea();
+    if (!area || !area.set) return;
     try {
       var o = {}; o[CHAT_STATE_KEY] = { lang: chat.lang };
-      chrome.storage.local.set(o);
+      area.set(o);
     } catch (e) {}
   }
 
@@ -3875,6 +3965,9 @@
   });
 
   startDomObserver();
+  // 0.4.8 §2: restore the session facts before anything can ask about them. Fire-and-forget —
+  // every reader copes with the pre-restore value, so a late arrival can only add information.
+  hydrateSession();
   loadChatState();
   resetChatForGame();
   setInterval(function () {

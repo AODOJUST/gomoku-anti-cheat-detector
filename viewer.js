@@ -645,6 +645,162 @@
     });
   }
 
+  // ---- 0.4.8 §3: the model picker ----
+  // A searchable drawer beside the Model field. The list is a CONVENIENCE, never a constraint:
+  // the field itself stays a plain text input, so a model an operator's endpoint accepts can
+  // still be typed by hand. An allow-list would be wrong the day a vendor ships a new name.
+  //
+  // The Chinese aliases exist because the operator types 「智谱」 and 「深度求索」, not
+  // `glm-4-plus` and `deepseek-chat`. Matching only the English id would filter those to
+  // nothing — the drawer would look broken exactly when it was being used.
+  var LLM_MODELS = [
+    // OpenAI
+    { id: 'gpt-4o', name: 'GPT-4o', vendor: 'OpenAI', tags: ['gpt', '4o', 'openai'] },
+    { id: 'gpt-4o-mini', name: 'GPT-4o mini', vendor: 'OpenAI', tags: ['gpt', '4o', 'mini', 'openai'] },
+    { id: 'gpt-4-turbo', name: 'GPT-4 Turbo', vendor: 'OpenAI', tags: ['gpt', '4', 'turbo', 'openai'] },
+    { id: 'gpt-3.5-turbo', name: 'GPT-3.5 Turbo', vendor: 'OpenAI', tags: ['gpt', '3.5', 'openai'] },
+    { id: 'o1-preview', name: 'o1-preview', vendor: 'OpenAI', tags: ['o1', 'openai'] },
+    { id: 'o1-mini', name: 'o1-mini', vendor: 'OpenAI', tags: ['o1', 'mini', 'openai'] },
+    // Anthropic
+    { id: 'claude-3-5-sonnet-20241022', name: 'Claude 3.5 Sonnet', vendor: 'Anthropic', tags: ['claude', 'sonnet', 'anthropic'] },
+    { id: 'claude-3-5-haiku-20241022', name: 'Claude 3.5 Haiku', vendor: 'Anthropic', tags: ['claude', 'haiku', 'anthropic'] },
+    { id: 'claude-3-opus-20240229', name: 'Claude 3 Opus', vendor: 'Anthropic', tags: ['claude', 'opus', 'anthropic'] },
+    // DeepSeek
+    { id: 'deepseek-chat', name: 'DeepSeek Chat', vendor: 'DeepSeek', tags: ['deepseek', 'chat'] },
+    { id: 'deepseek-reasoner', name: 'DeepSeek Reasoner', vendor: 'DeepSeek', tags: ['deepseek', 'reasoner', 'r1'] },
+    // 智谱
+    { id: 'glm-4-plus', name: 'GLM-4 Plus', vendor: 'Zhipu', tags: ['glm', 'zhipu', '智谱'] },
+    { id: 'glm-4-flash', name: 'GLM-4 Flash', vendor: 'Zhipu', tags: ['glm', 'flash', 'zhipu', '智谱'] },
+    // 阿里
+    { id: 'qwen-max', name: 'Qwen Max', vendor: 'Alibaba', tags: ['qwen', 'max', '通义千问'] },
+    { id: 'qwen-plus', name: 'Qwen Plus', vendor: 'Alibaba', tags: ['qwen', 'plus', '通义千问'] },
+    // Google
+    { id: 'gemini-1.5-pro', name: 'Gemini 1.5 Pro', vendor: 'Google', tags: ['gemini', 'google'] },
+    { id: 'gemini-1.5-flash', name: 'Gemini 1.5 Flash', vendor: 'Google', tags: ['gemini', 'flash', 'google'] },
+    // Moonshot / 月之暗面
+    { id: 'moonshot-v1-8k', name: 'Moonshot v1 8K (Kimi)', vendor: 'Moonshot', tags: ['moonshot', 'kimi', '月之暗面'] },
+    // 字节 / 豆包
+    { id: 'doubao-pro-32k', name: 'Doubao Pro 32K', vendor: 'ByteDance', tags: ['doubao', '豆包', 'bytedance'] },
+    // 本地
+    { id: 'llama3.1:8b', name: 'Llama 3.1 8B (Ollama)', vendor: 'Local', tags: ['llama', 'ollama', 'local'] },
+    { id: 'mistral:7b', name: 'Mistral 7B (Ollama)', vendor: 'Local', tags: ['mistral', 'ollama', 'local'] },
+  ];
+  // Keyed by model id, by the vendor's name, and by the vendor's model-name PREFIX ('glm',
+  // 'qwen', 'claude', …) — a vendor's models all share the Chinese name for the vendor, so a
+  // lookup that only tried the full id would leave 「智谱」 reaching nothing at all.
+  var MODEL_ZH_ALIAS = {
+    'openai': ['欧朋', '开放AI'], 'anthropic': ['安思罗匹克'],
+    'deepseek': ['深度求索', '深度搜索'], 'zhipu': ['智谱', '智谱清言'],
+    'alibaba': ['通义', '通义千问', '千问'], 'google': ['双子座', '谷歌双子', '谷歌'],
+    'moonshot': ['月之暗面', '基米', 'Kimi'], 'bytedance': ['豆包', '字节跳动'],
+    'local': ['本地', '本地模型'],
+    'gpt-4o': ['吉皮提4', 'GPT4', '4o'], 'gpt-4o-mini': ['吉皮提4mini', '小型'],
+    'gpt-4-turbo': ['GPT4', '涡轮'],
+    'claude': ['克劳德', '哥伦比亚'], 'claude-3-5-sonnet': ['克劳德十四行诗', '十四行'],
+    'claude-3-5-haiku': ['克劳德俳句', '俳句'],
+    'deepseek-chat': ['深度求索对话'], 'deepseek-reasoner': ['深度求索推理', 'R1'],
+    'glm': ['智谱', '智谱清言'], 'qwen': ['通义', '通义千问', '千问'],
+    'gemini': ['双子座', '谷歌双子'], 'llama': ['拉玛', '羊驼'], 'mistral': ['米斯特拉尔'],
+    'ollama': ['欧拉玛', '本地'],
+  };
+
+  // Does this query mean "this exact model" rather than "search for this"? An input holding a
+  // recognised id is a made choice, and opening the drawer should show the whole list; anything
+  // else is a search and should filter.
+  function isExactModelId(v) {
+    if (!v) return true;
+    for (var i = 0; i < LLM_MODELS.length; i++) if (LLM_MODELS[i].id === v) return true;
+    return false;
+  }
+
+  function modelAliasesFor(m) {
+    var out = (MODEL_ZH_ALIAS[m.id] || []).slice();
+    var vk = String(m.vendor || '').toLowerCase();
+    if (MODEL_ZH_ALIAS[vk]) out = out.concat(MODEL_ZH_ALIAS[vk]);
+    // Vendor-prefix keys: 'glm' for glm-4-plus, 'qwen' for qwen-max, …
+    var id = String(m.id || '');
+    for (var k in MODEL_ZH_ALIAS) {
+      if (k === id) continue;
+      if (id.indexOf(k) === 0 && out.indexOf(k) < 0) out = out.concat(MODEL_ZH_ALIAS[k]);
+    }
+    return out;
+  }
+
+  function filterModels(query) {
+    var q = String(query || '').trim().toLowerCase();
+    if (!q) return LLM_MODELS;
+    return LLM_MODELS.filter(function (m) {
+      if (m.id.toLowerCase().indexOf(q) >= 0) return true;
+      if (m.name.toLowerCase().indexOf(q) >= 0) return true;
+      if (m.tags && m.tags.some(function (t) { return t.toLowerCase().indexOf(q) >= 0; })) return true;
+      return modelAliasesFor(m).some(function (a) { return a.toLowerCase().indexOf(q) >= 0; });
+    });
+  }
+
+  function bindModelPicker() {
+    var input = $('setLlmModel');
+    var toggle = $('modelToggle');
+    var dd = $('modelDropdown');
+    if (!input || !dd) return;
+
+    function isOpen() { return !dd.classList.contains('hidden'); }
+    function close() { dd.classList.add('hidden'); }
+
+    function render(q) {
+      var list = filterModels(q);
+      if (!list.length) {
+        // The drawer must never be a dead end: a query nothing matches says so and points at
+        // the field, which is still a free-text input.
+        dd.innerHTML = '<div class="model-empty">' +
+          esc(T('viewer|未找到匹配的模型，可直接输入自定义模型名')) + '</div>';
+        return;
+      }
+      var h = '';
+      for (var i = 0; i < list.length; i++) {
+        var m = list[i];
+        h += '<div class="model-item" role="option" data-id="' + esc(m.id) + '">' +
+             '<span class="mi-name">' + esc(m.name) + '</span>' +
+             '<span class="vendor">' + esc(m.vendor) + '</span></div>';
+      }
+      dd.innerHTML = h;
+    }
+    function open() {
+      var v = String(input.value || '').trim();
+      render(isExactModelId(v) ? '' : v);
+      dd.classList.remove('hidden');
+    }
+
+    input.addEventListener('focus', open);
+    input.addEventListener('input', function () {
+      render(String(input.value || '').trim());
+      dd.classList.remove('hidden');
+    });
+    if (toggle) toggle.addEventListener('click', function (e) {
+      e.preventDefault();
+      if (isOpen()) close(); else { input.focus(); open(); }
+    });
+    dd.addEventListener('mousedown', function (e) {
+      var t = e.target;
+      var it = (t && t.closest) ? t.closest('.model-item') : null;
+      if (!it) return;
+      e.preventDefault();               // keep focus, do not let the input blur mid-pick
+      input.value = it.getAttribute('data-id') || '';
+      close();
+      // Setting `.value` does not fire `input`, so dispatch one: the LLM panel's own debounced
+      // commit then saves the pick through GMStorage, exactly as a hand-typed model would.
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    document.addEventListener('mousedown', function (e) {
+      if (!isOpen()) return;
+      var t = e.target;
+      if (t === input || t === toggle || (dd.contains && dd.contains(t))) return;
+      close();
+    });
+    document.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape' && isOpen()) close();
+    });
+  }
+
   // ---- 0.3.6 §1.2: the language dropdown ----
   // Built from GMI18n.LOCALES instead of being written into viewer.html, so a fourteenth language
   // costs one entry in i18n.js plus one table and cannot leave this list behind.
@@ -942,6 +1098,8 @@
   // `bindSetting` (which dedupes a scalar). Both commit the whole `opacity` object.
   bindOpacityControls();
   bindLlmFields();
+  // 0.4.8 §3 — the searchable model drawer rides on top of the plain Model field.
+  bindModelPicker();
 
   // §十八 — the host permission is `optional_host_permissions`, so it must be requested from a
   // user gesture. This click is that gesture; without it the fetch fails as a bare network error
@@ -2008,7 +2166,12 @@
     if (s.source === 'prejoin') badges.push('<span class="badge b-pre">' + T('viewer|还原') + '</span>');
     if (s.isOpening) badges.push('<span class="badge">' + T('viewer|开局') + '</span>');
     if (s.source === 'ai-suggest') badges.push('<span class="badge b-ai">' + T('viewer|AI参考') + '</span>');
-    if (s.isSharp) badges.push('<span class="badge b-sharp">' + T('viewer|唯一手') + '</span>');
+    // 0.4.8 §1.2 — the run length belongs beside the badge, not only in the summary: the whole
+    // point of the term is that a RUN of these is different from the same hands scattered, and
+    // only the row can show where the run actually was. `sharpStreak` is stamped on the step by
+    // app.js, so this is a read, not a second derivation.
+    if (s.isSharp) badges.push('<span class="badge b-sharp">' + T('viewer|唯一手') +
+      ((s.sharpStreak || 0) >= 2 ? T('viewer|（连续 {n}）', { n: s.sharpStreak }) : '') + '</span>');
     if (s.desperate) badges.push('<span class="badge b-desp">' + T('viewer|将败') + '</span>');
     // 0.4.2 §2.5: its own colour, because "this hand was deliberately bad" is a claim about
     // intent and must not read like the engine's 可疑 verdict or like 将败's hopelessness.
@@ -2108,6 +2271,13 @@
     return pct(a.sharpHit) + T('viewer|（{n}手）', { n: a.sharpCount });
   }
   function desCount(a) { return a ? T('viewer|{n}次', { n: a.desperateCount }) : '—'; }
+  // 0.4.8 §1.2. `—` when the field is absent, which is what a pre-0.4.8 archive looks like: the
+  // two streak figures were never computed for it, and `0次` would be a clean answer nobody
+  // actually measured.
+  function ssCell(a, key) {
+    if (!a || a[key] == null) return '—';
+    return T('viewer|{n}次', { n: a[key] || 0 });
+  }
   function simCount(a) { return a ? T('viewer|{n} 步', { n: a.simCount || 0 }) : '—'; }
   // 0.4.2 §2.5. The evasion row carries two numbers because they answer different questions —
   // how many, and how evenly they were spaced. `0.00` regularity is the normal answer for one
@@ -2162,6 +2332,12 @@
       '<tr><td>' + T('viewer|Top-5') + '</td><td>' + (rep.black ? pct(rep.black.top5) : '—') + '</td><td>' + (rep.white ? pct(rep.white.top5) : '—') + '</td></tr>' +
       '<tr><td>' + T('viewer|ACPL（均损）') + '</td><td>' + (rep.black ? (rep.black.meanLoss * 100).toFixed(1) + '%' : '—') + '</td><td>' + (rep.white ? (rep.white.meanLoss * 100).toFixed(1) + '%' : '—') + '</td></tr>' +
       '<tr><td>' + T('viewer|唯一手命中') + '</td><td>' + sharpHit(rep.black) + '</td><td>' + sharpHit(rep.white) + '</td></tr>' +
+      // 0.4.8 §1.2 — the two streak rows sit directly under 唯一手命中 because they are the same
+      // hands read a different way: the row above is the RATE, these two are the RUN. A side can
+      // hold an unremarkable 唯一手命中 rate and still have a ten-hand run in it, and only the
+      // streak rows say so.
+      '<tr><td>' + T('viewer|唯一手最长连续命中') + '</td><td>' + ssCell(rep.black, 'sharpStreakMax') + '</td><td>' + ssCell(rep.white, 'sharpStreakMax') + '</td></tr>' +
+      '<tr><td>' + T('viewer|唯一手累计命中') + '</td><td>' + ssCell(rep.black, 'sharpStreakHits') + '</td><td>' + ssCell(rep.white, 'sharpStreakHits') + '</td></tr>' +
       '<tr><td>' + T('viewer|Top5 之外') + '</td><td>' + (rep.black ? pct(rep.black.outTop5) : '—') + '</td><td>' + (rep.white ? pct(rep.white.outTop5) : '—') + '</td></tr>' +
       '<tr><td>' + T('viewer|将败冲四') + '</td><td>' + desCount(rep.black) + '</td><td>' + desCount(rep.white) + '</td></tr>' +
       '<tr><td>' + T('viewer|回避手') + '</td><td>' + evCount(rep.black) + '</td><td>' + evCount(rep.white) + '</td></tr>' +
@@ -2182,6 +2358,16 @@
       (opts.sim ? ('<tr><td>' + T('viewer|AI 指纹命中') + '</td><td>' + simCount(rep.black) + '</td><td>' + simCount(rep.white) + '</td></tr>') : '') +
       '<tr><td>' + T('viewer|时间模式') + '</td><td colspan="2">' + (rep.hasTime ? T('viewer|真实间隔') : T('viewer|固定预算')) + '</td></tr>' +
       '<tr><td>' + T('viewer|冲四豁免') + '</td><td colspan="2">' + T('viewer|{n} 手', { n: rep.forcedCount || 0 }) + '</td></tr>' +
+      // 0.4.8 §1.3 — shown only when there is something to show. A four-three answered by a
+      // counter-four is the case where detection deliberately did NOT stop, so the row explains
+      // why this record is longer than the old build's would have been.
+      (function () {
+        var list = (rep.fourThreeCounters || []).filter(function (x) { return x && x.moveNo != null; });
+        if (!list.length) return '';
+        return '<tr><td>' + T('viewer|四三被反四') + '</td><td colspan="2">' +
+               T('viewer|第 {moves} 手', { moves: list.map(function (x) { return x.moveNo; }).join(', ') }) +
+               '</td></tr>';
+      })() +
       '</table>';
   }
 

@@ -1209,6 +1209,12 @@
     // disagree, and 0.05 is the number it names twice (and the one §五's checklist writes).
     // It is a brand-new signal with no corpus, so the smaller value is also the safer one.
     uselessFour: 0.05,
+    // 0.4.8 §1.2: the two 唯一手 streak surcharges. Kept at the magnitudes §1.2 names while the
+    // six base weights stay at 1.00 (see app.js BASE_WEIGHTS for why the table is not adopted
+    // wholesale). Absent or non-numeric values here are ignored by riskParams(), so a profile
+    // written before this build simply runs without them.
+    sharpStreak: 0.04,
+    sharpTotal: 0.03,
   };
   var DEFAULT_THRESHOLDS = {
     // 0.4.3 §1.1: the ramp aTop1 reads now that it is fed a graded proximity instead of a
@@ -1370,6 +1376,18 @@
       top8: !!s.top8,
       bestWR: s.bestWR, actualWR: s.actualWR, loss: s.loss,
       isSharp: !!s.isSharp, forcedDefense: !!s.forcedDefense, desperate: !!s.desperate,
+      // 0.4.8 §1.1: which test produced the exemption — 'shape' (the board's only blocking
+      // point) or 'engine' (the 0.4.7 win-rate gap). Kept so the operator can tell a hand the
+      // shape test rescued from a hand the engine had already agreed about, and so a
+      // regression in either path is visible in an archived game rather than only in a rerun.
+      forcedDefenseHow: s.forcedDefenseHow || null,
+      // 0.4.8 §1.3: present only on a four-three hand. `counter: true` records that the
+      // defender's block was itself a four, which is why detection did NOT stop there.
+      fourThreeCounter: s.fourThreeCounter || null,
+      // 0.4.8 §1.2: this hand's position inside its 唯一手 run (0 when it is not a hit). Stamped
+      // by sharpStreakStats() in app.js so the step table can print 「唯一手（连续 K）」 without
+      // re-deriving the run — see that function for why the walk exists in exactly one place.
+      sharpStreak: isFinite(s.sharpStreak) ? s.sharpStreak : 0,
       // 0.4.7 §1.1: the four-run classification. Kept per step so the badge survives a reload,
       // and `prevBestWR` beside it because the archive's own reader may want to re-derive the
       // kind (the classification is a function of this one number plus the run's extent).
@@ -1445,11 +1463,28 @@
       defensive: isFinite(v.defensive) ? v.defensive : 0,
     };
   }
+  // 0.4.8 §1.3: the four-threes a counter-four answered. Rebuilt entry by entry off known
+  // fields only, so the stored list is a plain array of plain objects and a hand-edited value
+  // cannot introduce a shape (or a prototype) the viewer's renderer has never seen.
+  function copyFourThreeCounters(v) {
+    if (!Array.isArray(v)) return [];
+    var out = [];
+    for (var i = 0; i < v.length; i++) {
+      var x = v[i];
+      if (!x || typeof x !== 'object') continue;
+      var blk = Array.isArray(x.block) && x.block.length >= 2 ? [Number(x.block[0]), Number(x.block[1])] : null;
+      out.push({
+        moveNo: isFinite(x.moveNo) ? x.moveNo : null,
+        side: (x.side === 'B' || x.side === 'W') ? x.side : null,
+        block: blk,
+      });
+    }
+    return out;
+  }
   // The automatic classification, copied field by field so the archive carries a plain object
   // rather than a reference to the analysis result. `auto` is stored explicitly: it is what
   // tells a later reader that nobody has overridden this yet.
-  function copyTypes(ts) {
-    ts = ts || {};
+  function copyTypes(ts) {    ts = ts || {};
     var out = { B: null, W: null };
     ['B', 'W'].forEach(function (side) {
       var x = ts[side];
@@ -1529,6 +1564,12 @@
         // did rather than `undefined` leaking into the detail table.
         uselessFourCount: a.uselessFourCount || 0,
         fourRuns: copyFourRuns(a.fourRuns),
+        // 0.4.8 §1.2: the two 唯一手 streak figures. Deliberately NOT defaulted to 0 — an
+        // archive written before this build never computed them, and the detail table prints
+        // `—` for that case rather than claiming a clean scan that never ran (the same
+        // distinction `evasionCount` draws a few lines above).
+        sharpStreakMax: a.sharpStreakMax == null ? null : a.sharpStreakMax,
+        sharpStreakHits: a.sharpStreakHits == null ? null : a.sharpStreakHits,
         // 0.3.3 C: how many of this side's steps fingerprint-matched a known AI move.
         simCount: a.simCount || 0,
         time: a.time || null,
@@ -1574,6 +1615,11 @@
       terminal: rep.terminal || null,
       originalTotalMoves: rep.originalTotalMoves || 0,
       forcedCount: rep.forcedCount || 0,
+      // 0.4.8 §1.3: the four-threes answered by a counter-four, which is why detection carried
+      // on past them. Sanitised on the way in for the same reason the segment lists are: this
+      // runs over a stored report on every read, so a hand-edited blob must not be able to
+      // smuggle a shape every reader walks.
+      fourThreeCounters: copyFourThreeCounters(rep.fourThreeCounters),
       hasTime: !!rep.hasTime,
       // Which engine produced these verdicts: a report run on the single-threaded fallback
       // reaches a shallower depth in the same budget, so the two are not comparable and the

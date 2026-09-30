@@ -157,11 +157,15 @@ GMI18n.register('zh-TW', {
   'archive|黑': '黑',
   'archive|手': '手',
 
+  // ---- attr.aria-label ----
+  'attr.aria-label|展开模型列表': '展開模型清單',
+
   // ---- attr.placeholder ----
   'attr.placeholder|分享串 / JSON': '分享串 / JSON',
   'attr.placeholder|跟随': '跟隨',
   'attr.placeholder|开局标准，中盘 AI 特征明显': '開局標準，中盤 AI 特徵明顯',
   'attr.placeholder|留空则自动命名': '留空則自動命名',
+  'attr.placeholder|搜索模型（中/英），或直接输入自定义名': '搜尋模型（中／英），或直接輸入自訂名稱',
   'attr.placeholder|自定义标签': '自訂標籤',
 
   // ---- attr.title ----
@@ -603,6 +607,7 @@ GMI18n.register('zh-TW', {
   'viewer|（当前标签：{list}）': '（當前標籤：{list}）',
   'viewer|（第 {p}/{pages} 页）': '（第 {p}/{pages} 頁）',
   'viewer|（含 {n} 个 AI 参考手）': '（含 {n} 個 AI 參考手）',
+  'viewer|（连续 {n}）': '（連續 {n}）',
   'viewer|（其中 {n} 个 id 与现有样本重复，已分配新 id）': '（其中 {n} 個 id 與現有樣本重複，已分配新 id）',
   'viewer|（其中 {n} 条 id 与现有存档重复，已分配新 id）': '（其中 {n} 條 id 與現有存檔重複，已分配新 id）',
   'viewer|（手序未知，不计分）': '（手序未知，不計分）',
@@ -684,6 +689,7 @@ GMI18n.register('zh-TW', {
   'viewer|第 {m} 手单步备注': '第 {m} 手單步備註',
   'viewer|第 {m} 手检测提前终止（{reason}），后续未分析。': '第 {m} 手檢測提前終止（{reason}），後續未分析。',
   'viewer|第 {m} 子（{side}）：中途加入前已存在于盘面，无手序，不计入命中率与时间统计。': '第 {m} 子（{side}）：中途加入前已存在於盤面，無手序，不計入命中率與時間統計。',
+  'viewer|第 {moves} 手': '第 {moves} 手',
   'viewer|第 {n} / {n} 手 · 末手。点空点继续打谱': '第 {n} / {n} 手 · 末手。點空點繼續打譜',
   'viewer|第 {n} / {n} 手 · 末手。点空点继续打谱；点已有子把光标移过去': '第 {n} / {n} 手 · 末手。點空點繼續打譜；點已有子把游標移過去',
   'viewer|第 {p} / {pages} 页 · 每页 {size} 个（{cols} × {rows} 列）': '第 {p} / {pages} 頁 · 每頁 {size} 個（{cols} × {rows} 欄）',
@@ -842,6 +848,7 @@ GMI18n.register('zh-TW', {
   'viewer|数据完整性': '資料完整性',
   'viewer|数据质量': '資料品質',
   'viewer|双方': '雙方',
+  'viewer|四三被反四': '四三被反四',
   'viewer|特征库': '特徵庫',
   'viewer|特征库条目': '特徵庫條目',
   'viewer|提示': '提示',
@@ -853,7 +860,9 @@ GMI18n.register('zh-TW', {
   'viewer|完整': '完整',
   'viewer|玩家名来源': '玩家名來源',
   'viewer|唯一手': '唯一手',
+  'viewer|唯一手累计命中': '唯一手累計命中',
   'viewer|唯一手命中': '唯一手命中',
+  'viewer|唯一手最长连续命中': '唯一手最長連續命中',
   'viewer|未存档（对局过短：{total} / {min} 手）': '未存檔（對局過短：{total} / {min} 手）',
   'viewer|未分类': '未分類',
   'viewer|未分析': '未分析',
@@ -863,6 +872,7 @@ GMI18n.register('zh-TW', {
   'viewer|未识别': '未識別',
   'viewer|未授予访问该 Endpoint 的权限，无法调用。': '未授予存取該 Endpoint 的權限，無法呼叫。',
   'viewer|未学习': '未學習',
+  'viewer|未找到匹配的模型，可直接输入自定义模型名': '未找到相符的模型，可直接輸入自訂模型名稱',
   'viewer|文件里没有 archives 数组。': '檔案裡沒有 archives 陣列。',
   'viewer|文件里没有 samples 数组。': '檔案裡沒有 samples 陣列。',
   'viewer|无备注': '無備註',

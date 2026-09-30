@@ -42,6 +42,11 @@
     // 0.4.7 §1.1: the useless-four-run surcharge. See app.js BASE_WEIGHTS for the reasoning
     // behind 0.05 (§1.1 names 0.05 twice and compares it to `desperate`, which is 0.08).
     uselessFour: 0.05,
+    // 0.4.8 §1.2: the two 唯一手 streak surcharges. Same status as the three above — added on
+    // top of the six, so they are learned inside the surcharge budget rather than normalised
+    // with the base. See app.js BASE_WEIGHTS for why §1.2's single 1.00 table is not adopted.
+    sharpStreak: 0.04,
+    sharpTotal: 0.03,
   };
   var FALLBACK_THRESHOLDS = {
     // 0.4.3 §1.1: the ramp aTop1 reads. top1Lo/top1Hi stay for a pre-0.4.3 archive and for the
@@ -79,7 +84,7 @@
   // Top1/ACPL/… and move every existing score. The surcharge budget is now 0.15 (0.06 + 0.04
   // + 0.05), read off the defaults by `group()` below, so adding the key here is all the
   // wiring the learner needs.
-  var EVASION_KEYS = ['evasion', 'winBlunder', 'uselessFour'];
+  var EVASION_KEYS = ['evasion', 'winBlunder', 'uselessFour', 'sharpStreak', 'sharpTotal'];
   var WEIGHT_KEYS = BASE_KEYS.concat(EVASION_KEYS);
 
   var WEIGHT_LABEL = {
@@ -88,6 +93,8 @@
     evasion: '回避手', winBlunder: '将胜乱下',
     // 0.4.7 §1.1
     uselessFour: '无用冲四',
+    // 0.4.8 §1.2
+    sharpStreak: '唯一手连续', sharpTotal: '唯一手累计',
   };
   var THRESHOLD_LABEL = {
     topProxLo: '接近度下界', topProxHi: '接近度上界',
@@ -502,9 +509,18 @@
     // rule the rest of this file follows.
     var uselessRuns = countFourRuns(steps, 'useless');
     var aUselessFour = clamp(uselessRuns / 2, 0, 1);
+    // 0.4.8 §1.2, mirrored from app.js sideAggregate(): the two 唯一手 streak terms. Computed
+    // over `all` — the same population app.js's sharpStreakStats() walks (this side's scored,
+    // non-opening, non-forced-defence hands) — which is deliberately NOT `steps`: the evasion
+    // filter above belongs to the six, and a sharp hand is evidence whether or not an evasion
+    // sat beside it.
+    var ss = sharpStreakFigures(all);
+    var aSharpStreak = ss.maxStreak >= 3 ? clamp((ss.maxStreak - 2) / 7, 0, 1) : 0;
+    var aSharpTotal = ss.streakHits >= 3 ? clamp((ss.streakHits - 2) / 18, 0, 1) : 0;
     return {
       top1: aTop1, acpl: aAcpl, sharp: aSharp, out: aOut, desperate: aDesperate, time: aTime,
       evasion: aEvasion, winBlunder: aWinBlunder, uselessFour: aUselessFour,
+      sharpStreak: aSharpStreak, sharpTotal: aSharpTotal,
       // raw, un-ramped aggregates — the ramp anchors are learned from these
       n: steps.length, rawTop1: top1, rawTopProx: topProx, rawLoss: meanLoss,
       rawSharpHit: sharpHit, rawOutTop5: outTop5,
@@ -512,7 +528,29 @@
       evasionCount: ev.count, evasionRegularity: ev.regularity, winBlunderCount: ev.winBlunders,
       uselessFourCount: steps.filter(function (x) { return x.fourKind === 'useless'; }).length,
       uselessFourRuns: uselessRuns,
+      sharpStreakMax: ss.maxStreak, sharpStreakHits: ss.streakHits,
     };
+  }
+
+  // 0.4.8 §1.2: the longest run of top-1 sharp hands and the total number of such hits, over a
+  // sequence already filtered to one side's scored/non-opening/non-forced hands. A sharp hand
+  // that missed the top move breaks the run; a non-sharp hand leaves it standing (it is
+  // neither a hit nor a failure to hit). An archive written before 0.4.8 carries `isSharp` and
+  // `top1` already, so this recomputes exactly what app.js would and the old corpus trains the
+  // same way.
+  function sharpStreakFigures(seq) {
+    var maxStreak = 0, streakHits = 0, current = 0;
+    for (var i = 0; i < seq.length; i++) {
+      var s = seq[i];
+      if (s.isSharp && s.top1) {
+        current++;
+        streakHits++;
+        if (current > maxStreak) maxStreak = current;
+      } else if (s.isSharp && !s.top1) {
+        current = 0;
+      }
+    }
+    return { maxStreak: maxStreak, streakHits: streakHits };
   }
 
   // 0.4.7 §1.1: how many useless-four RUNS this sequence contains. The per-step flags carry

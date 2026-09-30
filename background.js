@@ -22,6 +22,17 @@ importScripts('i18n.js',
   'llm.js',
   'storage.js');
 
+// 0.4.8 §2 — chrome.storage.session defaults to TRUSTED_CONTEXTS only, so a content script
+// cannot see it at all. Opening it to content scripts is what makes the §2 migration real;
+// without this call content.js's sessionArea() finds no `session` area and quietly falls back
+// to `local`, which is exactly the on-disk behaviour §2 is moving away from. Runs at worker
+// start (this file is a module-scope script), so it is re-applied after every teardown.
+try {
+  if (chrome.storage && chrome.storage.session && chrome.storage.session.setAccessLevel) {
+    chrome.storage.session.setAccessLevel({ accessLevel: 'TRUSTED_AND_UNTRUSTED_CONTEXTS' });
+  }
+} catch (e) { /* older Chrome — content.js falls back to local and still works */ }
+
 var LANG_MENU = 'gm-lang';
 var LANG_PREFIX = LANG_MENU + ':';
 

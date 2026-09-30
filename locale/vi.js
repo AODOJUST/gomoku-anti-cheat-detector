@@ -176,11 +176,15 @@ GMI18n.register('vi', {
   'archive|黑': 'Đen',
   'archive|手': 'nước',
 
+  // ---- attr.aria-label ----
+  'attr.aria-label|展开模型列表': 'Mở rộng danh sách mô hình',
+
   // ---- attr.placeholder ----
   'attr.placeholder|分享串 / JSON': 'Chuỗi chia sẻ / JSON',
   'attr.placeholder|跟随': 'Theo trình duyệt',
   'attr.placeholder|开局标准，中盘 AI 特征明显': 'Khai cuộc chuẩn, trung cuộc có đặc trưng AI rõ rệt',
   'attr.placeholder|留空则自动命名': 'Để trống sẽ tự động đặt tên',
+  'attr.placeholder|搜索模型（中/英），或直接输入自定义名': 'Tìm mô hình (Trung/Anh) hoặc nhập tên tùy chỉnh',
   'attr.placeholder|自定义标签': 'Thẻ tùy chỉnh',
 
   // ---- attr.title ----
@@ -622,6 +626,7 @@ GMI18n.register('vi', {
   'viewer|（当前标签：{list}）': ' (thẻ hiện tại: {list})',
   'viewer|（第 {p}/{pages} 页）': ' (trang {p}/{pages})',
   'viewer|（含 {n} 个 AI 参考手）': ' (gồm {n} nước tham khảo AI)',
+  'viewer|（连续 {n}）': ' (chuỗi {n})',
   'viewer|（其中 {n} 个 id 与现有样本重复，已分配新 id）': ' ({n} id trùng với mẫu hiện có, đã được gán id mới)',
   'viewer|（其中 {n} 条 id 与现有存档重复，已分配新 id）': ' ({n} id trùng với lưu trữ hiện có, đã được gán id mới)',
   'viewer|（手序未知，不计分）': ' (thứ tự nước chưa rõ — không chấm điểm)',
@@ -703,6 +708,7 @@ GMI18n.register('vi', {
   'viewer|第 {m} 手单步备注': 'Ghi chú cho nước {m}',
   'viewer|第 {m} 手检测提前终止（{reason}），后续未分析。': 'Phát hiện dừng sớm ở nước {m} ({reason}); phần sau chưa được phân tích.',
   'viewer|第 {m} 子（{side}）：中途加入前已存在于盘面，无手序，不计入命中率与时间统计。': 'Quân {m} ({side}): đã có trên bàn cờ trước khi tham gia giữa ván, không có thứ tự nước, không tính vào tỷ lệ trúng và thống kê thời gian.',
+  'viewer|第 {moves} 手': 'Nước {moves}',
   'viewer|第 {n} / {n} 手 · 末手。点空点继续打谱': 'Nước {n} / {n} · nước cuối. Nhấp điểm trống để đánh tiếp',
   'viewer|第 {n} / {n} 手 · 末手。点空点继续打谱；点已有子把光标移过去': 'Nước {n} / {n} · nước cuối. Nhấp điểm trống để đánh tiếp; nhấp quân đã có để đưa con trỏ tới đó',
   'viewer|第 {p} / {pages} 页 · 每页 {size} 个（{cols} × {rows} 列）': 'Trang {p} / {pages} · {size} mục mỗi trang ({cols} × {rows})',
@@ -861,6 +867,7 @@ GMI18n.register('vi', {
   'viewer|数据完整性': 'Tính đầy đủ của dữ liệu',
   'viewer|数据质量': 'Chất lượng dữ liệu',
   'viewer|双方': 'Cả hai bên',
+  'viewer|四三被反四': 'Bốn-ba bị phá bằng phản bốn',
   'viewer|特征库': 'Thư viện đặc trưng',
   'viewer|特征库条目': 'Mục trong thư viện đặc trưng',
   'viewer|提示': 'Gợi ý',
@@ -872,7 +879,9 @@ GMI18n.register('vi', {
   'viewer|完整': 'Đầy đủ',
   'viewer|玩家名来源': 'Nguồn tên người chơi',
   'viewer|唯一手': 'Nước duy nhất',
+  'viewer|唯一手累计命中': 'Nước duy nhất — tổng số lần trúng',
   'viewer|唯一手命中': 'Trúng nước duy nhất',
+  'viewer|唯一手最长连续命中': 'Nước duy nhất — chuỗi trúng dài nhất',
   'viewer|未存档（对局过短：{total} / {min} 手）': 'Không lưu trữ (ván quá ngắn: {total} / {min})',
   'viewer|未分类': 'Chưa phân loại',
   'viewer|未分析': 'Chưa phân tích',
@@ -882,6 +891,7 @@ GMI18n.register('vi', {
   'viewer|未识别': 'Không nhận dạng được',
   'viewer|未授予访问该 Endpoint 的权限，无法调用。': 'Chưa được cấp quyền truy cập Endpoint đó — không thể gọi.',
   'viewer|未学习': 'Chưa học',
+  'viewer|未找到匹配的模型，可直接输入自定义模型名': 'Không có mô hình phù hợp — hãy nhập trực tiếp tên mô hình tùy chỉnh',
   'viewer|文件里没有 archives 数组。': 'Tệp không có mảng archives.',
   'viewer|文件里没有 samples 数组。': 'Tệp không có mảng samples.',
   'viewer|无备注': 'Không có ghi chú',

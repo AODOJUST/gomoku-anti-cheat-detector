@@ -155,11 +155,15 @@ GMI18n.register('ko', {
   'archive|黑': '흑',
   'archive|手': '수',
 
+  // ---- attr.aria-label ----
+  'attr.aria-label|展开模型列表': '모델 목록 펼치기',
+
   // ---- attr.placeholder ----
   'attr.placeholder|分享串 / JSON': '공유 문자열 / JSON',
   'attr.placeholder|跟随': '따라가기',
   'attr.placeholder|开局标准，中盘 AI 特征明显': '포석은 표준, 중반에 AI 특징이 뚜렷함',
   'attr.placeholder|留空则自动命名': '비워 두면 자동 이름 지정',
+  'attr.placeholder|搜索模型（中/英），或直接输入自定义名': '모델 검색(중/영) 또는 사용자 지정 이름 직접 입력',
   'attr.placeholder|自定义标签': '사용자 정의 태그',
 
   // ---- attr.title ----
@@ -601,6 +605,7 @@ GMI18n.register('ko', {
   'viewer|（当前标签：{list}）': '(현재 태그: {list})',
   'viewer|（第 {p}/{pages} 页）': '({p}/{pages} 페이지)',
   'viewer|（含 {n} 个 AI 参考手）': '(AI 참고수 {n}개 포함)',
+  'viewer|（连续 {n}）': '(연속 {n})',
   'viewer|（其中 {n} 个 id 与现有样本重复，已分配新 id）': '(그중 {n}개 id가 기존 샘플과 중복되어 새 id를 할당했습니다)',
   'viewer|（其中 {n} 条 id 与现有存档重复，已分配新 id）': '(그중 {n}건 id가 기존 보관과 중복되어 새 id를 할당했습니다)',
   'viewer|（手序未知，不计分）': '(수순 불명, 채점 제외)',
@@ -682,6 +687,7 @@ GMI18n.register('ko', {
   'viewer|第 {m} 手单步备注': '{m}번째 수 비고',
   'viewer|第 {m} 手检测提前终止（{reason}），后续未分析。': '{m}번째 수에서 검출 조기 종료({reason}), 이후 미분석.',
   'viewer|第 {m} 子（{side}）：中途加入前已存在于盘面，无手序，不计入命中率与时间统计。': '{m}번째 돌({side}): 중도 참가 전 반면에 있었고 순서가 없으며 적중률·시간 통계에 포함되지 않습니다.',
+  'viewer|第 {moves} 手': '{moves}번째 수',
   'viewer|第 {n} / {n} 手 · 末手。点空点继续打谱': '{n} / {n}수 · 마지막 수. 빈 점을 클릭하여 계속 두세요',
   'viewer|第 {n} / {n} 手 · 末手。点空点继续打谱；点已有子把光标移过去': '{n} / {n}수 · 마지막 수. 빈 점을 클릭하여 계속 두고, 있는 돌을 클릭하면 커서가 이동합니다',
   'viewer|第 {p} / {pages} 页 · 每页 {size} 个（{cols} × {rows} 列）': '{p} / {pages} 페이지 · 페이지당 {size}개({cols} × {rows})',
@@ -840,6 +846,7 @@ GMI18n.register('ko', {
   'viewer|数据完整性': '데이터 완전성',
   'viewer|数据质量': '데이터 품질',
   'viewer|双方': '양측',
+  'viewer|四三被反四': '사삼이 반사로 해소',
   'viewer|特征库': '특징 라이브러리',
   'viewer|特征库条目': '특징 라이브러리 항목',
   'viewer|提示': '힌트',
@@ -851,7 +858,9 @@ GMI18n.register('ko', {
   'viewer|完整': '완전',
   'viewer|玩家名来源': '플레이어 이름 출처',
   'viewer|唯一手': '유일수',
+  'viewer|唯一手累计命中': '유일수 누적 적중',
   'viewer|唯一手命中': '유일수 적중',
+  'viewer|唯一手最长连续命中': '유일수 최장 연속 적중',
   'viewer|未存档（对局过短：{total} / {min} 手）': '보관하지 않음(대국이 너무 짧음: {total} / {min}수)',
   'viewer|未分类': '미분류',
   'viewer|未分析': '미분석',
@@ -861,6 +870,7 @@ GMI18n.register('ko', {
   'viewer|未识别': '미식별',
   'viewer|未授予访问该 Endpoint 的权限，无法调用。': '해당 엔드포인트 접근 권한이 없어 호출할 수 없습니다.',
   'viewer|未学习': '미학습',
+  'viewer|未找到匹配的模型，可直接输入自定义模型名': '일치하는 모델이 없습니다. 사용자 지정 모델 이름을 직접 입력할 수 있습니다',
   'viewer|文件里没有 archives 数组。': '파일에 archives 배열이 없습니다.',
   'viewer|文件里没有 samples 数组。': '파일에 samples 배열이 없습니다.',
   'viewer|无备注': '비고 없음',

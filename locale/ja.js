@@ -155,11 +155,15 @@ GMI18n.register('ja', {
   'archive|黑': '黒',
   'archive|手': '手',
 
+  // ---- attr.aria-label ----
+  'attr.aria-label|展开模型列表': 'モデル一覧を展開',
+
   // ---- attr.placeholder ----
   'attr.placeholder|分享串 / JSON': '共有文字列 / JSON',
   'attr.placeholder|跟随': '追従',
   'attr.placeholder|开局标准，中盘 AI 特征明显': '定石は標準、中盤に AI の特徴が顕著',
   'attr.placeholder|留空则自动命名': '空欄なら自動命名',
+  'attr.placeholder|搜索模型（中/英），或直接输入自定义名': 'モデルを検索（中/英）、またはカスタム名を直接入力',
   'attr.placeholder|自定义标签': 'カスタムタグ',
 
   // ---- attr.title ----
@@ -601,6 +605,7 @@ GMI18n.register('ja', {
   'viewer|（当前标签：{list}）': '（現在のタグ：{list}）',
   'viewer|（第 {p}/{pages} 页）': '（{p}/{pages} ページ）',
   'viewer|（含 {n} 个 AI 参考手）': '（AI 参考手 {n} 手を含む）',
+  'viewer|（连续 {n}）': '（連続 {n}）',
   'viewer|（其中 {n} 个 id 与现有样本重复，已分配新 id）': '（うち {n} 件の id が既存サンプルと重複したため、新しい id を割り当てました）',
   'viewer|（其中 {n} 条 id 与现有存档重复，已分配新 id）': '（うち {n} 件の id が既存棋譜と重複したため、新しい id を割り当てました）',
   'viewer|（手序未知，不计分）': '（手順不明、採点対象外）',
@@ -682,6 +687,7 @@ GMI18n.register('ja', {
   'viewer|第 {m} 手单步备注': '第 {m} 手のメモ',
   'viewer|第 {m} 手检测提前终止（{reason}），后续未分析。': '第 {m} 手で検出が早期終了（{reason}）、以降は未分析。',
   'viewer|第 {m} 子（{side}）：中途加入前已存在于盘面，无手序，不计入命中率与时间统计。': '第 {m} 石（{side}）：途中参加前に盤面に存在しており、手順がなく、的中率・時間統計には含まれません。',
+  'viewer|第 {moves} 手': '第 {moves} 手',
   'viewer|第 {n} / {n} 手 · 末手。点空点继续打谱': '第 {n} / {n} 手 · 最終手。空点をクリックして続けて打てます',
   'viewer|第 {n} / {n} 手 · 末手。点空点继续打谱；点已有子把光标移过去': '第 {n} / {n} 手 · 最終手。空点をクリックして続けて打てます。既存の石をクリックするとカーソルが移ります',
   'viewer|第 {p} / {pages} 页 · 每页 {size} 个（{cols} × {rows} 列）': '{p} / {pages} ページ · 1 ページ {size} 件（{cols} × {rows}）',
@@ -840,6 +846,7 @@ GMI18n.register('ja', {
   'viewer|数据完整性': 'データの完全性',
   'viewer|数据质量': 'データ品質',
   'viewer|双方': '両者',
+  'viewer|四三被反四': '四三が反四で化解',
   'viewer|特征库': '特徴ライブラリ',
   'viewer|特征库条目': '特徴ライブラリの項目',
   'viewer|提示': 'ヒント',
@@ -851,7 +858,9 @@ GMI18n.register('ja', {
   'viewer|完整': '完全',
   'viewer|玩家名来源': 'プレイヤー名の出所',
   'viewer|唯一手': '唯一の手',
+  'viewer|唯一手累计命中': '唯一手の累計的中',
   'viewer|唯一手命中': '唯一手的中',
+  'viewer|唯一手最长连续命中': '唯一手の最長連続的中',
   'viewer|未存档（对局过短：{total} / {min} 手）': '保存なし（対局が短すぎます：{total} / {min} 手）',
   'viewer|未分类': '未分類',
   'viewer|未分析': '未分析',
@@ -861,6 +870,7 @@ GMI18n.register('ja', {
   'viewer|未识别': '未識別',
   'viewer|未授予访问该 Endpoint 的权限，无法调用。': 'そのエンドポイントへの権限が許可されていないため呼び出せません。',
   'viewer|未学习': '未学習',
+  'viewer|未找到匹配的模型，可直接输入自定义模型名': '一致するモデルがありません。カスタムモデル名を直接入力できます',
   'viewer|文件里没有 archives 数组。': 'ファイルに archives 配列がありません。',
   'viewer|文件里没有 samples 数组。': 'ファイルに samples 配列がありません。',
   'viewer|无备注': 'メモなし',

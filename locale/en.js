@@ -176,11 +176,15 @@ GMI18n.register('en', {
   'archive|黑': 'Black',
   'archive|手': 'moves',
 
+  // ---- attr.aria-label ----
+  'attr.aria-label|展开模型列表': 'Expand the model list',
+
   // ---- attr.placeholder ----
   'attr.placeholder|分享串 / JSON': 'Share string / JSON',
   'attr.placeholder|跟随': 'Follow',
   'attr.placeholder|开局标准，中盘 AI 特征明显': 'Standard opening, clear AI traits in the middlegame',
   'attr.placeholder|留空则自动命名': 'Leave empty to name automatically',
+  'attr.placeholder|搜索模型（中/英），或直接输入自定义名': 'Search models (Chinese/English), or type a custom name',
   'attr.placeholder|自定义标签': 'Custom tag',
 
   // ---- attr.title ----
@@ -622,6 +626,7 @@ GMI18n.register('en', {
   'viewer|（当前标签：{list}）': ' (current tags: {list})',
   'viewer|（第 {p}/{pages} 页）': ' (page {p}/{pages})',
   'viewer|（含 {n} 个 AI 参考手）': ' (including {n} AI reference moves)',
+  'viewer|（连续 {n}）': ' (streak {n})',
   'viewer|（其中 {n} 个 id 与现有样本重复，已分配新 id）': ' ({n} ids duplicated existing samples and were reassigned)',
   'viewer|（其中 {n} 条 id 与现有存档重复，已分配新 id）': ' ({n} ids duplicated existing archives and were reassigned)',
   'viewer|（手序未知，不计分）': ' (move order unknown — not scored)',
@@ -703,6 +708,7 @@ GMI18n.register('en', {
   'viewer|第 {m} 手单步备注': 'Note for move {m}',
   'viewer|第 {m} 手检测提前终止（{reason}），后续未分析。': 'Detection stopped early at move {m} ({reason}); the rest was not analysed.',
   'viewer|第 {m} 子（{side}）：中途加入前已存在于盘面，无手序，不计入命中率与时间统计。': 'Stone {m} ({side}): existed on the board before the mid-game join, has no move order, and counts towards neither the hit rate nor the timing statistics.',
+  'viewer|第 {moves} 手': 'Move {moves}',
   'viewer|第 {n} / {n} 手 · 末手。点空点继续打谱': 'Move {n} / {n} · last move. Click an empty point to keep playing',
   'viewer|第 {n} / {n} 手 · 末手。点空点继续打谱；点已有子把光标移过去': 'Move {n} / {n} · last move. Click an empty point to keep playing; click an existing stone to move the cursor there',
   'viewer|第 {p} / {pages} 页 · 每页 {size} 个（{cols} × {rows} 列）': 'Page {p} / {pages} · {size} per page ({cols} × {rows})',
@@ -861,6 +867,7 @@ GMI18n.register('en', {
   'viewer|数据完整性': 'Data integrity',
   'viewer|数据质量': 'Data quality',
   'viewer|双方': 'Both sides',
+  'viewer|四三被反四': 'Four-three answered by a counter-four',
   'viewer|特征库': 'Feature library',
   'viewer|特征库条目': 'Feature-library entries',
   'viewer|提示': 'Hint',
@@ -872,7 +879,9 @@ GMI18n.register('en', {
   'viewer|完整': 'Complete',
   'viewer|玩家名来源': 'Player-name source',
   'viewer|唯一手': 'Only move',
+  'viewer|唯一手累计命中': 'Sharp move — total hits',
   'viewer|唯一手命中': 'Only-move hit',
+  'viewer|唯一手最长连续命中': 'Sharp move — longest streak',
   'viewer|未存档（对局过短：{total} / {min} 手）': 'Not archived (game too short: {total} / {min})',
   'viewer|未分类': 'Uncategorised',
   'viewer|未分析': 'Not analysed',
@@ -882,6 +891,7 @@ GMI18n.register('en', {
   'viewer|未识别': 'Unrecognised',
   'viewer|未授予访问该 Endpoint 的权限，无法调用。': 'Permission to reach that endpoint was not granted — cannot call it.',
   'viewer|未学习': 'Not learned',
+  'viewer|未找到匹配的模型，可直接输入自定义模型名': 'No matching model — type a custom model name directly',
   'viewer|文件里没有 archives 数组。': 'The file has no archives array.',
   'viewer|文件里没有 samples 数组。': 'The file has no samples array.',
   'viewer|无备注': 'No note',

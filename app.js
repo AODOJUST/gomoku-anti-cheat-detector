@@ -474,7 +474,12 @@ function nbestFor(thinkMs) {
 }
 
 // Fills best / top1..top5 / loss / isSharp / forcedDefense from one engine result.
-function scoreStep(step, res, actual) {
+//
+// 0.4.8 §1.1: `board` / `prevBoard` / `budgetMs` are optional and exist for the shape-first
+// forced-defence test below. A caller that passes none of them gets exactly the pre-0.4.8
+// behaviour (engine-only test at the 0.15 gap) — which is what keeps an old harness that
+// calls scoreStep(step, res, actual) scoring as it always did.
+function scoreStep(step, res, actual, board, prevBoard, budgetMs) {
   const cands = res.candidates || [];
   const best = res.best;
   const bestCand = cands[0] || {};
@@ -506,7 +511,19 @@ function scoreStep(step, res, actual) {
   const top2WR = cands[1] ? cands[1].winrate : 0;
   const gap = bestWR != null ? bestWR - top2WR : 0;
   step.isSharp = bestWR != null && ((bestWR >= 0.90) || (bestWR <= 0.10)) && gap >= 0.12;
-  step.forcedDefense = !!(bestWR != null && gap >= 0.15 && step.top1);
+  // 0.4.8 §1.1: the engine-only test under-reports in the live path. `step.top1` requires
+  // `eqCoord(actual, best)` and a four's two blocking points are frequently symmetric, so the
+  // engine returns one of them and the operator plays the other — the hand is a forced defence
+  // and reads as `top1 = false`. At the live budget (2000ms) the candidate list is also short
+  // enough that the top-2 win rate is unreliable, so `gap` is understated across the board.
+  // The gap cut therefore moves with the budget, and the shape test below is the real fix: a
+  // hand that was the ONLY blocking point is a forced defence by the rules of the board, with
+  // no reference to what the engine happened to return.
+  const gapThreshold = (budgetMs != null && budgetMs <= 2000) ? 0.12 : 0.15;
+  const engForced = !!(bestWR != null && gap >= gapThreshold && step.top1);
+  const shape = forcedDefenseByShape(board, step.side, actual, prevBoard);
+  step.forcedDefense = engForced || !!(shape && shape.forced);
+  step.forcedDefenseHow = (shape && shape.forced) ? 'shape' : (engForced ? 'engine' : null);
   return step;
 }
 
@@ -656,6 +673,60 @@ function scanThreats(board) {
   return out;
 }
 
+// ---------- 0.4.8 §1.1 冲四豁免：形状优先 ----------
+// The engine-only test (`gap >= 0.15 && top1`) misses a forced defence in the live path for
+// four separate reasons, and the spec names the last one as the main cause: a four's blocking
+// points are often SYMMETRIC, so the engine returns one and the operator plays the other, and
+// `top1` — which is `eqCoord(actual, best)` — then reads false on a hand that had no
+// alternative. None of that has anything to do with what the board allows, so the uniqueness
+// of the defence is decided from the board instead.
+//
+// `uniqueBlocksForFour(board, side)` enumerates every empty point that, once `side` plays
+// there, removes the OPPONENT's four. That set IS the side's set of legal defences against
+// the four: a point that does not answer it leaves the four standing. Exactly one such point,
+// equal to the move actually played, is a forced defence by definition — no threshold, no
+// engine, nothing to jitter.
+function uniqueBlocksForFour(board, side) {
+  if (!board || !board.length || (side !== 'B' && side !== 'W')) return [];
+  const opp = side === 'B' ? 'W' : 'B';
+  const occ = {};
+  for (let i = 0; i < board.length; i++) {
+    const s = board[i];
+    if (!s || s.x == null || s.y == null) continue;
+    occ[s.x + ',' + s.y] = s.side;
+  }
+  const out = [];
+  for (let x = 0; x < SIZE; x++) {
+    for (let y = 0; y < SIZE; y++) {
+      if (occ[x + ',' + y]) continue;
+      const nb = board.concat([{ x: x, y: y, side: side }]);
+      const t = scanThreats(nb);
+      // `!t` means the pushed position cannot be reasoned about at all (scanThreats refuses
+      // below three known stones). Treating that as "this point blocks" would hand back every
+      // empty square as a defence and the `length === 1` test below would then never fire —
+      // the conservative direction, which is the right one for a verdict of "forced".
+      if (!t || !t[opp].four) out.push([x, y]);
+    }
+  }
+  return out;
+}
+
+// `prevBoard` is the position BEFORE the hand being judged: the four we are answering must
+// already be on the board, otherwise there is nothing to be forced by. Returns null when the
+// caller supplied no board (a bare harness), which leaves the engine verdict in charge.
+function forcedDefenseByShape(board, side, actual, prevBoard) {
+  if (!prevBoard) return null;
+  if (!actual || actual[0] == null || actual[1] == null) return null;
+  const opp = side === 'B' ? 'W' : 'B';
+  const t = scanThreats(prevBoard);
+  if (!t || !t[opp] || !t[opp].four) return null;
+  const unique = uniqueBlocksForFour(prevBoard, side);
+  if (unique.length === 1 && unique[0][0] === actual[0] && unique[0][1] === actual[1]) {
+    return { forced: true, reason: 'shape-unique-block' };
+  }
+  return { forced: false, reason: unique.length ? 'shape-multi-block' : 'shape-none' };
+}
+
 // 0.3.4: the win-rate proxy is gone (see liveFourHolder above). A step is terminal when the
 // position after it contains a live four. `board` is that position; when a caller cannot
 // supply one the step is simply not terminal — a missed early stop only costs engine time,
@@ -669,29 +740,96 @@ function scanThreats(board) {
 // 0.3.7 §三.1 widens the test from "a live four exists" to a priority list, because the
 // narrow version mis-attributed the result of a 四三杀. `step.side` is the side that just
 // moved, so "当前方" is that side and "对手" is the other one.
-function applyTerminal(step, opts, board) {
-  if (!step) return false;
+//
+// 0.4.8 §1.3 splits the pass in two. The SHAPE half is synchronous and unchanged. The
+// four-three half gains a counter check, because a four-three is not always a kill: if the
+// defender's blocking point is itself a four (a 反四), the attacker must answer it and the
+// open three never becomes a live four — the game continues, and stopping there threw away
+// the rest of the record. The check only runs where a four-three was actually detected, so
+// the common case pays nothing for it.
+function applyTerminalShape(step, board) {
   const t = scanThreats(board);
-  if (!t) return false;
+  if (!t) return null;
   const me = (step.side === 'B' || step.side === 'W') ? step.side : null;
   const you = me === 'B' ? 'W' : (me === 'W' ? 'B' : null);
   const isFT = (s) => !!s && t[s].four && t[s].openThree;
 
-  let reason = null;
-  if (isFT(me)) reason = '当前方形成四三杀，对手必败';
-  else if (isFT(you)) reason = '对手形成四三杀，当前方必败';
-  else if (me && t[me].liveFour) reason = '当前方形成活四，对手必败';
-  else if (me && t[you].liveFour) reason = '对手形成活四，当前方必败';
-  else if (!me) {
+  if (isFT(me)) return { kind: 'fourThree', attacker: me };
+  if (isFT(you)) return { kind: 'fourThree', attacker: you };
+  if (me && t[me].liveFour) return { kind: 'liveFour', attacker: me };
+  if (me && t[you].liveFour) return { kind: 'liveFour', attacker: you };
+  if (!me) {
     // The colour of the side to move is unknown (rare, but a record with no authoritative
     // `stones` can reach here). The shapes are still hard evidence, so stop anyway and
-    // report the holder rather than guessing a direction.
-    if (['B', 'W'].some(isFT)) reason = '任一方形成四三杀，检测停止';
-    else if (['B', 'W'].some((s) => t[s].liveFour)) reason = '任一方形成活四，检测停止';
+    // report the holder rather than guessing a direction. `attacker: null` carries that
+    // "unknown" through to the wording.
+    if (['B', 'W'].some(isFT)) return { kind: 'fourThree', attacker: null };
+    if (['B', 'W'].some((s) => t[s].liveFour)) return { kind: 'liveFour', attacker: null };
   }
-  if (!reason) return false;
+  return null;
+}
+
+// Does the defender, in answering the four, form a four of their own? `blkBlocks` is exactly
+// the set of squares that answer the attacker's four, so a four formed at one of them is a
+// counter-four and the four-three is not a kill. Pure shape work — the name says "engine" in
+// the spec's prose but the given implementation never calls one; the async wrapper is kept so
+// that stays true if a future revision does.
+async function checkFourThreeCounter(board, attackerSide) {
+  const defender = attackerSide === 'B' ? 'W' : (attackerSide === 'W' ? 'B' : null);
+  if (!defender) return { counter: false, reason: 'unknown-side' };
+  const blocks = uniqueBlocksForFour(board, defender);
+  if (!blocks.length) return { counter: false, reason: 'no-block' };
+  for (let i = 0; i < blocks.length; i++) {
+    const x = blocks[i][0], y = blocks[i][1];
+    const nb = board.concat([{ x: x, y: y, side: defender }]);
+    const t = scanThreats(nb);
+    if (t && t[defender] && t[defender].four) {
+      return { counter: true, block: [x, y], reason: 'defender-forms-four' };
+    }
+  }
+  return { counter: false, reason: 'no-counter' };
+}
+
+async function applyTerminal(step, opts, board) {
+  if (!step) return false;
+  const shape = applyTerminalShape(step, board);
+  if (!shape) return false;
+
+  if (shape.kind === 'liveFour') {
+    step.terminal = true;
+    step.stopReason = shape.attacker === null ? '任一方形成活四，检测停止'
+      : (shape.attacker === step.side ? '当前方形成活四，对手必败' : '对手形成活四，当前方必败');
+    return true;
+  }
+
+  // fourThree. An unknown colour cannot be checked against a defender, so it keeps the old
+  // stop — the shape is still hard evidence and guessing a direction would be worse.
+  if (shape.attacker === null) {
+    step.terminal = true;
+    step.stopReason = '任一方形成四三杀，检测停止';
+    return true;
+  }
+  let chk;
+  try {
+    chk = await checkFourThreeCounter(board, shape.attacker);
+  } catch (e) {
+    // Conservative fallback (§1.3 边界): a check that cannot be run must not be allowed to end
+    // the game. Detection simply continues, and the note says why.
+    step.fourThreeCounter = { counter: false, reason: 'check-failed' };
+    step.terminal = false;
+    step.stopCheckFailed = true;
+    return false;
+  }
+  if (chk.counter) {
+    step.fourThreeCounter = chk;
+    step.terminal = false;
+    return false;
+  }
+  step.fourThreeCounter = chk;
   step.terminal = true;
-  step.stopReason = reason;
+  step.stopReason = shape.attacker === step.side
+    ? '当前方形成四三杀，对手必败'
+    : '对手形成四三杀，当前方必败';
   return true;
 }
 
@@ -943,6 +1081,12 @@ async function analyzeStep(eng, allMoves, playerIdx, actual, opts, budgetMs, rec
     analyzed: true,
     orderKnown: true,
   };
+  // 0.4.8 §1.1: the position before this hand, for the shape-first forced-defence test. `board`
+  // is the position AFTER the hand (what applyTerminal reads); slicing off the last stone gives
+  // the position the hand was answering, which is where the four it may have been forced to
+  // block has to already exist.
+  const bd = board || boardFromCoords(allMoves);
+  const prevBoard = bd.slice(0, -1);
   // 0.4.5 §三 — 开局排除 skips the ENGINE, not the shape test. This early return is what
   // makes the live-stepwise path cheap: content.js still calls analyzeStep for every hand,
   // but the first N per side return here without a single engine call. applyTerminal MUST
@@ -957,7 +1101,8 @@ async function analyzeStep(eng, allMoves, playerIdx, actual, opts, budgetMs, rec
     step.bestWR = step.actualWR = step.loss = null;
     step.isSharp = false;
     step.forcedDefense = false;
-    applyTerminal(step, opts, board || boardFromCoords(allMoves));
+    step.forcedDefenseHow = null;
+    await applyTerminal(step, opts, bd);
     return step;
   }
   eng.configure({ rule: opts.rule, thinkMs: budgetMs, threadNum: opts.threadNum });
@@ -967,11 +1112,11 @@ async function analyzeStep(eng, allMoves, playerIdx, actual, opts, budgetMs, rec
   // interval is the human's real thinking time and is exactly what §1.4's "思考时间 > 6000ms"
   // means. `recordedMs` is null on a hand with no timing, and nbestFor() then returns five.
   const res = await eng.analyzePosition(allMoves.slice(0, -1), nbestFor(recordedMs));
-  scoreStep(step, res, actual);
+  scoreStep(step, res, actual, bd, prevBoard, budgetMs);
   // 0.3.4 活四停止: shape test on the position AFTER this hand, so the offscreen live
   // session still ends on a real live four (doStep sets live.ended) — but not on the
   // opening, where the old win-rate proxy used to fire.
-  applyTerminal(step, opts, board || boardFromCoords(allMoves));
+  await applyTerminal(step, opts, bd);
   return step;
 }
 
@@ -1047,13 +1192,14 @@ async function analyzeStepwise(record, opts, onProgress, onStep) {
         best: null, bestStr: '—', cands: [], candStrs: [],
         top1: false, top3: false, top5: false, top8: false, outsideTop5: false,
         bestWR: null, actualWR: null, loss: null, isSharp: false, forcedDefense: false,
+        forcedDefenseHow: null,
       };
       // 0.4.5 §三/§3.4 — the step we just stopped analysing as an opening hand is exactly the
       // step that still has to be shape-tested. Only for scorable hands: a prejoin or
       // ai-suggest stone keeps its old behaviour, because its `side` may be a parity guess and
       // a shape verdict built on a guessed colour is worse than no verdict.
       if (playerIdxByMove[i] < opts.openingCutoff && scorable(sources[i])) {
-        applyTerminal(un, opts, boardStones.slice());
+        await applyTerminal(un, opts, boardStones.slice());
       }
       steps.push(un);
       if (un.terminal) { onStep && onStep(un); break; }
@@ -1161,6 +1307,17 @@ const BASE_WEIGHTS = {
   // no corpus behind it yet, so the smaller of the two is the honest choice and the one the
   // §五 checklist writes. Replace with a learned value once samples exist.
   uselessFour: 0.05,
+  // 0.4.8 §1.2: the two 唯一手 (sharp-move) streak terms. Same status again — surcharges on
+  // top of the six, not a slice of them.
+  //
+  // §1.2's weight table writes all eleven weights as one set summing to 1.00 (which would drag
+  // the six down to 0.81 and move every archived score). That contradicts §1.2's own
+  // acceptance criterion #5 — "未命中任何唯一手时，两项贡献为 0，风险分与旧版一致" — and the
+  // project's standing rule that the six always sum to 1.00 with every newer signal added
+  // outside. The operator chose the acceptance criterion, so the six and the three existing
+  // surcharges keep their values and these two are added at the magnitudes §1.2 names.
+  sharpStreak: 0.04,
+  sharpTotal: 0.03,
 };
 const BASE_THRESHOLDS = {
   // 0.4.3 §1.1: the ramp aTop1 now reads. `top1Lo`/`top1Hi` are kept because a pre-0.4.3
@@ -1359,11 +1516,13 @@ async function analyzeGame(record, opts, onProgress) {
       // 0.4.7 §1.4: same rule as the stepwise path — the recorded interval decides the width,
       // so `thinkMs > 6000` is measured on the human's clock and not on the engine budget.
       const res = await eng.analyzePosition(prefix, nbestFor(record.times[i]));
-      scoreStep(step, res, actual);
+      // 0.4.8 §1.1: the board before this hand, so a forced defence is read off the shape.
+      const prevBoard = boardStones.slice(0, -1);
+      scoreStep(step, res, actual, boardStones, prevBoard, opts.thinkMs);
       step.budgetMs = opts.thinkMs;
       // 0.3.4 活四停止: a real live four in the position after this hand ends the game, so
       // the rest carries no signal. The terminal step IS the last hand analysed.
-      applyTerminal(step, opts, boardStones);
+      await applyTerminal(step, opts, boardStones);
       analyzedDone++;
       onProgress && onProgress(5 + 90 * (analyzedTotal ? analyzedDone / analyzedTotal : 1),
         i18nErr(side === 'B' ? 'progress.step.black' : 'progress.step.white',
@@ -1377,11 +1536,13 @@ async function analyzeGame(record, opts, onProgress) {
       step.outsideTop5 = false;
       step.bestWR = step.actualWR = step.loss = null;
       step.isSharp = false;
+      step.forcedDefense = false;
+      step.forcedDefenseHow = null;
       // 0.4.5 §三/§3.4 — the opening hand whose engine call we just removed is the one that
       // still has to be shape-tested. Restricted to scorable hands so prejoin / ai-suggest
       // stones keep their previous behaviour (their `side` may be a parity guess, and a shape
       // verdict built on a guessed colour is worse than no verdict).
-      if (step.isOpening && scorable(source)) applyTerminal(step, opts, boardStones);
+      if (step.isOpening && scorable(source)) await applyTerminal(step, opts, boardStones);
     }
     if (step.terminal) { steps.push(step); break; }
     steps.push(step);
@@ -1433,6 +1594,48 @@ function stepProximity(s) {
   if (s.top5) return PROX.top5;   // Top2-5, one tier: see above
   if (s.top8) return PROX.top8;   // Top6-8, only ever set on a >6s hand (§1.4)
   return 0;
+}
+
+// ---------- 0.4.8 §1.2 唯一手连续命中 ----------
+// 唯一手 here is the ENGINE's only-good-move reading (`isSharp`: best-vs-second gap >= 0.12
+// with the best move winning or losing outright) — not the four's only-block reading, which is
+// §1.1's `forcedDefense` and is excluded below so the two never count the same hand twice.
+//
+// Why a streak and not just a rate: a single sharp hand is ordinary. A run of them, each
+// played as the engine's own first choice, is a different claim about the player — the point
+// at which "good at gomoku" stops explaining the sequence. `totalSharp` and `streakHits` are
+// carried beside the two sub-scores because the report prints them, and because "one long run"
+// and "many short ones" produce the same count but not the same story.
+//
+// Walked over the side's OWN sequence (`filter` on side), so "consecutive" means consecutive
+// hands of that player — the opponent's intervening hands are not part of the run. A sharp hand
+// that MISSED the top move breaks the chain; a hand that is not sharp at all leaves it
+// standing, because it is neither a hit nor a failure to hit.
+function sharpStreakStats(steps, side) {
+  const own = [];
+  for (let i = 0; i < steps.length; i++) {
+    const s = steps[i];
+    if (s.side === side && s.analyzed && !s.isOpening && !s.forcedDefense) own.push(s);
+  }
+  let maxStreak = 0, totalSharp = 0, streakHits = 0, currentStreak = 0;
+  for (let i = 0; i < own.length; i++) {
+    const s = own[i];
+    if (s.isSharp && s.top1) {
+      currentStreak++;
+      streakHits++;
+      if (currentStreak > maxStreak) maxStreak = currentStreak;
+    } else if (s.isSharp && !s.top1) {
+      currentStreak = 0;
+    }
+    if (s.isSharp) totalSharp++;
+    // The running position of this hand inside its run, stamped on the step so the viewer can
+    // label a row 「唯一手（连续 K）」 without re-walking the sequence — a second copy of this
+    // walk in the viewer is exactly the kind of duplicated answer this project has shipped
+    // wrong three times. 0 on everything that is not a hit, so a step that is not part of a run
+    // reads as 0 rather than `undefined`.
+    s.sharpStreak = (s.isSharp && s.top1) ? currentStreak : 0;
+  }
+  return { maxStreak, totalSharp, streakHits };
 }
 
 function sideAggregate(steps, side, hasTime, params, opts) {
@@ -1533,6 +1736,14 @@ function sideAggregate(steps, side, hasTime, params, opts) {
   // reproducible — the same construction the two terms above use. Full weight at two such
   // runs (a single one can be a desperate but honest attempt to create a threat).
   const aUselessFour = clamp(fourRuns.useless / 2, 0, 1);
+  // 0.4.8 §1.2: the two 唯一手 streak terms. Both are exactly 0 with no sharp hands, so a game
+  // with none scores bit-for-bit what it scored before — the acceptance criterion #5 the
+  // weight table above is reconciled against. `aSharpStreak` ramps over the LONGEST run (a
+  // 3-run is worth 0.14, ten in a row saturates); `aSharpTotal` over the total number of hits,
+  // which catches a side that keeps finding the only move without ever running long.
+  const ss = sharpStreakStats(steps, side);
+  const aSharpStreak = ss.maxStreak >= 3 ? clamp((ss.maxStreak - 2) / 7, 0, 1) : 0;
+  const aSharpTotal = ss.streakHits >= 3 ? clamp((ss.streakHits - 2) / 18, 0, 1) : 0;
   // 0.3.3 C: the feature library's similarity match. Only present once 重新学习 has built a
   // library; it then claims `simWeight` of the score and the six base terms are scaled down
   // proportionally, so an unlearned run is bit-identical to 0.3.1. `aiSimilar` is set by
@@ -1549,7 +1760,8 @@ function sideAggregate(steps, side, hasTime, params, opts) {
   const risk = clamp(100 * (wEff.top1 * aTop1 + wEff.acpl * aAcpl + wEff.sharp * aSharp + wEff.out * aOut
                     + wEff.desperate * aDesperate + wEff.time * aTime + simW * aSim
                     + wEff.evasion * aEvasion + wEff.winBlunder * aWinBlunder
-                    + wEff.uselessFour * aUselessFour), 0, 100);
+                    + wEff.uselessFour * aUselessFour
+                    + wEff.sharpStreak * aSharpStreak + wEff.sharpTotal * aSharpTotal), 0, 100);
   const level = risk >= t.riskHigh ? '高风险' : (risk >= t.riskMid ? '可疑' : '低风险');
   return {
     side, n, top1, top3, top5, topProx, meanLoss, sharpHit, outTop5, desperateCount,
@@ -1561,12 +1773,18 @@ function sideAggregate(steps, side, hasTime, params, opts) {
     // (the thing that scores), and how many runs of each kind there were (reported, so an
     // operator can tell "one long run" from "three short ones" — the score cannot).
     uselessFourCount, fourRuns,
+    // 0.4.8 §1.2. The two streak figures behind the terms above. `sharpStreakMax` is the
+    // longest run of top-1 sharp hands, `sharpStreakHits` the total count — reported so the
+    // detail table can say "唯一手最长连续命中 N 次 / 累计 M 次" without recomputing either.
+    sharpStreakMax: ss.maxStreak,
+    sharpStreakHits: ss.streakHits,
     contributions: {
       top1: wEff.top1 * aTop1 * 100, acpl: wEff.acpl * aAcpl * 100, sharp: wEff.sharp * aSharp * 100,
       out: wEff.out * aOut * 100, desperate: wEff.desperate * aDesperate * 100, time: wEff.time * aTime * 100,
       sim: simW * aSim * 100,
       evasion: wEff.evasion * aEvasion * 100, winBlunder: wEff.winBlunder * aWinBlunder * 100,
       uselessFour: wEff.uselessFour * aUselessFour * 100,
+      sharpStreak: wEff.sharpStreak * aSharpStreak * 100, sharpTotal: wEff.sharpTotal * aSharpTotal * 100,
     },
     risk, level,
   };
@@ -1777,6 +1995,12 @@ function buildReport(steps, record, opts) {
     // report so the viewer and the archive name do not have to guess from a null winner.
     outcome: (record.meta && record.meta.outcome) || 'unknown',
     forcedCount: steps.filter(x => x.forcedDefense).length,
+    // 0.4.8 §1.3: the four-threes that did NOT end the game because the defender's block was
+    // itself a four (a 反四). Kept as a list rather than a count: the operator needs to know
+    // WHICH hand it was, because that hand is the reason detection continued past a shape the
+    // old build stopped on. A game analysed before this build simply has an empty list.
+    fourThreeCounters: steps.filter(x => x.fourThreeCounter && x.fourThreeCounter.counter)
+                            .map(x => ({ moveNo: x.moveNo, side: x.side, block: x.fourThreeCounter.block })),
     // 0.3.3: which parameter set produced these verdicts. Without it a learned run and a
     // default run are indistinguishable once archived — the same trap the engine row solves
     // for the multi-threaded / single-threaded builds.
@@ -1819,6 +2043,11 @@ if (typeof module !== 'undefined' && module.exports) {
     getEngine, defaultThreadNum, resolveThreadNum, engineInfo, warmEngine,
     // 0.3.4 活四：导出形状识别与判定，供单元测试直接驱动（不再依赖引擎胜率）
     liveFourHolder, applyTerminal, boardFromCoords, scanThreats,
+    // 0.4.8 §1.1/§1.2/§1.3: the shape-first forced-defence test, the sharp-streak statistics
+    // and the two-stage terminal. Exported so the suite can drive each one directly instead of
+    // re-deriving it — the same reason the line above exists.
+    forcedDefenseByShape, uniqueBlocksForFour, sharpStreakStats,
+    applyTerminalShape, checkFourThreeCounter,
     // 0.3.3 risk-model plumbing, exported so the learner and the tests can reason about the
     // exact numbers the detector uses.
     riskParams, rampUp, rampDown, loadLearnedParams, BASE_WEIGHTS, BASE_THRESHOLDS,

@@ -176,11 +176,15 @@ GMI18n.register('ms', {
   'archive|黑': 'Hitam',
   'archive|手': 'langkah',
 
+  // ---- attr.aria-label ----
+  'attr.aria-label|展开模型列表': 'Kembangkan senarai model',
+
   // ---- attr.placeholder ----
   'attr.placeholder|分享串 / JSON': 'Rentetan kongsi / JSON',
   'attr.placeholder|跟随': 'Ikut',
   'attr.placeholder|开局标准，中盘 AI 特征明显': 'Pembukaan standard, ciri AI jelas pada pertengahan permainan',
   'attr.placeholder|留空则自动命名': 'Biarkan kosong untuk menamakan secara automatik',
+  'attr.placeholder|搜索模型（中/英），或直接输入自定义名': 'Cari model (Cina/Inggeris) atau taip nama tersuai',
   'attr.placeholder|自定义标签': 'Teg tersuai',
 
   // ---- attr.title ----
@@ -622,6 +626,7 @@ GMI18n.register('ms', {
   'viewer|（当前标签：{list}）': ' (teg semasa: {list})',
   'viewer|（第 {p}/{pages} 页）': ' (halaman {p}/{pages})',
   'viewer|（含 {n} 个 AI 参考手）': ' (termasuk {n} langkah rujukan AI)',
+  'viewer|（连续 {n}）': ' (rentetan {n})',
   'viewer|（其中 {n} 个 id 与现有样本重复，已分配新 id）': ' ({n} id menduplikasi sampel sedia ada dan telah diberikan id baharu)',
   'viewer|（其中 {n} 条 id 与现有存档重复，已分配新 id）': ' ({n} id menduplikasi arkib sedia ada dan telah diberikan id baharu)',
   'viewer|（手序未知，不计分）': ' (susunan langkah tidak diketahui — tidak dinilai)',
@@ -703,6 +708,7 @@ GMI18n.register('ms', {
   'viewer|第 {m} 手单步备注': 'Catatan untuk langkah {m}',
   'viewer|第 {m} 手检测提前终止（{reason}），后续未分析。': 'Pengesanan berhenti awal pada langkah {m} ({reason}); selebihnya tidak dianalisis.',
   'viewer|第 {m} 子（{side}）：中途加入前已存在于盘面，无手序，不计入命中率与时间统计。': 'Batu {m} ({side}): telah wujud di papan sebelum menyertai di pertengahan, tiada susunan langkah, dan tidak dikira dalam statistik kadar pukulan dan masa.',
+  'viewer|第 {moves} 手': 'Langkah {moves}',
   'viewer|第 {n} / {n} 手 · 末手。点空点继续打谱': 'Langkah {n} / {n} · langkah terakhir. Klik titik kosong untuk terus bermain',
   'viewer|第 {n} / {n} 手 · 末手。点空点继续打谱；点已有子把光标移过去': 'Langkah {n} / {n} · langkah terakhir. Klik titik kosong untuk terus bermain; klik batu sedia ada untuk memindahkan kursor ke situ',
   'viewer|第 {p} / {pages} 页 · 每页 {size} 个（{cols} × {rows} 列）': 'Halaman {p} / {pages} · {size} setiap halaman ({cols} × {rows})',
@@ -861,6 +867,7 @@ GMI18n.register('ms', {
   'viewer|数据完整性': 'Integriti data',
   'viewer|数据质量': 'Kualiti data',
   'viewer|双方': 'Kedua-dua pihak',
+  'viewer|四三被反四': 'Empat-tiga dijawab balas empat',
   'viewer|特征库': 'Pustaka ciri',
   'viewer|特征库条目': 'Entri pustaka ciri',
   'viewer|提示': 'Petunjuk',
@@ -872,7 +879,9 @@ GMI18n.register('ms', {
   'viewer|完整': 'Lengkap',
   'viewer|玩家名来源': 'Sumber nama pemain',
   'viewer|唯一手': 'Langkah tunggal',
+  'viewer|唯一手累计命中': 'Langkah tunggal — jumlah tepat',
   'viewer|唯一手命中': 'Pukulan langkah tunggal',
+  'viewer|唯一手最长连续命中': 'Langkah tunggal — rentetan terpanjang',
   'viewer|未存档（对局过短：{total} / {min} 手）': 'Tidak diarkibkan (permainan terlalu pendek: {total} / {min})',
   'viewer|未分类': 'Tidak berkategori',
   'viewer|未分析': 'Belum dianalisis',
@@ -882,6 +891,7 @@ GMI18n.register('ms', {
   'viewer|未识别': 'Tidak dikenali',
   'viewer|未授予访问该 Endpoint 的权限，无法调用。': 'Kebenaran untuk mengakses Endpoint itu tidak diberikan — tidak dapat memanggilnya.',
   'viewer|未学习': 'Belum belajar',
+  'viewer|未找到匹配的模型，可直接输入自定义模型名': 'Tiada model sepadan — taip nama model tersuai secara terus',
   'viewer|文件里没有 archives 数组。': 'Fail tidak mengandungi tatasusunan archives.',
   'viewer|文件里没有 samples 数组。': 'Fail tidak mengandungi tatasusunan samples.',
   'viewer|无备注': 'Tiada catatan',

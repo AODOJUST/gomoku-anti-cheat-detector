@@ -154,11 +154,15 @@ GMI18n.register('fr', {
   'archive|黑': 'Noirs',
   'archive|手': 'coups',
 
+  // ---- attr.aria-label ----
+  'attr.aria-label|展开模型列表': 'Déployer la liste des modèles',
+
   // ---- attr.placeholder ----
   'attr.placeholder|分享串 / JSON': 'Chaîne de partage / JSON',
   'attr.placeholder|跟随': 'Suivre',
   'attr.placeholder|开局标准，中盘 AI 特征明显': 'Ouverture standard, traits IA nets en milieu de partie',
   'attr.placeholder|留空则自动命名': 'Laisser vide pour un nom automatique',
+  'attr.placeholder|搜索模型（中/英），或直接输入自定义名': 'Rechercher un modèle (chinois/anglais) ou saisir un nom personnalisé',
   'attr.placeholder|自定义标签': 'Étiquette personnalisée',
 
   // ---- attr.title ----
@@ -600,6 +604,7 @@ GMI18n.register('fr', {
   'viewer|（当前标签：{list}）': ' (étiquettes actuelles : {list})',
   'viewer|（第 {p}/{pages} 页）': ' (page {p}/{pages})',
   'viewer|（含 {n} 个 AI 参考手）': ' (dont {n} coups de référence IA)',
+  'viewer|（连续 {n}）': ' (série {n})',
   'viewer|（其中 {n} 个 id 与现有样本重复，已分配新 id）': ' ({n} identifiants dupliquaient des échantillons existants ; de nouveaux ont été attribués)',
   'viewer|（其中 {n} 条 id 与现有存档重复，已分配新 id）': ' ({n} identifiants dupliquaient des archives existantes ; de nouveaux ont été attribués)',
   'viewer|（手序未知，不计分）': ' (ordre des coups inconnu — non noté)',
@@ -681,6 +686,7 @@ GMI18n.register('fr', {
   'viewer|第 {m} 手单步备注': 'Remarque du coup {m}',
   'viewer|第 {m} 手检测提前终止（{reason}），后续未分析。': 'Détection arrêtée prématurément au coup {m} ({reason}) ; la suite n’a pas été analysée.',
   'viewer|第 {m} 子（{side}）：中途加入前已存在于盘面，无手序，不计入命中率与时间统计。': 'Pierre {m} ({side}) : présente sur le plateau avant l’arrivée en cours de partie, sans ordre de coup, elle ne compte ni dans le taux de réussite ni dans les statistiques de temps.',
+  'viewer|第 {moves} 手': 'Coup {moves}',
   'viewer|第 {n} / {n} 手 · 末手。点空点继续打谱': 'Coup {n} / {n} · dernier coup. Cliquez sur un point vide pour continuer',
   'viewer|第 {n} / {n} 手 · 末手。点空点继续打谱；点已有子把光标移过去': 'Coup {n} / {n} · dernier coup. Cliquez sur un point vide pour continuer ; cliquez sur une pierre existante pour y déplacer le curseur',
   'viewer|第 {p} / {pages} 页 · 每页 {size} 个（{cols} × {rows} 列）': 'Page {p} / {pages} · {size} par page ({cols} × {rows})',
@@ -839,6 +845,7 @@ GMI18n.register('fr', {
   'viewer|数据完整性': 'Intégrité des données',
   'viewer|数据质量': 'Qualité des données',
   'viewer|双方': 'Les deux camps',
+  'viewer|四三被反四': 'Quatre-trois contrée par un contre-quatre',
   'viewer|特征库': 'Bibliothèque de traits',
   'viewer|特征库条目': 'Entrées de la bibliothèque',
   'viewer|提示': 'Astuce',
@@ -850,7 +857,9 @@ GMI18n.register('fr', {
   'viewer|完整': 'Complet',
   'viewer|玩家名来源': 'Source des noms',
   'viewer|唯一手': 'Coup unique',
+  'viewer|唯一手累计命中': 'Coups uniques — total réussi',
   'viewer|唯一手命中': 'Coup unique trouvé',
+  'viewer|唯一手最长连续命中': 'Coups uniques — série la plus longue',
   'viewer|未存档（对局过短：{total} / {min} 手）': 'Non archivée (partie trop courte : {total} / {min})',
   'viewer|未分类': 'Non classé',
   'viewer|未分析': 'Non analysé',
@@ -860,6 +869,7 @@ GMI18n.register('fr', {
   'viewer|未识别': 'Non identifié',
   'viewer|未授予访问该 Endpoint 的权限，无法调用。': 'L’autorisation d’accéder à ce point de terminaison n’a pas été accordée — appel impossible.',
   'viewer|未学习': 'Non appris',
+  'viewer|未找到匹配的模型，可直接输入自定义模型名': 'Aucun modèle correspondant — saisissez directement un nom de modèle personnalisé',
   'viewer|文件里没有 archives 数组。': 'Le fichier ne contient pas de tableau archives.',
   'viewer|文件里没有 samples 数组。': 'Le fichier ne contient pas de tableau samples.',
   'viewer|无备注': 'Sans remarque',
