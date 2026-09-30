@@ -1935,21 +1935,39 @@
     // The flash keyframes start and end on the resting colour so that losing the `animationend`
     // event leaves the border at the palette colour rather than stuck mid-flash; `playFlash()`
     // additionally carries a timer for that case.
-    '@keyframes gm-breathe-blue{0%,100%{border-color:#3c5ee7;box-shadow:0 0 4px rgba(60,94,231,.3)}50%{border-color:#3c5ee7;box-shadow:0 0 16px rgba(60,94,231,.8)}}',
-    '.gm.state-idle{animation:gm-breathe-blue 2.8s ease-in-out infinite}',
-    '.gm.state-ready{border-color:#3c5ee7;box-shadow:0 0 8px rgba(60,94,231,.5)}',
+    //
+    // ALL THREE FACES carry the state, which is why the selector is the HOST's `data-bs`
+    // attribute and not a class on `.gm`. 缩略 (`.gmcp`) and 图标 (`.mface`) hide `.gm`
+    // (display:none) — so a class on `.gm` is the one place a state indicator cannot be seen, and
+    // deleting the indicator exactly when the operator shrinks the panel to glance at it is
+    // backwards. One attribute on the host, three surfaces reading it: the state still has
+    // exactly one home.
+    //
+    // `:host([data-bs=…])` is also what makes the state SURVIVE a shell rebuild. Store the state
+    // in a JS variable and `renderShell()` (a language change) replaces `.gm` while the variable
+    // still claims the old value — see setBorderState().
+    // The breathe pulses the LINE ITSELF, between a dimmed and a full blue. Varying only the alpha
+    // (what this first shipped) leaves the RGB identical at every frame, so the 2px line reads as a
+    // static blue frame with a soft halo moving behind it — 「蓝色呼吸灯」 that does not visibly
+    // breathe. `#3c5ee7` stays the reference colour: it is both the 就绪 solid value and the
+    // breathe's brightest frame.
+    '@keyframes gm-breathe-blue{0%,100%{border-color:#2a419c}50%{border-color:#3c5ee7}}',
+    ':host([data-bs=idle]) :is(.gm,.gmcp,.mface){animation:gm-breathe-blue 2.8s ease-in-out infinite}',
+    ':host([data-bs=ready]) :is(.gm,.gmcp,.mface){border-color:#3c5ee7}',
     '@keyframes gm-flash-green{0%,100%{border-color:var(--gm-line)}50%{border-color:#2ecc71}}',
-    '.gm.state-detecting-start{animation:gm-flash-green .4s ease-in-out 3}',
-    '.gm.state-low{border-color:#2ecc71;box-shadow:0 0 8px rgba(46,204,113,.4)}',
-    '.gm.state-suspect{border-color:#e67e22;box-shadow:0 0 8px rgba(230,126,34,.4)}',
+    ':host([data-bs=detecting-start]) :is(.gm,.gmcp,.mface){animation:gm-flash-green .4s ease-in-out 3}',
+    ':host([data-bs=low]) :is(.gm,.gmcp,.mface){border-color:#2ecc71}',
+    ':host([data-bs=suspect]) :is(.gm,.gmcp,.mface){border-color:#e67e22}',
     '@keyframes gm-flash-red{0%,100%{border-color:var(--gm-line)}50%{border-color:#e74c3c}}',
-    '.gm.state-high-flash{animation:gm-flash-red .5s ease-in-out 2}',
-    '.gm.state-high{border-color:#e74c3c;box-shadow:0 0 8px rgba(231,76,60,.5)}',
-    '@keyframes gm-flash-blacklist{0%,100%{border-color:var(--gm-line)}50%{border-color:#ff3b30;box-shadow:0 0 20px rgba(255,59,48,.9)}}',
-    '.gm.state-blacklist{animation:gm-flash-blacklist .3s ease-in-out 3}',
-    // The mini (48px) and compact faces have no room for a meaningful 2px border ring, and the
-    // state classes are only ever applied to `.gm` — which those states hide — so nothing here
-    // needs a matching rule for them.
+    ':host([data-bs=high-flash]) :is(.gm,.gmcp,.mface){animation:gm-flash-red .5s ease-in-out 2}',
+    ':host([data-bs=high]) :is(.gm,.gmcp,.mface){border-color:#e74c3c}',
+    '@keyframes gm-flash-blacklist{0%,100%{border-color:var(--gm-line)}50%{border-color:#ff3b30}}',
+    ':host([data-bs=blacklist]) :is(.gm,.gmcp,.mface){animation:gm-flash-blacklist .3s ease-in-out 3}',
+    // Every state is a `border-color` change and nothing else — the glow shadows this used to
+    // set would have REPLACED the panel's own drop shadow (`.gm`'s `0 10px 34px rgba(0,0,0,.55)`)
+    // rather than adding to it, so a state would double as "the panel lost its shadow".
+    // The two smaller faces need the cross-fade too; `.gm` declares it in its own rule above.
+    ':is(.gmcp,.mface){transition:border-color .3s ease}',
     // 0.4.9 §1.8 — the blacklist warning line. Red because it is the same data ink as 高风险.
     '.note.lk{color:#e74c3c}',
     // Resized: the height is explicit, so the box fills it and .body does the scrolling.
@@ -2891,15 +2909,33 @@
   // §2.2's priority is the order of the tests below —
   //   黑名单提醒（瞬时）> 检测结果 > 检测启动 > 就绪 > 待机
 
+  /**
+   * §二.4 — apply a state. `currentBorderState` is the machine's memory; the DOM's memory is the
+   * host's `data-bs` attribute, and the two are deliberately not the same thing.
+   *
+   * This used to be one guard — `if (state === currentBorderState) return` — and that single line
+   * was the whole reason 「浮层边框行为并没有被观察到」:
+   *
+   *   1. `currentBorderState` starts at IDLE, so the FIRST paint (which is also IDLE — nothing is
+   *      being watched) returned without touching the DOM. The resting panel had no state at all:
+   *      no blue, no breathing, indistinguishable from the previous release. The resting state is
+   *      the one an operator is in most of the time, which is how the feature shipped looking
+   *      like it did nothing.
+   *   2. A variable outlives the node it describes. `renderShell()` replaces `.gm` wholesale (a
+   *      language change does exactly that) and the guard then refused to repaint the NEW node
+   *      because "the state has not changed" — leaving a border with no state, permanently, until
+   *      the state happened to move on its own.
+   *
+   * So the applied state is read back off the host instead. A fresh `.gm` under an unchanged state
+   * needs no repaint, because the attribute — and therefore the CSS — never left; a state change
+   * is the only thing that writes it. `currentBorderState` is kept because `paintBorderState()`
+   * asks it a different question (§2.1: entering 高风险 flashes, leaving it does not).
+   */
   function setBorderState(state) {
-    if (state === currentBorderState) return;
     currentBorderState = state;
-    var gm = root && root.querySelector('.gm');
-    if (!gm) return;
-    // Remove every state class rather than the previous one: `currentBorderState` can be stale
-    // after a shell rebuild, and a leftover class would keep an animation running underneath.
-    for (var k in BORDER_STATE) gm.classList.remove('state-' + BORDER_STATE[k]);
-    gm.classList.add('state-' + state);
+    if (!root || !root.host) return;
+    if (root.host.getAttribute('data-bs') === state) return;
+    root.host.setAttribute('data-bs', state);
   }
 
   /**
