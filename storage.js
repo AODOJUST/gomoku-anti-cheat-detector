@@ -93,6 +93,13 @@
     // (2026-09-29): 「默认关，首次确认一次」. The §12 「提问」 button is NOT gated by this — it is
     // an explicit click, not something the extension decides to do.
     chatAuto: false,
+    // 0.4.10 §2.2 — a SECOND, narrower switch for the announcement alone, defaulting ON so that
+    // an operator who turns on 自动发送 gets exactly the 0.4.9 behaviour. It exists because the
+    // one switch was doing two jobs that the operator thinks about separately: 「开局要不要替你
+    // 声明」 (an ethical choice about speaking for them) and 「要不要把预设问题发出去」 (which is
+    // not automatic at all — the operator picks every question by hand). Answering a question
+    // here never consults this key; only `maybeAnnounce()` does.
+    autoSendAnnouncement: true,
     // 0.4.7 §三.1 — the colour scheme. 'auto' follows the OS via prefers-color-scheme, which is
     // the behaviour the viewer had before there was a setting at all, so it is the default: an
     // operator who never opens the settings page sees exactly what they saw in 0.4.6.

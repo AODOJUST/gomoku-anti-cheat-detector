@@ -526,6 +526,8 @@
     setField($('setLang'), S.lang || 'auto');
     $('setAuto').checked = !!S.autoAnalyze;      // a checkbox has no half-edited state
     $('setChatAuto').checked = !!S.chatAuto;     // 0.4.4 §七/§八 master switch, default off
+    // 0.4.10 §2.2 — the narrower switch, default ON (see storage.js DEFAULTS for why).
+    $('setAutoAnnounce').checked = !!S.autoSendAnnouncement;
     fillOpacityForm();
     fillLlmForm();
   }
@@ -1084,6 +1086,12 @@
   // flag existed in storage, was read by content.js three times, and could never be turned on:
   // the §7 announcement and the §8 replies were unreachable dead code. Default stays false.
   bindSetting($('setChatAuto'), 'chatAuto', function (e) { return !!e.checked; });
+  // 0.4.10 §2.2 — 开局声明. Its own key so the operator can keep the automated REPLY (chatAuto)
+  // without the extension speaking first on their behalf, or the other way round.
+  bindSetting($('setAutoAnnounce'), 'autoSendAnnouncement', function (e) { return !!e.checked; });
+  // 0.4.10 §三 — the tutorial button. Guarded: `openTutorial` lives with the modal helpers far
+  // below, and a viewer.html without the button (a trimmed build) must not throw here.
+  if ($('tutorialBtn')) $('tutorialBtn').onclick = openTutorial;
   // A language change is written like any other setting; the repaint comes from the
   // storage.onChanged broadcast (§1.8), which is also what keeps the toolbar menu's checkmark
   // and this dropdown from disagreeing when the change was made on the other entry point.
@@ -2475,7 +2483,12 @@
   // the container width. So "page size" is 15 × columns, and it changes with the window.
   // PER_COL is the one fixed number; the column count is measured at render time.
   var PER_COL = 15;
-  var MIN_COL_W = 300;   // min column width before another column fits
+  // 0.4.10 §一.4 — a hard ceiling of 3 columns (45 cards a page) and a wider minimum. Measured
+  // from the live box, a 4K window fit 5–6 columns, which is more cards on screen than anyone
+  // reads at once while making each one narrow enough that the name and the metrics start to
+  // clip. 380px is what a card needs before its 名字 + 2 lines of metadata stop eliding.
+  var MIN_COL_W = 380;   // min column width before another column fits
+  var MAX_COLS = 3;      // §一.4 — no window is wide enough for a 4th column
   var COL_GAP = 16;      // matches .archive-grid gap
   var currentPage = 0;
 
@@ -2487,7 +2500,7 @@
     var w = (box && box.clientWidth) || 1000;
     if (w <= 0) w = 1000;   // hidden (e.g. replay tab not open yet) → safe fallback
     var cols = Math.max(1, Math.floor((w + COL_GAP) / (MIN_COL_W + COL_GAP)));
-    return cols;
+    return Math.min(cols, MAX_COLS);
   }
 
   function pageCount(n, size) { return Math.max(1, Math.ceil(n / size)); }
@@ -3100,6 +3113,237 @@
   function closeModal() {
     if (maskEl && maskEl.parentNode) maskEl.parentNode.removeChild(maskEl);
     maskEl = null;
+  }
+
+  // =====================================================================
+  // 0.4.10 §三 新手教程
+  // =====================================================================
+  // The spec calls for ~5000–8000 characters across 13 languages and says to ship 中文 + 英文
+  // first, with the rest falling back to English. That is exactly why this content does NOT go
+  // into `locale/*.js`: those tables are generated from `_tools/i18n-ui.js`, every key there is
+  // required to carry all 12 translations, and `gen-locale --check` would fail the moment one
+  // language was missing. A separate, partially-translated corpus with an explicit fallback is
+  // the only shape that can be half-done on purpose.
+  //
+  // It is deliberately NOT translated through T()/GMI18n either: every consumer of that path
+  // resolves a key in ONE current locale, whereas this needs "the reader's language, or English".
+  var TUTORIAL = [
+    {
+      h: { 'zh-CN': '1. 快速开始', en: '1. Quick start' },
+      b: {
+        'zh-CN': [
+          '安装扩展后打开 gomoku.com 或 papergames.io 的对局页，浮层会自动出现在角落并开始采集。',
+          '一局结束（或你点「分析当前对局」）后引擎开始分析。看两样东西：面板上的风险分，和浮层边框的颜色。',
+          '边框是给眼角看的：绿=低风险，橙=可疑，红=高风险。详细结论在「查看器」里。',
+        ],
+        en: [
+          'Open a game on gomoku.com or papergames.io. The overlay appears in a corner on its own and starts collecting.',
+          'After the game ends — or when you press 分析当前对局 — the engine analyses it. Watch two things: the risk score in the panel, and the colour of the overlay border.',
+          'The border is meant for the corner of your eye: green = low, orange = suspect, red = high. The detailed verdict lives in the viewer.',
+        ],
+      },
+    },
+    {
+      h: { 'zh-CN': '2. 浮层按钮', en: '2. Panel buttons' },
+      b: {
+        'zh-CN': [
+          '查看器：打开完整窗口（回放、样本库、黑名单、设置）。',
+          '复制对局数据：把当前报告压成一行文本，方便贴给别人。',
+          '🚫：把对手加入或移出本地黑名单。取不到对手用户名时它会变灰且不可点。',
+          '语言 / 规则：切换界面语言；切换五子棋规则（自动 / 自由 / 标准 / 连珠）。',
+          '提问：先选语言，再从题库里挑一道题发给对手。只有预设题目，没有自由输入。',
+          '缩略 / —：把浮层缩成只显示评估值，或缩成一个图标。✕ 关闭浮层（采集继续进行，点扩展图标可以再打开）。',
+        ],
+        en: [
+          '查看器 (viewer): opens the full window — replay, sample library, blacklist, settings.',
+          '复制对局数据 (copy): flattens the current report into one line you can paste elsewhere.',
+          '🚫: adds or removes the opponent from your local blacklist. It greys out and stops responding when no username can be resolved.',
+          '语言 / 规则 (language / rules): switches the interface language, and the gomoku rule set (auto / free / standard / renju).',
+          '提问 (ask): pick a language, then pick a question from the bank and send it. Preset questions only — there is no free-text box.',
+          '缩略 / — (compact / minimise): shrinks the overlay to just the scores, or to a single icon. ✕ closes it; collection keeps running and the extension icon brings it back.',
+        ],
+      },
+    },
+    {
+      h: { 'zh-CN': '3. 边框状态', en: '3. Border states' },
+      b: {
+        'zh-CN': [
+          '蓝色呼吸：待机 —— 还没开始一局，或者这局已经看完了。',
+          '蓝色常亮：就绪 —— 有棋局，但还没有任何分析结果。',
+          '绿色闪 3 下后转绿：本局第一次检测开始了，接着就是低风险的结果。',
+          '绿色常亮 = 低风险；橙色常亮 = 可疑；红色闪 2 下后常亮 = 高风险。',
+          '红色闪 3 下：匹配到黑名单里的玩家（优先级最高，播完交还给本该显示的状态）。',
+          '风险从高降到低时边框直接切换、不会闪 —— 降级不是新闻。',
+        ],
+        en: [
+          'Breathing blue: idle — no game started, or the current one is finished.',
+          'Solid blue: ready — a game exists but nothing has been analysed yet.',
+          'Green, three flashes then solid: the first detection of this game started; green is also the low-risk result colour.',
+          'Solid green = low risk; solid orange = suspect; red, two flashes then solid = high risk.',
+          'Three red flashes: the opponent is on your blacklist. This outranks everything and hands the border back when it finishes.',
+          'A risk that DROPS cuts straight across without flashing — a downgrade is not news.',
+        ],
+      },
+    },
+    {
+      h: { 'zh-CN': '4. 检测结果怎么看', en: '4. Reading the result' },
+      b: {
+        'zh-CN': [
+          '风险分：0–100，越高越可疑。一般低于 40 视为正常，40–69 可疑，70 以上高风险。',
+          'AI 分类：把每一手归为「像人」「像 AI」「存疑」，看的是整局的分布而不是单步。',
+          '分段：把连续同向的手数连成一段，一眼看清哪一段开始变了。',
+          '回避手：明明该走却故意避开的选择，单独统计、不计入主要指标。',
+          '唯一手：全局唯一正确手，连续命中是强信号。',
+          '无用冲四：白冲一四、不产生威胁，是典型的「装作在进攻」。',
+        ],
+        en: [
+          'Risk score: 0–100, higher is more suspicious. Below 40 is normally human, 40–69 suspect, 70+ high.',
+          'AI classification: each move is labelled human-like, AI-like or doubtful. Read the distribution over the game, not one move.',
+          'Segments: consecutive hands pointing the same way are joined into one bar, so you can see where the game changed.',
+          'Evasion moves: choices that deliberately avoid the natural move. Counted separately and kept out of the main metrics.',
+          'Unique moves: the one globally correct move. Streaks of them are a strong signal.',
+          'Useless fours: a four that creates no real threat — the hallmark of pretending to attack.',
+        ],
+      },
+    },
+    {
+      h: { 'zh-CN': '5. 指标含义', en: '5. What the metrics mean' },
+      b: {
+        'zh-CN': [
+          'Top-1 / Top-3 / Top-5 命中率：实走落在引擎前 1 / 3 / 5 个选点里的比例。',
+          'ACPL：平均每手与引擎首选相差多少分，越低越像引擎。',
+          '唯一手命中：唯一正确手里被实际走出的比例，连续命中尤其说明问题。',
+          'Top-5 外：前三五名之外的选择，人会有，引擎很少有。',
+          '时间模式：落子耗时的分布。人类忽快忽慢，引擎常常过分均匀。',
+          '冲四豁免：被对手逼出来的唯一防守不算可疑，按形状判定而不是按引擎判定。',
+        ],
+        en: [
+          'Top-1 / 3 / 5: how often the played move is inside the engine\'s best 1 / 3 / 5 candidates.',
+          'ACPL: the average score lost per move against the engine\'s first choice. Lower looks more like an engine.',
+          'Unique-move hits: how many of the single correct moves were actually played. Consecutive hits are the interesting case.',
+          'Outside Top-5: choices the engine would rarely make but a human often would.',
+          'Time pattern: the distribution of move times. Humans are erratic; engines are often unnaturally even.',
+          'Forced-four exemption: a defence forced by the opponent is not suspicious. This is decided by the SHAPE, not by the engine.',
+        ],
+      },
+    },
+    {
+      h: { 'zh-CN': '6. 标签体系', en: '6. Tags' },
+      b: {
+        'zh-CN': [
+          '预设标签（标准、存疑、黑方AI、白方AI 等）用来给整局归类，方便以后筛选和统计。',
+          '自定义标签由你自己创建，用来放自己的分类法；它们在颜色上与预设标签区分开。',
+        ],
+        en: [
+          'Preset tags (standard, doubtful, black-AI, white-AI, …) classify a whole game so you can filter and count later.',
+          'Custom tags are yours to invent. They are coloured differently so they never look like part of the fixed vocabulary.',
+        ],
+      },
+    },
+    {
+      h: { 'zh-CN': '7. 人工标注', en: '7. Manual annotation' },
+      b: {
+        'zh-CN': [
+          '在回放里可以逐手标注：判断准确 / 判断错误、AI 步骤、冲四、无用冲四、可疑、豁免。',
+          '这些标注是学习器的输入 —— 你标的越多，阈值越贴合你实际遇到的对局。',
+        ],
+        en: [
+          'In the replay you can label moves one by one: correct / wrong, AI move, four, useless four, suspicious, exempt.',
+          'Those labels feed the learner. The more you mark, the closer the thresholds get to the games you actually meet.',
+        ],
+      },
+    },
+    {
+      h: { 'zh-CN': '8. 样本库', en: '8. Sample library' },
+      b: {
+        'zh-CN': [
+          '为什么需要：单局的分数只是这一局的证据，样本库让很多局的结论可以互相校准。',
+          '怎么积累：对局结束后把它存成样本（或直接标注），标出它到底是人还是 AI。',
+          '学习机制：样本足够后运行一次学习，各指标的权重与阈值会据此调整。',
+        ],
+        en: [
+          'Why: one game is evidence about one game. The library lets many games calibrate each other.',
+          'How: save a finished game as a sample (or annotate it directly) and say whether it was human or AI.',
+          'Learning: once you have enough samples, run the learner and the weights and thresholds move accordingly.',
+        ],
+      },
+    },
+    {
+      h: { 'zh-CN': '9. 黑名单', en: '9. Blacklist' },
+      b: {
+        'zh-CN': [
+          '用途：记住你不再想遇到的玩家，下次匹配到时浮层会红闪提醒。',
+          '怎么添加：点浮层头部的 🚫，或在查看器的「黑名单」页手动添加。',
+          '键是用户名（playerId），不是会变的显示名；只存在这台机器上，从不上传。',
+        ],
+        en: [
+          'What for: remember players you would rather not meet again. The overlay flashes red when you do.',
+          'How to add: press 🚫 in the panel header, or add one by hand on the viewer\'s 黑名单 page.',
+          'The key is the username (playerId), not the display name, which can change. It lives on this machine only and is never uploaded.',
+        ],
+      },
+    },
+    {
+      h: { 'zh-CN': '10. 如何提高精准度', en: '10. Improving accuracy' },
+      b: {
+        'zh-CN': [
+          '多打几局再下结论：一局的样本量太小，累计多局的结论才可靠。',
+          '勤标注：把你已经确定的「人」和「机」存进样本库，学习器需要正反两类。',
+          '重新学习：样本积累到一定数量后重跑学习，阈值会更新。',
+          '调整检测思考时间：思考时间越长，引擎越准，也越慢。',
+          '选对规则：连珠（有禁手）与自由规则的最优手不同，规则错了结论也会偏。',
+        ],
+        en: [
+          'Play several games before deciding: one game is a very small sample.',
+          'Annotate as you go: the learner needs both the human and the AI cases, so save the ones you are sure about.',
+          'Re-run the learner once the library has grown; the thresholds move with it.',
+          'Raise the detection think time: more time means a stronger engine, at the cost of speed.',
+          'Pick the right rule set: renju (with forbidden moves) and free gomoku have different best moves, and the wrong rule skews everything.',
+        ],
+      },
+    },
+    {
+      h: { 'zh-CN': '11. 常见问题', en: '11. Common questions' },
+      b: {
+        'zh-CN': [
+          '中途加入对局：加入之前的手数没有数据，风险分只反映你看到的那部分。',
+          '数据不完整：页面刷新、掉线或中途退出都会丢手数，报告里会写明采集到多少手。',
+          '引擎降级：多线程构建不可用时会自动退回单线程，结论仍然有效，只是更慢。',
+          '无法获取玩家名：观战、游客身份或页面结构变化时取不到用户名，黑名单会变灰不可用。',
+        ],
+        en: [
+          'Joining mid-game: moves played before you joined are not in the record, so the score only covers what you saw.',
+          'Incomplete data: a refresh, a disconnect or leaving early loses moves. The report states how many hands were collected.',
+          'Engine fallback: when the multi-threaded build is unavailable the engine drops to single-threaded. The verdict still stands, it is just slower.',
+          'No username: while spectating, as a guest, or if the page structure changes, no username can be read and the blacklist greys out.',
+        ],
+      },
+    },
+  ];
+
+  // The reader's language, or English. 「中文先行」 means both Chinese locales get the Chinese
+  // text; every other language gets English rather than nothing.
+  function tutPick(map) {
+    if (!map) return '';
+    if (LANG === 'zh-TW') return map['zh-TW'] || map['zh-CN'] || map.en;
+    if (LANG === 'zh-CN') return map['zh-CN'] || map.en;
+    return map.en || map['zh-CN'];
+  }
+
+  function tutorialHtml() {
+    var out = '';
+    for (var i = 0; i < TUTORIAL.length; i++) {
+      var sec = TUTORIAL[i];
+      var body = tutPick(sec.b) || [];
+      out += '<h4 class="tut-h">' + esc(tutPick(sec.h)) + '</h4><ul class="tut-ul">';
+      for (var j = 0; j < body.length; j++) out += '<li>' + esc(body[j]) + '</li>';
+      out += '</ul>';
+    }
+    return out;
+  }
+
+  function openTutorial() {
+    openModal(T('viewer|新手教程'), tutorialHtml());
   }
 
   // =====================================================================

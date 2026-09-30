@@ -1904,7 +1904,17 @@
     // row/menu hover, `--gm-btn-hov` the neutral button hover, `--gm-info-*` the blue banner
     // (and the .t-run badge), `--gm-div` the in-panel divider.
     '--gm-hov:#243040;--gm-btn-hov:#33404f;--gm-pri-hov:#4a6cf0;--gm-div:#1b2530;',
-    '--gm-info-bg:#16233d;--gm-info-line:#2f4b8f;--gm-info-fg:#cfe0ff}',
+    '--gm-info-bg:#16233d;--gm-info-line:#2f4b8f;--gm-info-fg:#cfe0ff;',
+    // 0.4.10 §一.3 — the state GLOW, as a variable rather than a `box-shadow` written by the
+    // state rules. Two releases learned this the hard way: 0.4.9's state rules SET `box-shadow`
+    // outright, which REPLACES the panel's own drop shadow rather than adding to it, so every
+    // state change also silently dropped the panel's shadow. Composing instead — the panel's
+    // shadow first, then `var(--gm-glow)` — keeps both. The fallback is a fully transparent
+    // shadow and NOT `none`: `box-shadow: 0 10px 34px #000, none` is an invalid list and the
+    // browser drops the WHOLE declaration, i.e. the panel would lose its shadow at rest the
+    // moment this was introduced. Declared once here because a glow is data ink — it is the
+    // same in both themes (the state colours are).
+    '--gm-glow:0 0 0 rgba(0,0,0,0)}',
     ':host([data-theme="light"]){--gm-bg:#ffffff;--gm-panel:#f5f5f5;--gm-head:#ececec;--gm-line:#d0d0d0;',
     '--gm-line-soft:#e0e0e0;--gm-txt:#1a1a1a;--gm-txt-2:#333333;--gm-mut:#555555;--gm-dim:#6b6b6b;',
     '--gm-off:#aaaaaa;--gm-lk:#2a4bd7;--gm-in:#f0f0f0;--gm-bar:#e2e2e2;',
@@ -1921,7 +1931,11 @@
     // panel is invisible), and the two transitions let every state change cross-fade rather than
     // snap. The colour itself is still the palette's `--gm-line` at rest, so an operator who
     // never sees a state change sees the panel they had.
-    '.gm{background:var(--gm-bg);border:2px solid var(--gm-line);border-radius:10px;box-shadow:0 10px 34px rgba(0,0,0,.55);overflow:hidden;display:flex;flex-direction:column;max-height:var(--gm-max);position:relative;',
+    // The width is 4px as of 0.4.10 §一.3 (it was 2px): the state colours are data ink read from
+    // the corner of an eye over a live board, and a state indicator nobody notices is the same as
+    // no indicator. The `--gm-glow` slot rides AFTER the panel's own drop shadow so a state adds
+    // a halo instead of losing the shadow (see the `:host` definition for that story).
+    '.gm{background:var(--gm-bg);border:4px solid var(--gm-line);border-radius:10px;box-shadow:0 10px 34px rgba(0,0,0,.55),var(--gm-glow,0 0 0 rgba(0,0,0,0));overflow:hidden;display:flex;flex-direction:column;max-height:var(--gm-max);position:relative;',
     'transition:border-color .3s ease,box-shadow .3s ease}',
     // 0.4.9 §二.3 — the six states, as CSS animations.
     //
@@ -1951,17 +1965,30 @@
     // static blue frame with a soft halo moving behind it — 「蓝色呼吸灯」 that does not visibly
     // breathe. `#3c5ee7` stays the reference colour: it is both the 就绪 solid value and the
     // breathe's brightest frame.
+    // 0.4.10 §一.3 — every glow radius is the 0.4.9 number scaled by the same amount the border
+    // grew (8px → 12px, 20px → 28px), and every one of them rides the `--gm-glow` slot so it can
+    // only ever ADD to the panel's shadow. The keyframes deliberately do NOT animate `box-shadow`:
+    // the same animation is attached to all three faces via `:is(...)`, so a `box-shadow` frame
+    // would also overwrite `.mface`'s own shadow — see the `:host` definition.
     '@keyframes gm-breathe-blue{0%,100%{border-color:#2a419c}50%{border-color:#3c5ee7}}',
+    ':host([data-bs=idle]){--gm-glow:0 0 12px rgba(60,94,231,.32)}',
     ':host([data-bs=idle]) :is(.gm,.gmcp,.mface){animation:gm-breathe-blue 2.8s ease-in-out infinite}',
+    ':host([data-bs=ready]){--gm-glow:0 0 12px rgba(60,94,231,.5)}',
     ':host([data-bs=ready]) :is(.gm,.gmcp,.mface){border-color:#3c5ee7}',
     '@keyframes gm-flash-green{0%,100%{border-color:var(--gm-line)}50%{border-color:#2ecc71}}',
+    ':host([data-bs=detecting-start]){--gm-glow:0 0 12px rgba(46,204,113,.4)}',
     ':host([data-bs=detecting-start]) :is(.gm,.gmcp,.mface){animation:gm-flash-green .4s ease-in-out 3}',
+    ':host([data-bs=low]){--gm-glow:0 0 12px rgba(46,204,113,.4)}',
     ':host([data-bs=low]) :is(.gm,.gmcp,.mface){border-color:#2ecc71}',
+    ':host([data-bs=suspect]){--gm-glow:0 0 12px rgba(230,126,34,.4)}',
     ':host([data-bs=suspect]) :is(.gm,.gmcp,.mface){border-color:#e67e22}',
     '@keyframes gm-flash-red{0%,100%{border-color:var(--gm-line)}50%{border-color:#e74c3c}}',
+    ':host([data-bs=high-flash]){--gm-glow:0 0 12px rgba(231,76,60,.5)}',
     ':host([data-bs=high-flash]) :is(.gm,.gmcp,.mface){animation:gm-flash-red .5s ease-in-out 2}',
+    ':host([data-bs=high]){--gm-glow:0 0 12px rgba(231,76,60,.5)}',
     ':host([data-bs=high]) :is(.gm,.gmcp,.mface){border-color:#e74c3c}',
     '@keyframes gm-flash-blacklist{0%,100%{border-color:var(--gm-line)}50%{border-color:#ff3b30}}',
+    ':host([data-bs=blacklist]){--gm-glow:0 0 28px rgba(255,59,48,.9)}',
     ':host([data-bs=blacklist]) :is(.gm,.gmcp,.mface){animation:gm-flash-blacklist .3s ease-in-out 3}',
     // Every state is a `border-color` change and nothing else — the glow shadows this used to
     // set would have REPLACED the panel's own drop shadow (`.gm`'s `0 10px 34px rgba(0,0,0,.55)`)
@@ -2005,12 +2032,16 @@
     '.gmcp .cpbar>i{display:block;height:100%;background:var(--gm-lk);width:0}',
     // The shrink icon is a tap target (restore); a press that travels drags it instead.
     ':host(.mg) .mface{cursor:pointer}',
-    '.hd{display:flex;align-items:center;gap:8px;padding:8px 10px;background:var(--gm-panel);border-bottom:1px solid var(--gm-line);',
+    // 0.4.10 §一.3 — the three icon buttons became WORDS (「复制对局数据」「语言」「规则」; 🚫 stays a
+    // glyph). Words are wider than emoji and the header is inside a 580px overlay, so it now
+    // wraps instead of overflowing, and each label is kept whole — a header that broke 「复制对局
+    // 数据」 across two lines mid-word would be worse than one that wrapped between buttons.
+    '.hd{display:flex;align-items:center;flex-wrap:wrap;gap:8px;padding:8px 10px;background:var(--gm-panel);border-bottom:1px solid var(--gm-line);',
     'cursor:move;user-select:none;touch-action:none}',
     ':host(.dragging) .gm{box-shadow:0 14px 40px rgba(0,0,0,.7);border-color:var(--gm-lk)}',
     '.hd b{font-weight:500;font-size:13px}',
     '.hd .sp{flex:1}',
-    '.hd .lk{color:var(--gm-lk);cursor:pointer;font-size:12px}',
+    '.hd .lk{color:var(--gm-lk);cursor:pointer;font-size:12px;white-space:nowrap}',
     '.hd .lk:hover{text-decoration:underline}',
     // 0.3.6 §2.1: 📋 is greyed out with no report to copy. It stays clickable so the click can
     // explain WHY it is greyed out (the footer says 「尚无分析结果」) instead of silently doing
@@ -2037,6 +2068,17 @@
     '.ctx .it:hover{background:var(--gm-hov)}',
     '.ctx .it .ck{flex:0 0 12px;color:var(--gm-lk)}',
     '.ctx .it[aria-checked=true]{color:var(--gm-txt)}',
+    // 0.4.10 §二.1 — the 提问 picker's second level. A question §12 currently blocks is still
+    // SHOWN, greyed, with the reason in its title: deleting it would leave the operator with an
+    // empty list and no way to learn that the bank has a question they have not unlocked yet.
+    // `white-space:normal` on purpose — a question is a sentence, unlike a language name.
+    '.ctx .it.dis{opacity:.45;cursor:default}',
+    '.ctx .it.dis:hover{background:transparent}',
+    '.ctx .it.wrap{white-space:normal;line-height:1.45;max-width:280px}',
+    // The picker's level header (which language, or which question) — inert, and set apart so a
+    // click on it is never mistaken for a selection.
+    '.ctx .cth{padding:4px 8px 6px;color:var(--gm-dim);font-size:11px;border-bottom:1px solid var(--gm-div);',
+    'margin-bottom:4px;cursor:default}',
     '.x{color:var(--gm-dim);cursor:pointer;font-size:15px;line-height:1;padding:2px 4px}',
     '.x:hover{color:var(--gm-txt)}',
     '.mn{color:var(--gm-dim);cursor:pointer;font-size:15px;line-height:1;padding:2px 6px}',
@@ -2143,8 +2185,12 @@
           '<span aria-hidden="true" style="color:var(--gm-dim);font-size:12px;line-height:1">⠿</span>' +
           '<b>' + esc(T('panel|Gomoku 反作弊检测')) + '</b><span class="sp"></span>' +
           '<span class="lk" data-act="open-viewer">' + esc(T('panel|查看器')) + '</span>' +
+          // 0.4.10 §一.3 — 📋 / 🌐 / ⚙ became words. An emoji is a picture the operator has to
+          // decode, and none of the three has a settled meaning (📋 reads as "notes", 🌐 as
+          // "browser"); the labels say what they do. 🚫 below stays a glyph: it is the one that
+          // DOES read unambiguously, and it has to stay narrow so the header does not wrap.
           '<span class="lk" data-act="copy" data-copy-state="off" title="' +
-            esc(T('copy.title')) + '">📋</span>' +
+            esc(T('copy.title')) + '">' + esc(T('panel|复制对局数据')) + '</span>' +
           // 0.4.9 §一.6 — the blacklist toggle. It ships as `na` (greyed) and is painted properly
           // by paintBlacklistButton() on the first status pass; starting grey rather than blue
           // means the one frame before the first paint cannot advertise a click that would fail.
@@ -2153,8 +2199,10 @@
           // 0.4.5 §二.1/§二.2 — the language and rule menus. Both are always present (unlike 提问)
           // because they are the only way to correct the two things the extension has to GUESS:
           // the interface language, and the rule when the site does not imply one.
-          '<span class="lk" data-act="lang" title="' + esc(T('panel|切换语言')) + '">🌐</span>' +
-          '<span class="lk" data-act="rule" title="' + esc(T('panel|游戏规则')) + '">⚙</span>' +
+          '<span class="lk" data-act="lang" title="' + esc(T('panel|切换语言')) +
+            '">' + esc(T('panel|语言')) + '</span>' +
+          '<span class="lk" data-act="rule" title="' + esc(T('panel|游戏规则')) +
+            '">' + esc(T('panel|规则')) + '</span>' +
           // 0.4.4 §12 — the 提问 button. Always present so the operator can see WHY it is off
           // (its title says which of §12's five gates is closed) rather than wondering where the
           // feature went.
@@ -2186,6 +2234,9 @@
       // them, and both stay empty until a menu is opened (paintMenus fills the visible one).
       '<div class="ctx" data-slot="langmenu" role="menu"></div>' +
       '<div class="ctx" data-slot="rulemenu" role="menu"></div>' +
+      // 0.4.10 §二.1 — the 提问 picker. It reuses `.ctx` (one dropdown implementation, two
+      // levels: this box shows the language list, then the question list, and only then sends).
+      '<div class="ctx" data-slot="askmenu" role="menu"></div>' +
       '<div class="gmcp" data-act="restore" title="' + esc(T('panel|点击恢复完整面板')) + '">' +
         '<div class="cprow"><span class="cpk">' + esc(T('panel|黑')) +
           '</span><span class="cpv" data-cp="b">—</span></div>' +
@@ -2259,6 +2310,73 @@
     return S.rule == null ? 'auto' : String(S.rule);
   }
 
+  // ---------- 0.4.10 §二.1/§二.3 — the 提问 picker ----------
+  //
+  // One `.ctx` box, two levels: the language the question is SENT in, then the question itself.
+  // There is deliberately no free-text input — §2.1 makes the question bank the only vocabulary,
+  // because an operator who types their own line is back to putting arbitrary words in front of a
+  // real opponent, and the grading tree in chat.js only understands the bank's questions.
+  //
+  // The language is `chat.questionLang`, which is NOT `settings.lang`: how the OPERATOR reads the
+  // extension and which language they want to ADDRESS the opponent in are two different
+  // questions, and §2.3 forbids the picker from touching the UI language.
+  function askMenuLang() { return chat.questionLang || chat.lang || LANG; }
+
+  // 'ask-q' is the second level of the ask menu: same box, same button, different contents.
+  function menuSlot(which) { return which === 'ask-q' ? 'askmenu' : which + 'menu'; }
+  function menuBtn(which) { return which === 'ask-q' ? 'ask' : which; }
+
+  function askMenuHtml() {
+    var html = '';
+    if (openMenu === 'ask') {
+      var cur = askMenuLang();
+      html += '<div class="cth">' + esc(T('panel|选择提问语言')) + '</div>';
+      GMI18n.LOCALES.forEach(function (code) {
+        var on = code === cur;
+        html += '<div class="it" data-act="pick-ask-lang" data-v="' + esc(code) + '"' +
+          ' role="menuitemradio" aria-checked="' + on + '">' +
+          '<span class="ck">' + (on ? '✓' : '') + '</span>' + esc(GMI18n.langLabel(code)) + '</div>';
+      });
+      if (chat.lang) {
+        // Where the guess came from. A detected language and a chosen one look identical in a
+        // list, and the operator is about to overrule one of them.
+        html += '<div class="cth">' + esc(T('panel|当前对手语言：{lang}', { lang: chat.lang })) + '</div>';
+      }
+      return html;
+    }
+    if (openMenu !== 'ask-q') return html;
+
+    var lang = askMenuLang();
+    html += '<div class="cth">' + esc(GMI18n.langLabel(lang)) + '</div>';
+    var ctx = askContext();
+    for (var i = 0; i < GM_QUESTIONS.length; i++) {
+      var q = GM_QUESTIONS[i];
+      var why = GMChat.askBlocked(q, ctx);
+      // An unknown sender colour does not block the explicit button (see askableQuestions), so it
+      // is not a reason to grey a question here either.
+      var ok = why === null || why === 'senderUnknown';
+      var text = GMChat.textOf(q.text, lang);
+      html += '<div class="it wrap' + (ok ? '' : ' dis') + '"' +
+        (ok ? ' data-act="pick-ask-q" data-v="' + esc(q.id) + '" role="menuitem"'
+            : ' title="' + esc(askBlockReason(why)) + '"') + '>' +
+        esc(text || q.id) + '</div>';
+    }
+    return html;
+  }
+
+  // The reasons a question is greyed. Literal `T()` arguments on purpose: this project has
+  // shipped a key that was built by concatenation and therefore reached no dictionary at all
+  // (see MEMORY.md), and nothing in the toolchain would have caught it.
+  function askBlockReason(why) {
+    if (why === 'spectating') return T('panel|观战时不提问');
+    if (why === 'noChat') return T('panel|聊天栏不可用');
+    if (why === 'senderUnknown') return T('panel|发送者颜色未定：可以提问，但回答不会调整 AI 率');
+    if (why === 'cooldown') return T('panel|冷却中：10 秒内已发送过');
+    if (why === 'alreadyAsked') return T('panel|本局已经问过这道题');
+    if (why === 'rateTooLow') return T('panel|对手 AI 率未超过 55，此题暂不可用');
+    return T('panel|当前不可提问');
+  }
+
   function paintMenus() {
     if (!root) return;
     ['lang', 'rule'].forEach(function (which) {
@@ -2274,14 +2392,16 @@
       });
       box.innerHTML = html;
     });
+    var askBox = root.querySelector('[data-slot=askmenu]');
+    if (askBox) askBox.innerHTML = askMenuHtml();
   }
 
   function closeMenus() {
     if (!root) return;
-    ['lang', 'rule'].forEach(function (which) {
-      var box = root.querySelector('[data-slot=' + which + 'menu]');
+    ['lang', 'rule', 'ask'].forEach(function (which) {
+      var box = root.querySelector('[data-slot=' + menuSlot(which) + ']');
       if (box) box.classList.remove('show');
-      var btn = root.querySelector('[data-act=' + which + ']');
+      var btn = root.querySelector('[data-act=' + menuBtn(which) + ']');
       if (btn) btn.classList.remove('on');
     });
     openMenu = null;
@@ -2291,8 +2411,8 @@
     if (!root) return;
     if (openMenu === which) { closeMenus(); return; }
     closeMenus();
-    var box = root.querySelector('[data-slot=' + which + 'menu]');
-    var btn = root.querySelector('[data-act=' + which + ']');
+    var box = root.querySelector('[data-slot=' + menuSlot(which) + ']');
+    var btn = root.querySelector('[data-act=' + menuBtn(which) + ']');
     if (!box) return;
     openMenu = which;
     paintMenus();
@@ -2363,6 +2483,17 @@
     host = document.createElement('div');
     host.id = '__gm_panel';
     root = host.attachShadow({ mode: 'open' });
+    // 0.4.10 §一.1 — the host's two attributes have to be written FROM HERE DOWN, because this
+    // is the line that creates the host. Both helpers guard on `root`, so calling them earlier
+    // (as 0.4.9 did for `data-theme`) was a silent no-op: on a fresh page load neither the
+    // theme nor `lang`/`dir` was ever written, and nothing but `chrome.storage.onChanged`
+    // could write it later. The reported symptom was 「浅色模式刷新后回退深色」 — and it was
+    // really two bugs, since an RTL locale (ar) also failed to flip on first load for the same
+    // reason. `applyLang` is called a second time here on purpose: its first call (in boot())
+    // resolves LANG so renderShell()'s T() is correct, and THIS call is the one that reaches
+    // the host.
+    applyLang(S.lang);
+    applyTheme(S.theme);
     renderShell();
     (document.body || document.documentElement).appendChild(host);
 
@@ -2396,8 +2527,9 @@
       // 0.4.5 §二 — any click that is neither on a menu nor on its button dismisses an open
       // dropdown, the way a menu is expected to behave. Done before the act dispatch so the
       // other controls keep working with a menu open.
-      if (openMenu && act !== 'lang' && act !== 'rule' &&
-          act !== 'pick-lang' && act !== 'pick-rule') {
+      if (openMenu && act !== 'lang' && act !== 'rule' && act !== 'ask' &&
+          act !== 'pick-lang' && act !== 'pick-rule' &&
+          act !== 'pick-ask-lang' && act !== 'pick-ask-q') {
         closeMenus();
       }
       if (!act) {
@@ -2437,8 +2569,33 @@
       if (act === 'copy') { copyResult(); return; }
       // ---- 0.4.9 §一.6 ----
       if (act === 'blacklist') { toggleBlacklist(); return; }
+      // ---- 0.4.10 §二.1/§二.3 ----
+      // 提问 opens the PICKER, it no longer fires the first allowed question (§2.1). The footer's
+      // 「提问」 link opens the same picker — it had been dead since 0.4.4: the handler matched
+      // `act === 'ask'` while the markup emitted `data-act="chat-ask"`, so the one control inside
+      // the chat panel did nothing at all.
+      if (act === 'ask' || act === 'chat-ask') { toggleMenu('ask'); return; }
+      if (act === 'pick-ask-lang') {
+        // §2.3 — the choice is remembered for the session but NEVER written to `settings.lang`;
+        // the UI language is untouched, which is the whole point of the separate key.
+        chat.questionLang = hit.getAttribute('data-v');
+        saveChatState();
+        // Stay open, second level. Repainted in place, so the box does not jump under the pointer.
+        openMenu = 'ask-q';
+        paintMenus();
+        return;
+      }
+      if (act === 'pick-ask-q') {
+        var qid = hit.getAttribute('data-v');
+        var chosen = null;
+        for (var qi = 0; qi < GM_QUESTIONS.length; qi++) {
+          if (GM_QUESTIONS[qi].id === qid) { chosen = GM_QUESTIONS[qi]; break; }
+        }
+        closeMenus();
+        if (chosen) askQuestion(chosen);
+        return;
+      }
       // ---- 0.4.4 §12/§14 ----
-      if (act === 'ask') { askNextQuestion(); return; }
       if (act === 'chat-close') { chatOpen = false; paintChatPanel(); return; }
       if (act === 'chat-confirm-yes') {
         chat.confirmOk = true; chatOpen = false; paintChatPanel(); maybeAnnounce(); return;
@@ -3404,6 +3561,11 @@
 
   var chat = {
     lang: null,             // §8.2 chatLang — independent of settings.lang
+    // 0.4.10 §2.3 — the language a QUESTION is sent in, chosen in the picker. A third, separate
+    // key: `lang` is what the OPPONENT speaks (detected), `settings.lang` is what the OPERATOR
+    // reads, and this is what we address them in. §2.3 is explicit that picking it must not move
+    // the UI language, so it cannot be folded into either of the other two.
+    questionLang: null,
     senderIsBlack: null,    // §9 — null = unknown, which BLOCKS any adjustment
     senderHow: null,
     // The seat identity `senderIsBlack` was computed from. When it changes (a rematch swaps
@@ -3452,7 +3614,8 @@
     chat.promptShown = false;
     chat.repliedTo = {};
     // `lang` survives a game on purpose (§8.2 stores it): an opponent who spoke Japanese in the
-    // last game is still likely to speak it in this one.
+    // last game is still likely to speak it in this one. §2.3's `questionLang` survives for the
+    // same reason — re-picking a language before every question would be busywork.
   }
 
   function loadChatState() {
@@ -3466,6 +3629,7 @@
       area.get([CHAT_STATE_KEY], function (r) {
         var st = (r && r[CHAT_STATE_KEY]) || {};
         if (st.lang) chat.lang = st.lang;
+        if (st.questionLang) chat.questionLang = st.questionLang;
       });
     } catch (e) { /* no storage (a stripped build) — chatLang simply stays null */ }
   }
@@ -3474,7 +3638,7 @@
     var area = sessionArea();
     if (!area || !area.set) return;
     try {
-      var o = {}; o[CHAT_STATE_KEY] = { lang: chat.lang };
+      var o = {}; o[CHAT_STATE_KEY] = { lang: chat.lang, questionLang: chat.questionLang };
       area.set(o);
     } catch (e) {}
   }
@@ -3860,55 +4024,89 @@
   }
 
   /**
-   * The questions §12 currently allows.
-   *
-   * `allowUnknownColour` is passed by the explicit 「提问」 button and by nothing else. §12 lists
-   * 发送者颜色未定 among the disable conditions and it must stay one for the AUTO prompt, which has
-   * to name the side whose rate crossed 65%. The explicit button is a different case: §9 already
-   * guarantees that an unknown colour moves NOBODY's AI rate (the answer is only recorded as a
-   * note), and without this exception the button can never fire the FIRST message — the colour is
-   * resolved from the seat list or from a message of ours, and we cannot send one until we send
-   * one. That circle is exactly the operator's report («问题没有发送途径»).
+   * The §12 gate context. ONE copy: the askable list, the picker's greying and the auto-prompt
+   * all read it, and a second copy is where a gate silently stops matching the others (this
+   * project has had three separate "three copies of one answer" defects).
    */
-  function askableQuestions(allowUnknownColour) {
+  function askContext() {
     // §9 — refresh before deciding. The seat list may have arrived since the last tick, and this
     // is the one gate the operator can do nothing about from the UI.
     resolveSenderColour();
     var rep = currentReport();
     var opening = (socketRec && socketRec.opening) || (rep && rep.opening) || null;
-    var code = opening && (opening.code || (typeof opening === 'string' ? opening : null));
-    var rate = opponentRisk();
-    var ctx = {
+    return {
       now: performance.now(),
-      rate: rate == null ? 0 : rate,
+      rate: opponentRisk() == null ? 0 : opponentRisk(),
       spectating: !!(socketRec && socketRec.spectator),
       chatAvailable: chatAvailable(),
       senderIsBlack: chat.senderIsBlack,
       lastSentAt: chat.lastSentAt,
       askedIds: chat.history.map(function (h) { return h.qid; }),
+      // Not read by askBlocked — the callers need them to label their own output.
+      _rate: opponentRisk(),
+      _openingCode: opening && (opening.code || (typeof opening === 'string' ? opening : null)),
     };
+  }
+
+  /**
+   * The questions §12 currently allows.
+   *
+   * `allowUnknownColour` is passed by the 提问 picker and by nothing else. §12 lists
+   * 发送者颜色未定 among the disable conditions and it must stay one for the AUTO prompt, which has
+   * to name the side whose rate crossed 65%. The explicit picker is a different case: §9 already
+   * guarantees that an unknown colour moves NOBODY's AI rate (the answer is only recorded as a
+   * note), and without this exception the picker can never fire the FIRST message — the colour is
+   * resolved from the seat list or from a message of ours, and we cannot send one until we send
+   * one. That circle is exactly the operator's report («问题没有发送途径»).
+   */
+  function askableQuestions(allowUnknownColour) {
+    // §9 — the refresh happens HERE and not only inside askContext(), because this is the entry
+    // point whose answer decides whether the 提问 control is live, and it is called from the 1s
+    // tick (paintChatButton) as well as from the picker. It is idempotent and costs a comparison.
+    resolveSenderColour();
+    var ctx = askContext();
     var out = [];
     for (var i = 0; i < GM_QUESTIONS.length; i++) {
       var q = GM_QUESTIONS[i];
       var why = GMChat.askBlocked(q, ctx);
       if (why === null || (allowUnknownColour && why === 'senderUnknown')) {
-        out.push({ q: q, rate: rate, code: code });
+        out.push({ q: q, rate: ctx._rate, code: ctx._openingCode });
       }
     }
     return out;
   }
 
-  function askQuestion(q) {
+  /**
+   * 0.4.10 §2.3/§5.2 — the question's text in one chosen language.
+   *
+   * Returns `{q, text, exact}`: `exact` is false when this language has no translation of this
+   * question and `textOf` fell back (to a sibling locale or to English), which the caller turns
+   * into a note. The distinction cannot be recovered from `text` alone, and sending the wrong
+   * language silently — to a real opponent, in a feature whose whole premise is language — is
+   * exactly the kind of silent failure this project keeps having to design against.
+   */
+  function pickQuestion(lang, id) {
+    var q = null;
+    for (var i = 0; i < GM_QUESTIONS.length; i++) {
+      if (GM_QUESTIONS[i].id === id) { q = GM_QUESTIONS[i]; break; }
+    }
+    if (!q) return null;
+    var exact = !!(q.text && q.text[lang]);
+    var text = GMChat.textOf(q.text, lang);
+    return text ? { q: q, text: text, exact: exact } : null;
+  }
+
+  function askQuestion(q, lang) {
     if (!q) return;
     if (!chatAvailable()) { flashFoot(T('panel|聊天栏不可用，已跳过声明')); return; }
     // The colour may legitimately still be unknown here (see askableQuestions) — §9 keeps the
     // answer from moving any AI rate in that case, so this is a warning, not a gate.
     var unknownColour = chat.senderIsBlack == null;
-    var lang = chat.lang || LANG;
-    var text = GMChat.textOf(q.text, lang);
-    if (!text) return;
-    chat.pending = { q: q, askedAt: performance.now(), stage: 'asked' };
-    sendChatWithRetry(text, function (why) {
+    var sendLang = lang || askMenuLang();
+    var picked = pickQuestion(sendLang, q.id) || { q: q, text: GMChat.textOf(q.text, sendLang), exact: false };
+    if (!picked.text) return;
+    chat.pending = { q: q, lang: sendLang, askedAt: performance.now(), stage: 'asked' };
+    sendChatWithRetry(picked.text, function (why) {
       // Nothing went out, so do not sit waiting 60 seconds for an answer that cannot come.
       chat.pending = null;
       sendFailFoot(why);
@@ -3916,6 +4114,7 @@
       // Counted only once the message really left — a failed attempt did not ask anything.
       chat.asks++;
       if (unknownColour) flashFoot(T('panel|发送者颜色未确定，本次问答不调整 AI 率'));
+      else if (!picked.exact) flashFoot(T('panel|该题没有 {lang} 版本，已发送回退文本', { lang: sendLang }));
       paintChatPanel();
     });
     paintChatPanel();
@@ -3939,9 +4138,12 @@
     if (g.verdict === 'followup' && g.followUp) {
       p.stage = 'followup';
       p.askedAt = now;
-      var follow = GMChat.textOf(g.followUp, chat.lang || LANG);
+      // 0.4.10 §2.3 — the follow-up goes out in the language the QUESTION was sent in, not in
+      // `chat.lang`. The two differ whenever the operator overrode the detected language in the
+      // picker, and answering 「我是初学者…」 in a third language mid-exchange reads as a glitch.
+      var follow = GMChat.textOf(g.followUp, p.lang || chat.lang || LANG);
       if (follow) sendChatWithRetry(follow, sendFailFoot);
-      recordChat(p.q, text, 'followup', 0);
+      recordChat(p.q, text, 'followup', 0, p.lang);
       paintChatPanel();
       return;
     }
@@ -3953,21 +4155,23 @@
     var unplaced = chat.senderIsBlack == null;
     var applied = unplaced ? { ok: false, delta: 0 } : GMChat.applyBudget(chat.history, g.delta);
     if (applied.ok) chat.total += applied.delta;
-    recordChat(p.q, text, g.verdict, applied.ok ? applied.delta : 0);
+    recordChat(p.q, text, g.verdict, applied.ok ? applied.delta : 0, p.lang);
     chat.pending = null;
 
     if (g.thanks) {
-      var thanks = GMChat.pickReply(chat.lang || 'en', 'thanks', null, now);
+      var thanks = GMChat.pickReply(p.lang || chat.lang || 'en', 'thanks', null, now);
       if (thanks) sendChatWithRetry(thanks, sendFailFoot);
     }
     paintChatPanel();
     paintStatus();
   }
 
-  function recordChat(q, answer, verdict, delta) {
+  function recordChat(q, answer, verdict, delta, lang) {
     chat.history.push({
       qid: q.id,
-      q: GMChat.textOf(q.text, chat.lang || LANG),
+      // The question AS SENT — so the 提问记录 shows what the opponent actually received rather
+      // than a fresh lookup in whatever language happens to be selected later.
+      q: GMChat.textOf(q.text, lang || chat.lang || LANG),
       answer: String(answer || '').slice(0, 200),
       verdict: verdict,
       delta: delta,
@@ -4038,6 +4242,10 @@
 
   function maybeAnnounce() {
     if (!S.chatAuto || chat.announced || chat.ignored) return;
+    // 0.4.10 §2.2 — the narrower switch. It is checked AFTER the master one so that turning
+    // 自动发送 off still silences everything, and it gates THIS function only: the 提问 picker is
+    // an explicit click by the operator and is deliberately unaffected (§2.2's last line).
+    if (!S.autoSendAnnouncement) return;
     if (chat.gameStartAt && performance.now() - chat.gameStartAt > ANNOUNCE_WINDOW_MS) return;
     // §7.1 身份为 registered. A guest or a spectator never announces.
     if (!socketRec || socketRec.guest || socketRec.spectator) return;
@@ -4185,17 +4393,6 @@
       '<div class="cft">' + esc(T('panel|提问 {n} 次 · 累计调整 {d}', { n: chat.asks, d: chat.total })) +
         '<span class="sp"></span>' +
         '<span class="lk" data-act="chat-ask">' + esc(T('panel|提问')) + '</span></div>';
-  }
-
-  /** The 提问 button: opens the record panel and fires the first question §12 allows. */
-  function askNextQuestion() {
-    // The permissive list: an unknown sender colour warns but does not block (see
-    // askableQuestions), otherwise the button could never send the first message of a game.
-    var list = askableQuestions(true);
-    chatOpen = true;
-    if (!list.length) { paintChatPanel(); return; }
-    askQuestion(list[0].q);
-    paintChatPanel();
   }
 
   function showChatConfirm() {
@@ -4422,6 +4619,10 @@
         // `v.lang !== S.lang` is false for a change made from this panel's own dropdown.
         // The applied locale (`LANG`) is the only honest baseline.
         var langChanged = GMI18n.resolveLang(v.lang) !== LANG;
+        // 0.4.10 §一.1 — compare BEFORE `S = v`, and against the STORED value rather than the
+        // live attribute: the attribute is the applied result and reading it back would make
+        // the check depend on whether some other surface had already written it.
+        var themeChanged = v.theme !== S.theme;
         S = v;
         if (!root) return;
         // §1.8: a language change invalidates the SHELL, not just the values in it — every
@@ -4433,7 +4634,7 @@
         // §三.1: the theme is a pure attribute swap on the host, so it needs no shell rebuild —
         // but it does have to beat the `root.activeElement` guard below, because a theme change
         // made from the viewer (or another tab) should land even while this panel has focus.
-        applyTheme(S.theme);
+        if (themeChanged) applyTheme(S.theme);
         if (root.activeElement) paintStatus(); else paint();
       });
     });
@@ -4441,12 +4642,11 @@
 
   function boot() {
     // Before build(): shellHtml() reads T(), so the locale must be resolved first or the very
-    // first paint flashes Chinese before the listener can correct it.
+    // first paint flashes Chinese before the listener can correct it. This call only sets the
+    // module's LANG + locale; the HOST it would also tag does not exist yet.
     applyLang(S.lang);
-    // §三.1 — must run before build(): the palette variables are declared on `:host`, which
-    // exists from the first `attachShadow`, and setting the attribute after the first paint
-    // would flash the dark palette at an operator who chose light.
-    applyTheme(S.theme);
+    // build() itself applies `lang`/`dir` and `data-theme` once the shadow host exists — see
+    // the note inside it (0.4.10 §一.1). They must NOT be called before it: both no-op.
     build();
     // Geometry comes from storage, so the panel appears at the remembered size instead
     // of flashing at the default one.

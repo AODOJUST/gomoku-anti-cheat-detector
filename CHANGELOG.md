@@ -7,6 +7,26 @@ nobody ever read the history from there anyway.
 
 Every entry below is the original prose, verbatim — only the headings and blank lines are new.
 
+## 0.4.10
+
+0.4.10 fixes the light theme surviving a reload, replaces three emoji with words, turns 提问 into a preset picker with its own language, and adds a beginner tutorial.
+
+**The light theme came back dark after a reload, and the cause was an ordering bug.** The panel is a Shadow root, so the theme lives as `data-theme` on the shadow host — and the line that wrote that attribute was placed *before* the line that creates the host. Both helpers guard on `root` existing, so the call was a silent no-op: on a fresh load neither the theme nor `lang`/`dir` was ever written, and only `chrome.storage.onChanged` — i.e. an actual settings change — could write it afterwards. Choosing 浅色 and reloading therefore reverted to dark. It was really two bugs: an RTL locale (Arabic) failed to flip for identically the same reason. The attributes are now written once the host exists, and the storage listener compares the theme against the stored value instead of re-applying it blindly.
+
+**The tags and badges are alpha colours now.** The preset tag, the custom tag, the category chip, the opening badge and the pre/sample badges were built from hard-coded dark hexes (`#2a2113` / `#1d3b2a` / `#4a5568` / `#7a2a6b`); on the light page they read as opaque blocks from some other application, and a solid fill can never show the row underneath it. Every one of them now has a name and a value in both palettes — the rule 0.4.8 wrote down for the surfaces, finally applied to the chips.
+
+**The border is 4px, and the glows are layered instead of replacing.** It was 2px: a state colour meant to be read from the corner of an eye over a live board needs the width, and the glow radii grew with it (8→12px, 20→28px). The glows ride a `--gm-glow` slot composed *after* the panel's own drop shadow, because 0.4.9's state rules set `box-shadow` outright, which replaces the panel's shadow rather than adding to it — so every state change also silently dropped the shadow. 📋 / 🌐 / ⚙ became 「复制对局数据」「语言」「规则」: none of the three emoji has a settled meaning (📋 reads as "notes", 🌐 as "browser"), and a word cannot be misread. 🚫 stays a glyph — it is the one that reads unambiguously, and it has to stay narrow; the header now wraps instead of overflowing, with every label kept whole.
+
+**Replay and the sample library cap at three columns** (45 cards a page) with a 380px minimum column. A 4K window used to fit five or six, at which point the name and the metrics start to clip: fitting on screen is not the same as being readable.
+
+**提问 is a preset picker with two levels** — language, then question — instead of firing the first allowed question the moment it is pressed. Questions the current state blocks are still listed, greyed, with the reason on hover; deleting them would leave the operator believing the bank does not contain them. There is no free-text box: the point of a fixed bank is that it is fixed, and the grading tree only understands its questions. The language is a THIRD key, separate from the interface language and from the opponent's detected language — what the operator reads, what the system guessed, and what we address them in are three different questions, and §2.3 forbids the picker from moving the UI language. A question with no version in the chosen language falls back (to a sibling locale, then English) and says so in the footer: quietly switching language on a real opponent is the one thing this feature must never do.
+
+**自动发送 became two switches.** The new 「开局自动发送反作弊声明」 controls only the single English announcement within 30 seconds of entering a game, and defaults on. 自动发送聊天 goes back to being what it says — the master switch for everything automatic. Preset questions are always sent by hand and are governed by neither.
+
+**And a beginner tutorial** sits first on the settings page, opening a modal with eleven sections covering the features, the tags and how to make detection more accurate. Its prose is Chinese and English only, with every other language falling back to English — deliberately NOT through the locale tables, which require all twelve translations of every key and would fail the build the moment one was missing.
+
+Two things were found and fixed along the way rather than being left as latent defects. The chat panel's footer 「提问」 link had never worked — the handler matched `act === 'ask'` while the markup emitted `data-act="chat-ask"`, so the one control inside the chat panel did nothing at all since 0.4.4. And the §12 gate context, which the picker needs for exactly the same reasons the askable list does, was lifted into one `askContext()` instead of being written a second time: a second copy of a gate is where the two silently stop agreeing, and this project has shipped three "two copies of one answer" defects already.
+
 ## 0.4.9
 
 0.4.9 adds a local blacklist of registered players, and gives the panel's border a state.

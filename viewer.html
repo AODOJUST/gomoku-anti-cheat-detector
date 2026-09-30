@@ -50,6 +50,23 @@
     --info-bg:#e8f0fe; --info-line:#a8c4f0; --info-fg:#1f3f7a; --info-strong:#2c4a7a;
     --chip-fg:#2a4bd7; --chip-line:#a8c0ea;
     --lk:#2a4bd7; --dim:#9a9a9a; --txt-2:#333333;
+    /* ---- 0.4.10 §一.2: tags and badges, as ALPHA colours ----
+       The chips (a tag, a category, the 开局 badge) were built from the solid surfaces --info-bg /
+       --chip-line and, for the custom tag and the two status badges, from hard-coded DARK hexes
+       (#2a2113 / #1d3b2a / #4a5568 / #7a2a6b). On the light page those read as opaque blocks that
+       belong to a different application, and `rgba(...)` over the row cannot show through a
+       solid fill at all. Every one of them now has a name, and each palette gives it a value —
+       the same rule 0.4.8 wrote down for the surfaces, applied to the chips:
+         --tag-*        : the blue category chip (预设标签, .acard .cat)
+         --tag-custom-* : the operator's own tags, orange so they never look like the fixed set
+         --badge-open-* : 开局名
+         --badge-pre-*  : 预设 / 已归档
+         --badge-sim-*  : 样本匹配 */
+    --tag-bg:rgba(60,94,231,.12); --tag-fg:#3c5ee7; --tag-border:rgba(60,94,231,.35);
+    --tag-custom-bg:rgba(230,126,34,.12); --tag-custom-fg:#b35a10; --tag-custom-border:rgba(230,126,34,.35);
+    --badge-open-bg:rgba(46,204,113,.12); --badge-open-fg:#1d6b3a; --badge-open-border:rgba(46,204,113,.4);
+    --badge-pre-bg:rgba(80,90,105,.18); --badge-pre-fg:#3d4752;
+    --badge-sim-bg:rgba(176,90,160,.15); --badge-sim-fg:#7a2a6b;
     --red:#e74c3c; --green:#2ecc71; --yellow:#f1c40f; --blue:#3c5ee7; --orange:#e67e22;
 
     /* ---- one UI scale for the whole viewer ----
@@ -99,6 +116,12 @@
     --info-bg:#16233d; --info-line:#2f4b8f; --info-fg:#cfe0ff; --info-strong:#7fb0ff;
     --chip-fg:#8fb6ff; --chip-line:#3d5a80;
     --lk:#7aa2ff; --dim:#5c6773; --txt-2:#c3ccd6;
+    /* The 0.4.6 values exactly, as the surface tokens above — see the light block for the names. */
+    --tag-bg:rgba(60,94,231,.18); --tag-fg:#8fb6ff; --tag-border:rgba(60,94,231,.45);
+    --tag-custom-bg:rgba(230,126,34,.18); --tag-custom-fg:#e0c060; --tag-custom-border:rgba(230,126,34,.45);
+    --badge-open-bg:rgba(46,204,113,.18); --badge-open-fg:#7fe0a3; --badge-open-border:rgba(46,204,113,.45);
+    --badge-pre-bg:rgba(74,85,104,.9); --badge-pre-fg:#fff;
+    --badge-sim-bg:rgba(176,90,160,.85); --badge-sim-fg:#fff;
   }
   /* `auto` is the default and the OS decides. The LIGHT set is already on plain `:root`, so
      only the dark branch needs a media query — and `:root[data-theme=auto]` keeps it from
@@ -113,6 +136,11 @@
       --info-bg:#16233d; --info-line:#2f4b8f; --info-fg:#cfe0ff; --info-strong:#7fb0ff;
       --chip-fg:#8fb6ff; --chip-line:#3d5a80;
       --lk:#7aa2ff; --dim:#5c6773; --txt-2:#c3ccd6;
+      --tag-bg:rgba(60,94,231,.18); --tag-fg:#8fb6ff; --tag-border:rgba(60,94,231,.45);
+      --tag-custom-bg:rgba(230,126,34,.18); --tag-custom-fg:#e0c060; --tag-custom-border:rgba(230,126,34,.45);
+      --badge-open-bg:rgba(46,204,113,.18); --badge-open-fg:#7fe0a3; --badge-open-border:rgba(46,204,113,.45);
+      --badge-pre-bg:rgba(74,85,104,.9); --badge-pre-fg:#fff;
+      --badge-sim-bg:rgba(176,90,160,.85); --badge-sim-fg:#fff;
     }
   }
   /* ---- 0.4.7 §三.2 透明度 ----
@@ -255,12 +283,12 @@
   .badge{padding:2px 10px;border-radius:var(--ui-detail-radius);font-size:var(--ui-detail-small)}
   /* The opening is a headline fact about the game, not a figure to be read out of a table,
      so it sits beside the title. Green to separate it from the risk badges. */
-  .badge.b-open{background:#1d3b2a;color:#7fe0a3;border:1px solid #2c6b45}
+  .badge.b-open{background:var(--badge-open-bg);color:var(--badge-open-fg);border:1px solid var(--badge-open-border)}
   .b-flag{background:var(--red);color:#fff}
   .b-sharp{background:var(--yellow);color:#000}
   .b-desp{background:var(--orange);color:#fff}
   .b-ai{background:#3c5ee7;color:#fff}
-  .b-pre{background:#4a5568;color:#fff}
+  .b-pre{background:var(--badge-pre-bg);color:var(--badge-pre-fg)}
   /* 0.4.3 §1.3: the segment rail. A 4px line down the left edge of every step row — green
      while the side stayed inside the engine's Top5, orange once it stepped outside. The point
      is that a run of hands reads as a run, instead of as N separate ✓ columns the eye has to
@@ -435,7 +463,7 @@
      collapsed onto one wrapping line. */
   .acard .nm{display:block;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .acard .meta{display:block;font-size:var(--ui-detail-small);color:var(--mut);margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-  .acard .cat{font-size:var(--ui-detail-small);padding:2px 12px;border-radius:14px;border:1px solid var(--chip-line);background:var(--info-bg);color:var(--chip-fg);flex:none}
+  .acard .cat{font-size:var(--ui-detail-small);padding:2px 12px;border-radius:14px;border:1px solid var(--tag-border);background:var(--tag-bg);color:var(--tag-fg);flex:none}
   .empty{padding:44px;text-align:center;color:var(--mut);font-size:var(--ui-detail-font)}
   /* ---- 0.4.9 §一.7 the blacklist table ----
      Seven columns is more than the archive card carries, so this is a real (flex) table rather
@@ -531,15 +559,15 @@
   /* 标签 (§1.6): a chip is a toggle. Preset and custom chips are visually distinct so a
      user-created tag never looks like part of the fixed vocabulary. */
   .tagchip{display:inline-block;padding:3px 12px;margin:3px 5px 3px 0;border-radius:12px;
-           border:1px solid var(--chip-line);background:var(--info-bg);color:var(--chip-fg);
+           border:1px solid var(--tag-border);background:var(--tag-bg);color:var(--tag-fg);
            font-size:var(--ui-detail-small);cursor:pointer;user-select:none}
   .tagchip:hover{border-color:#5b8cff}
-  .tagchip.on{background:#1d4ed8;color:#fff;border-color:#5b8cff}
-  .tagchip.custom{border-color:#6b5416;background:#2a2113;color:#e0c060}
+  .tagchip.on{background:var(--blue);color:#fff;border-color:var(--blue)}
+  .tagchip.custom{border-color:var(--tag-custom-border);background:var(--tag-custom-bg);color:var(--tag-custom-fg)}
   .tagchip.custom.on{background:#8a5a10;color:#fff}
   /* 0.3.3 C: the feature-library match badge — purple, deliberately unlike both the
      engine's red 可疑 and the operator's blue 人工标记. */
-  .badge.b-sim{background:#7a2a6b;color:#fff}
+  .badge.b-sim{background:var(--badge-sim-bg);color:var(--badge-sim-fg)}
   /* 0.4.2 §二: the evasion badge — teal, the last hue not already spoken for. It has to be
      unlike 将败 (orange, a run of hopeless hands in a LOST position) because the two sit in
      adjacent columns and mean opposite things, and unlike 可疑 (red) because it is a claim
@@ -576,6 +604,13 @@
   .modal .ft{padding:16px 24px;border-top:1px solid var(--line);display:flex;gap:14px;justify-content:flex-end}
   .modal input[type=text]{width:100%;font-size:var(--ui-detail-font);padding:10px}
   .modal button{font-size:var(--ui-detail-font);padding:0 22px;min-height:var(--ui-shell-btn-height);border-radius:var(--ui-shell-radius)}
+  /* 0.4.10 §三 — the tutorial's prose. Eleven sections of headings and bullets, so the first one
+     must not sit flush against the modal's padding and the last must not be crowded by the
+     Close button; the modal's own 82vh scroll does the rest. */
+  .tut-h{margin:22px 0 8px;font-size:var(--ui-detail-font);color:var(--txt);font-weight:600}
+  .tut-h:first-child{margin-top:0}
+  .tut-ul{margin:0;padding-inline-start:20px}
+  .tut-ul li{margin:5px 0;font-size:var(--ui-detail-small);line-height:1.7;color:var(--txt-2)}
   .crow{display:flex;align-items:center;gap:14px;padding:10px 0;border-bottom:1px solid var(--line-soft);font-size:var(--ui-detail-font)}
   .crow .cn{flex:1}
 
@@ -1358,6 +1393,18 @@
        group's items flow into as many columns as the window affords (see .set-grid above).
        The old single-column layout used 1-2 of every 5 available slots on a wide screen. -->
   <section class="view" id="view-settings">
+    <!-- 0.4.10 §三 — the tutorial, FIRST on the page. It is the one panel whose reader does not
+         yet know what any of the others mean, so putting it anywhere else is putting it where the
+         people who need it will not scroll. It opens a modal rather than adding a twelfth nav
+         tab: §3.2 is explicit that the nav bar stays as it is. -->
+    <div class="panel set-panel">
+      <h2>新手教程</h2>
+      <div class="hint">从零了解检测器：每个功能做什么、每个标签意味着什么、如何让检测更准。</div>
+      <div class="btn-row" style="margin-top:10px">
+        <button class="sec" id="tutorialBtn">打开教程</button>
+      </div>
+    </div>
+
     <div class="panel set-panel">
       <h2>检测设置（与页面浮层共享同一份存储）</h2>
       <div class="set-grid">
@@ -1392,7 +1439,17 @@
           <label>自动发送聊天</label>
           <div class="fx">
             <input type="checkbox" id="setChatAuto">
-            <span class="hint">总开关。开启后进局 30 秒内自动发送一次反作弊声明（每局发送前仍会先问一次），并在对手说话时用对方的语言回一句。默认关闭 —— 这是以你的名义向真人发话，发出去了收不回来。「提问」按钮不受此开关影响。</span>
+            <span class="hint">总开关。关闭后既不自动发声明，也不会用对手的语言回话。「提问」按钮不受此开关影响 —— 那是你每次亲手点的。</span>
+          </div>
+        </div>
+        <!-- 0.4.10 §2.2 — the narrower switch. The line above used to describe two different
+             decisions at once («自动发送一次反作弊声明» AND «并在对手说话时回一句»), so an operator
+             who wanted one of them had to take the other. -->
+        <div class="set-item">
+          <label>开局自动发送反作弊声明</label>
+          <div class="fx">
+            <input type="checkbox" id="setAutoAnnounce">
+            <span class="hint">仅控制进局 30 秒内那条英文声明（每局发送前仍会先问一次）。预设问题始终由你手动选择发送，不受本项影响。</span>
           </div>
         </div>
       </div>

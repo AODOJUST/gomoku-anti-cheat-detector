@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Gomoku Anti-Cheat Detector",
-  "version": "0.4.9",
+  "version": "0.4.10",
   "description": "Records gomoku.com and papergames.io games, runs Rapfi offscreen, detects AI-assisted play, and archives replays in 13 languages.",
   "permissions": [
     "storage",
