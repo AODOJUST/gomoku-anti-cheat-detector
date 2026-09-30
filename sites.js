@@ -75,6 +75,29 @@
       // The board stays on screen after the game ends, so an empty board is NOT an ending here.
       endOnBoardGone: false,
       watchSocket: true,
+
+      // ---- 0.4.9 §一.3: the player-username routes ----
+      //
+      // §1.2 is the whole reason these exist: the blacklist must key on the USERNAME
+      // (`playerId` — stable, unique, uneditable), not the display name. §一.3 gives three
+      // routes and the spec is explicit that the first two still need F12 confirmation on the
+      // GAME page (the profile page's `<meta name="playerId">` was confirmed; the game page's
+      // was not). They are listed here rather than in content.js so that a correction is one
+      // edit in one file — the 0.4.5 rule.
+      //
+      // `playerMeta` is read by `readPlayerMeta()` on whatever page the operator is on. NOTE,
+      // and content.js guards on this: a meta pair on a GAME page most plausibly describes the
+      // LOGGED-IN user, since the page is rendered per session. The pair is therefore only
+      // attributed to the opponent when its display name actually matches the opponent's —
+      // otherwise a blacklist click would block the operator themselves.
+      playerMeta: {
+        id: ['meta[name="playerId"]', 'meta[name="player-id"]', 'meta[property="og:playerId"]'],
+        name: ['meta[name="displayName"]', 'meta[name="display-name"]',
+               'meta[name="playerName"]', 'meta[property="og:playerName"]'],
+      },
+      // The `/zh-cn/profile/<username>` route. Anchored on the path segment, not the host, and
+      // the capture stops at `/` or `?` so a query string cannot become part of the id.
+      profileUrlRe: /\/profile\/([^\/?#]+)/,
     },
 
     papergames: {
@@ -226,6 +249,16 @@
       // /en/gomoku. So a board that has DISAPPEARED while we still hold a live record is the
       // ending. (gomoku.com keeps its board on screen, hence false there.)
       endOnBoardGone: true,
+      // ---- 0.4.9 §一.3 ----
+      // Deliberately absent, and the spec says so: neither the meta tags nor the profile URL
+      // shape have been confirmed on this site (its player rows carry no id on the DOM at all —
+      // see playerNameSel below). An invented selector here would not fail loudly; it would
+      // quietly block whoever happened to match. `resolveOpponentId()` reads both fields
+      // defensively (`|| []` / null), so an absent config means "this route does not exist
+      // here", and on papergames the socket level is absent too (watchSocket: false), leaving
+      // the blacklist button correctly greyed out rather than wrong. Confirming them is the same
+      // F12 job §六 asks for on gomoku.com.
+      //
       // Stage 1 (0.4.5 §1.2): DOM only. The site DOES use Socket.IO — the recon caught
       // `wss://papergames.io/socket.io/?EIO=4&transport=websocket` — but it does not expose
       // `window.io` or `window.socket`, so hook.js cannot attach to it the way it does on
@@ -353,6 +386,44 @@
     return null;
   }
 
+  // ---- 0.4.9 §一.3: the two page-level username routes ----
+  // Both are site configuration, so both are answered HERE and nowhere else. content.js keeps the
+  // decision (which route wins, and whether the answer may be attributed to the opponent); this
+  // file only knows what the page looks like.
+
+  /** The `<meta name="playerId"> / <meta name="displayName">` pair, or {id:null,name:null}. */
+  function playerMeta() {
+    var out = { id: null, name: null };
+    var site = current();
+    if (!site || !site.playerMeta) return out;
+    var first = function (sels) {
+      if (!sels) return null;
+      for (var i = 0; i < sels.length; i++) {
+        var el = document.querySelector(sels[i]);
+        // `getAttribute('content')` rather than `.content`: the property exists only on a real
+        // HTMLMetaElement, and a namespaced/unexpected tag would otherwise throw a TypeError
+        // inside a page we do not control.
+        var v = el && el.getAttribute ? el.getAttribute('content') : null;
+        if (v != null && String(v).trim()) return String(v).trim();
+      }
+      return null;
+    };
+    out.id = first(site.playerMeta.id);
+    out.name = first(site.playerMeta.name);
+    return out;
+  }
+
+  /** The username out of `/xx/profile/<username>`, or null. */
+  function profileId(url) {
+    var site = current();
+    if (!site || !site.profileUrlRe) return null;
+    var m = site.profileUrlRe.exec(String(url == null ? '' : url));
+    if (!m || !m[1]) return null;
+    var s = String(m[1]).trim();
+    // A profile URL ends in the username; a trailing slash or a stray path segment is not one.
+    return s ? decodeURIComponent(s) : null;
+  }
+
   g.GMSites = {
     current: current,
     boardCells: boardCells,
@@ -360,6 +431,8 @@
     isRenju: isRenju,
     boardStones: boardStones,
     chatInputEl: chatInputEl,
+    playerMeta: playerMeta,
+    profileId: profileId,
     SIZE: SIZE,
     list: SITES,
   };

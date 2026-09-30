@@ -206,6 +206,41 @@
     } catch (e) { /* nothing to restore */ }
   }
 
+  // =====================================================================================
+  // 0.4.9 §一 — the local blacklist, and the border-state machine it feeds (§二)
+  // =====================================================================================
+  // `blacklistIds` is a SYNCHRONOUS mirror of the stored list, keyed by the case-folded username.
+  // The store itself is async (`GMStorage.loadBlacklist()`), but three hot readers cannot await:
+  // the 🚫 button's paint, the per-game match check, and the status line. Same split as the
+  // session facts above — the store is durable, this is the working copy, and every writer below
+  // updates both. Nothing here ever leaves the machine (§1.1).
+  var blacklistIds = {};          // { [id.toLowerCase()]: entry }
+  var blacklistHit = null;        // the entry matched for THIS game, or null
+  var blacklistCheckedEpoch = null;  // gameEpoch the match check last ran for
+  var blacklistAlertActive = false;  // §2.2 — the highest-priority border state, while it plays
+
+  // §二 — the six states the panel's border can be in. Kept as a map rather than six loose
+  // string literals because the class names, the keyframes and `playFlash`'s durations all have
+  // to agree, and three copies of a string this project has already shipped wrong once.
+  var BORDER_STATE = {
+    IDLE: 'idle',
+    READY: 'ready',
+    DETECT_START: 'detecting-start',
+    LOW: 'low',
+    SUSPECT: 'suspect',
+    HIGH_FLASH: 'high-flash',
+    HIGH: 'high',
+    BLACKLIST: 'blacklist',
+  };
+  // How long each flash animation runs, in ms. Only used as a fallback for a lost
+  // `animationend` (see playFlash) — the CSS is what actually times them.
+  var FLASH_MS = { 'detecting-start': 1300, 'high-flash': 1150, 'blacklist': 1000 };
+  var BLACKLIST_ALERT_MS = 1000;  // §2.5 — ≈ the 0.9s the three blinks take
+  var currentBorderState = BORDER_STATE.IDLE;
+  var detectingStarted = false;   // §2.1 — 「第一次检测开始」 is a one-shot per game
+  var flashing = false;           // a flash owns the border until its animation ends
+  var flashToken = 0;
+
   // 0.4.5 §一 — which host we are on, and what its board looks like. Everything site-specific
   // lives in sites.js; this is the only place the rest of the file has to know about it.
   // `GMSites.current()` returns null on an unrecognised host, in which case every board reader
@@ -627,13 +662,23 @@
   // no "you"/"opponent" wording anywhere, so before this the record was always nameless there.
   function readNames() {
     var sels = nameSelectors();
-    var out = { black: null, white: null, self: null, opponent: null, source: null };
+    var out = { black: null, white: null, self: null, opponent: null, source: null,
+                // 0.4.9 §一.3 — the seat USERNAMES beside the display names. Only the socket can
+                // say which id belongs to which colour (`game-start` ships `players[{id,name,
+                // color}]`), so every other route leaves these null — and null means "this route
+                // did not supply one", NOT "this seat has no account". `resolveOpponentId()`
+                // adds the two page-level routes on top.
+                blackId: null, whiteId: null };
 
     // 1) socket — the only route that can name a COLOUR, and on gomoku.com the usual one.
     if (socketRec && socketRec.players) {
       out.black = socketRec.players.black || null;
       out.white = socketRec.players.white || null;
       if (out.black || out.white) out.source = 'socket';
+    }
+    if (socketRec && socketRec.playerIds) {
+      out.blackId = socketRec.playerIds.black != null ? String(socketRec.playerIds.black) : null;
+      out.whiteId = socketRec.playerIds.white != null ? String(socketRec.playerIds.white) : null;
     }
 
     // 2) DOM
@@ -698,6 +743,125 @@
     var st = site();
     if (nameMemo && st && st.endOnBoardGone) return nameMemo;
     return n;
+  }
+
+  // =====================================================================================
+  // 0.4.9 §一.3 — the opponent's USERNAME, for the local blacklist
+  // =====================================================================================
+  // §1.1/§1.2 in one sentence: the blacklist has to be keyed on the site's username
+  // (`playerId` — unique, stable, uneditable), because the display name is none of those. §一.3
+  // names three routes to it and §六 is candid that only one of them has been confirmed against
+  // the live DOM. The three are therefore tried in order, each one defensively, and the route
+  // that answered is recorded on the result — a wrong id is only fixable if the route that
+  // produced it is on the record.
+
+  /** §一.3 level 1 — the page's `<meta name="playerId"> / <meta name="displayName">` pair. */
+  function readPlayerMeta() {
+    if (typeof GMSites === 'undefined' || !GMSites || !GMSites.playerMeta) return { id: null, name: null };
+    try { return GMSites.playerMeta() || { id: null, name: null }; }
+    catch (e) { return { id: null, name: null }; }
+  }
+
+  /** §一.3 level 3 — the username out of `/xx/profile/<username>`. */
+  function playerIdFromProfileUrl(url) {
+    if (typeof GMSites === 'undefined' || !GMSites || !GMSites.profileId) return null;
+    try { return GMSites.profileId(url); }
+    catch (e) { return null; }
+  }
+
+  // Ids are compared the way storage.js compares them (trim + case-fold), so the same player
+  // reached by two routes cannot read as two people. Kept here as well as there because this
+  // comparison guards against blocking OURSELVES — the one mistake in this feature that is worse
+  // than doing nothing.
+  function sameId(a, b) {
+    if (a == null || b == null) return false;
+    var x = String(a).trim().toLowerCase(), y = String(b).trim().toLowerCase();
+    return !!x && x === y;
+  }
+
+  /**
+   * Which colour the OPPONENT is, as 'B' / 'W' / null.
+   *
+   * This is `chatAdjSide()`'s question, asked in the same way on purpose. §1.5's sketch writes
+   * `oppId = chatSenderIsBlack === true ? whiteId : blackId` — which is INVERTED against the
+   * field content.js actually keeps: `chat.senderIsBlack` holds the OPPONENT's colour (the note
+   * on `chatAdjSide()` spells the chain out: `senderFromPlayers` returns OUR colour and
+   * `resolveSenderColour` negates it). Taken literally, the sketch would block the operator's own
+   * seat in every game where the opponent held black. The polarity below is the pinned one.
+   *
+   * `chatAdjSide()` answers it whenever a message has been placed; when nobody has spoken and
+   * the seat list named nobody, the seat NAMES are the next best evidence: the opponent's
+   * display name matched against the black and white seats.
+   */
+  function opponentSideLetter() {
+    var fromChat = chatAdjSide();
+    if (fromChat) return fromChat;
+    var n = playerNames();
+    if (n.opponent) {
+      if (n.black && normName(n.black) === normName(n.opponent)) return 'B';
+      if (n.white && normName(n.white) === normName(n.opponent)) return 'W';
+    }
+    return null;
+  }
+
+  /** The seat username for the side that is NOT the opponent — i.e. ours. */
+  function ownSeatId(oppSide) {
+    var ids = (socketRec && socketRec.playerIds) || {};
+    var side = oppSide === 'B' ? 'W' : (oppSide === 'W' ? 'B' : null);
+    if (side === 'B' && ids.black != null) return String(ids.black);
+    if (side === 'W' && ids.white != null) return String(ids.white);
+    var self = socketRec && socketRec.selfId;
+    return self == null ? null : String(self);
+  }
+
+  /**
+   * §一.3 — the opponent's `{ id, name, how }`, or null when no route could answer.
+   *
+   * The route ORDER is the spec's (meta → socket → profile URL), with one guard the spec could
+   * not have written because §六 leaves the question open:
+   *
+   *   A `<meta name="playerId">` is a per-session render of the page. On a profile page it
+   *   plainly describes that profile's owner. On the GAME page — the page this feature actually
+   *   runs on — the far likelier reading is that it describes the LOGGED-IN user, i.e. us, since
+   *   the server rendered the page for our session. Honouring it blindly would let 「加入黑名单」
+   *   write our own id into the list, and the failure is silent (the button turns red, the list
+   *   has an entry, nothing looks wrong). So the meta level answers only when it can be
+   *   ATTRIBUTED to the opponent: its `displayName` must match the opponent's display name, and
+   *   its id must not be ours. When either guard fails the level declines and the socket — which
+   *   names each seat explicitly and was always going to be right — answers instead.
+   *
+   * `how` is 'meta' | 'socket' | 'url'.
+   */
+  function resolveOpponentId() {
+    var side = opponentSideLetter();
+    var names = playerNames();
+    var oppName = names.opponent
+      || (side === 'B' ? names.black : (side === 'W' ? names.white : null))
+      || null;
+
+    // 1) the page meta — only when it demonstrably describes the opponent.
+    var meta = readPlayerMeta();
+    if (meta.id && meta.name && oppName &&
+        normName(meta.name) === normName(oppName) && !sameId(meta.id, ownSeatId(side))) {
+      return { id: meta.id, name: meta.name, how: 'meta' };
+    }
+
+    // 2) the socket seat id — authoritative, and the only route that names both seats.
+    var ids = (socketRec && socketRec.playerIds) || {};
+    if (side === 'B' && ids.black != null) {
+      return { id: String(ids.black), name: names.black || oppName, how: 'socket' };
+    }
+    if (side === 'W' && ids.white != null) {
+      return { id: String(ids.white), name: names.white || oppName, how: 'socket' };
+    }
+
+    // 3) the profile page's own URL, when the operator has the opponent's profile open.
+    var fromUrl = playerIdFromProfileUrl(location.href);
+    if (fromUrl && !sameId(fromUrl, ownSeatId(side))) {
+      return { id: fromUrl, name: oppName, how: 'url' };
+    }
+
+    return null;
   }
 
   // ---------- identity: 注册 / 游客 / 观战 ----------
@@ -1661,6 +1825,12 @@
     // 「本局忽略」 choice and the 提问 record all restart. `chat.lang` deliberately survives
     // (see resetChatForGame).
     resetChatForGame();
+    // 0.4.9 §1.5/§2.1 — the blacklist match and the two one-shot border flashes belong to the
+    // game that just ended. Carrying them over would keep the previous game's warning on screen
+    // (and its red flash) against a player who may not be the one being blocked now.
+    blacklistHit = null;
+    blacklistCheckedEpoch = null;
+    detectingStarted = false;
   }
 
   // 记录里有没有「我们亲眼看过落子」的手。`inferred` 是唯一可靠判据（合并进来的手 t 为 null，
@@ -1746,7 +1916,42 @@
     '--gm-hov:#ececec;--gm-btn-hov:#d8d8d8;--gm-pri-hov:#3d5fd8;--gm-div:#e0e0e0;',
     '--gm-info-bg:#e8f0fe;--gm-info-line:#a8c4f0;--gm-info-fg:#1f3f7a}}',
     '*{box-sizing:border-box}',
-    '.gm{background:var(--gm-bg);border:1px solid var(--gm-line);border-radius:10px;box-shadow:0 10px 34px rgba(0,0,0,.55);overflow:hidden;display:flex;flex-direction:column;max-height:var(--gm-max);position:relative}',
+    // 0.4.9 §二.3 — the panel's border is a STATE INDICATOR. The width grew from 1px to 2px so the
+    // colour can actually be read from the corner of an eye (a 1px line at the edge of a dark
+    // panel is invisible), and the two transitions let every state change cross-fade rather than
+    // snap. The colour itself is still the palette's `--gm-line` at rest, so an operator who
+    // never sees a state change sees the panel they had.
+    '.gm{background:var(--gm-bg);border:2px solid var(--gm-line);border-radius:10px;box-shadow:0 10px 34px rgba(0,0,0,.55);overflow:hidden;display:flex;flex-direction:column;max-height:var(--gm-max);position:relative;',
+    'transition:border-color .3s ease,box-shadow .3s ease}',
+    // 0.4.9 §二.3 — the six states, as CSS animations.
+    //
+    // The colours here are LITERAL and deliberately NOT themed, the same way the risk numbers
+    // (`.cpnl .cv.up` #e74c3c / `.dn` #2ecc71) and `.tbadge.*` are not: the colour is the
+    // meaning. A "themed" green would mean something different under 浅色 than under 深色, which
+    // is precisely what a state indicator must never do. (0.4.8's rule — every colour a RULE
+    // needs gets a name and a value in both palettes — is about SURFACES; data ink is exempt by
+    // the same release's own note.)
+    //
+    // The flash keyframes start and end on the resting colour so that losing the `animationend`
+    // event leaves the border at the palette colour rather than stuck mid-flash; `playFlash()`
+    // additionally carries a timer for that case.
+    '@keyframes gm-breathe-blue{0%,100%{border-color:#3c5ee7;box-shadow:0 0 4px rgba(60,94,231,.3)}50%{border-color:#3c5ee7;box-shadow:0 0 16px rgba(60,94,231,.8)}}',
+    '.gm.state-idle{animation:gm-breathe-blue 2.8s ease-in-out infinite}',
+    '.gm.state-ready{border-color:#3c5ee7;box-shadow:0 0 8px rgba(60,94,231,.5)}',
+    '@keyframes gm-flash-green{0%,100%{border-color:var(--gm-line)}50%{border-color:#2ecc71}}',
+    '.gm.state-detecting-start{animation:gm-flash-green .4s ease-in-out 3}',
+    '.gm.state-low{border-color:#2ecc71;box-shadow:0 0 8px rgba(46,204,113,.4)}',
+    '.gm.state-suspect{border-color:#e67e22;box-shadow:0 0 8px rgba(230,126,34,.4)}',
+    '@keyframes gm-flash-red{0%,100%{border-color:var(--gm-line)}50%{border-color:#e74c3c}}',
+    '.gm.state-high-flash{animation:gm-flash-red .5s ease-in-out 2}',
+    '.gm.state-high{border-color:#e74c3c;box-shadow:0 0 8px rgba(231,76,60,.5)}',
+    '@keyframes gm-flash-blacklist{0%,100%{border-color:var(--gm-line)}50%{border-color:#ff3b30;box-shadow:0 0 20px rgba(255,59,48,.9)}}',
+    '.gm.state-blacklist{animation:gm-flash-blacklist .3s ease-in-out 3}',
+    // The mini (48px) and compact faces have no room for a meaningful 2px border ring, and the
+    // state classes are only ever applied to `.gm` — which those states hide — so nothing here
+    // needs a matching rule for them.
+    // 0.4.9 §1.8 — the blacklist warning line. Red because it is the same data ink as 高风险.
+    '.note.lk{color:#e74c3c}',
     // Resized: the height is explicit, so the box fills it and .body does the scrolling.
     ':host(.sized) .gm{height:100%}',
     // 0.4.0 §一.4 更新横幅。它在**流内**（没有 position:fixed/absolute），所以是把整个面板
@@ -1889,6 +2094,16 @@
     '.cpnl .cft{padding:6px 10px;color:var(--gm-dim);font-size:11px;display:flex;align-items:center;gap:8px}',
     '.cpnl .cft .lk{color:var(--gm-lk);cursor:pointer}',
     '.hd .lk[data-ask-state=off]{color:var(--gm-off);cursor:default}',
+    // 0.4.9 §一.6 — the 🚫 blacklist button. Three states, in the order the operator meets them:
+    //   off — the opponent is not on the list; grey, and one click (＋confirm) blocks them.
+    //   on  — they are; RED, because red is the data ink for "this is the bad one" and the state
+    //         has to be readable at a glance without reading the tooltip. A click unblocks.
+    //   na  — there is no username to key on (spectating / a guest / a route that did not
+    //         resolve). Greyed and inert, which is honest: the feature cannot work here, and a
+    //         button that silently did nothing would look like a bug in the extension.
+    '.hd .lk[data-lk-state=on]{color:#e74c3c}',
+    '.hd .lk[data-lk-state=na]{color:var(--gm-off);opacity:.55;cursor:default}',
+    '.hd .lk[data-lk-state=na]:hover{text-decoration:none}',
     '.ok{color:#4ec97b;font-size:11px;margin-top:6px}',
     '.err{color:#e74c3c;font-size:11px;margin-top:6px;word-break:break-all}',
   ].join('');
@@ -1912,6 +2127,11 @@
           '<span class="lk" data-act="open-viewer">' + esc(T('panel|查看器')) + '</span>' +
           '<span class="lk" data-act="copy" data-copy-state="off" title="' +
             esc(T('copy.title')) + '">📋</span>' +
+          // 0.4.9 §一.6 — the blacklist toggle. It ships as `na` (greyed) and is painted properly
+          // by paintBlacklistButton() on the first status pass; starting grey rather than blue
+          // means the one frame before the first paint cannot advertise a click that would fail.
+          '<span class="lk" data-act="blacklist" data-lk-state="na" title="' +
+            esc(T('panel|无法获取对手用户名，黑名单不可用')) + '">🚫</span>' +
           // 0.4.5 §二.1/§二.2 — the language and rule menus. Both are always present (unlike 提问)
           // because they are the only way to correct the two things the extension has to GUESS:
           // the interface language, and the rule when the site does not imply one.
@@ -1969,6 +2189,7 @@
     els.cpW = root.querySelector('[data-cp=w]');
     els.cpBar = root.querySelector('.cpbar>i');
     els.copy = root.querySelector('[data-act=copy]');
+    els.lk = root.querySelector('[data-act=blacklist]');
     els.ask = root.querySelector('[data-act=ask]');
     els.chatPanel = root.querySelector('[data-slot=chat]');
     els.updText = root.querySelector('[data-slot=updtext]');
@@ -1981,6 +2202,7 @@
     openMenu = null;
     attachMiniHandlers();
     paintCopyButton();
+    paintBlacklistButton();
     paintChatButton();
     paintChatPanel();
     paintMenus();
@@ -2195,6 +2417,8 @@
       if (act === 'upd-open') { openUpdatePage(); return; }
       if (act === 'upd-dismiss') { dismissBanner(); return; }
       if (act === 'copy') { copyResult(); return; }
+      // ---- 0.4.9 §一.6 ----
+      if (act === 'blacklist') { toggleBlacklist(); return; }
       // ---- 0.4.4 §12/§14 ----
       if (act === 'ask') { askNextQuestion(); return; }
       if (act === 'chat-close') { chatOpen = false; paintChatPanel(); return; }
@@ -2550,6 +2774,219 @@
 
   // The level is compared by its CANONICAL value (it is what app.js writes and what archives
   // persist), so only the colour lookup uses the raw string.
+  // =====================================================================================
+  // 0.4.9 §一.5~§1.8 — the blacklist's runtime side, and §二's border state machine
+  // =====================================================================================
+  // One function for "the job the panel is showing". The expression used to be copy-pasted into
+  // four places (paintStatus, paintCompact, currentReport, and a fifth about to be written for
+  // the border), and this project has shipped a silently wrong answer that existed in three
+  // copies before. Whichever job the panel is talking about has to be the same one everywhere.
+  function currentJob() { return running() || findJob(selectedId) || jobs[jobs.length - 1] || null; }
+
+  function blacklistKey(id) { return id == null ? '' : String(id).trim().toLowerCase(); }
+
+  /** Load the store into `blacklistIds`, then repaint whatever reads it. */
+  function hydrateBlacklist() {
+    if (!GMStorage.loadBlacklist) return;
+    GMStorage.loadBlacklist().then(function (bl) {
+      var m = {};
+      for (var i = 0; i < bl.players.length; i++) m[blacklistKey(bl.players[i].id)] = bl.players[i];
+      blacklistIds = m;
+      if (root) { paintBlacklistButton(); paintStatus(); }
+      checkBlacklist();
+    }).catch(function () { /* no store: the button shows `na` and nothing is lost */ });
+  }
+
+  /** The synchronous lookup the button and the status line read. Returns the entry or null. */
+  function isBlacklistedSync(id) {
+    var k = blacklistKey(id);
+    return k ? (blacklistIds[k] || null) : null;
+  }
+
+  /**
+   * §一.6 — the 🚫 button's state, which is a question about the OPPONENT's username.
+   *
+   * `data-lk-state` is 'on' | 'off' | 'na'. 'na' is the honest third answer §1.6 asks for: while
+   * spectating, as a guest, or when no route resolved a username, the feature cannot work, so the
+   * button is greyed and inert rather than advertising a click that would do nothing.
+   */
+  function paintBlacklistButton() {
+    if (!els.lk) return;
+    var opp = resolveOpponentId();
+    var state = (opp && opp.id) ? (isBlacklistedSync(opp.id) ? 'on' : 'off') : 'na';
+    els.lk.setAttribute('data-lk-state', state);
+    els.lk.setAttribute('title',
+      state === 'on' ? T('panel|移出黑名单')
+      : state === 'off' ? T('panel|加入黑名单')
+      : T('panel|无法获取对手用户名，黑名单不可用'));
+  }
+
+  /**
+   * §1.5 — the per-game match check: is the opponent we are playing right now on the list?
+   *
+   * Keyed on `gameEpoch`, because the caller is the 1-second tick and `touchBlacklistEntry`
+   * bumps a counter that cannot tell two ticks from two games. The mark is set only once a check
+   * could actually be made, so a tick that runs before the ids arrive simply tries again.
+   */
+  function checkBlacklist() {
+    if (blacklistCheckedEpoch === gameEpoch) return;
+    var opp = resolveOpponentId();
+    if (!opp || !opp.id) return;
+    blacklistCheckedEpoch = gameEpoch;
+    var hit = isBlacklistedSync(opp.id);
+    if (!hit) {
+      if (blacklistHit) { blacklistHit = null; if (root) paintStatus(); }
+      return;
+    }
+    blacklistHit = hit;
+    triggerBlacklistAlert(hit);
+    if (root) paintStatus();
+    // Fire and forget: the counter and the timestamp are bookkeeping, and awaiting a storage
+    // round trip here would put a write in front of the alert the operator is meant to see now.
+    try { GMStorage.touchBlacklistEntry(hit.id, opp.name || hit.displayName); } catch (e) {}
+    blacklistIds[blacklistKey(hit.id)] = hit;
+  }
+
+  /**
+   * §1.6 — the confirm-and-write behind the 🚫 click. Adding and removing are the same gesture in
+   * two directions, so they share one function: the button's current state is what decides, not
+   * a second flag that could disagree with it.
+   */
+  function toggleBlacklist() {
+    var opp = resolveOpponentId();
+    if (!opp || !opp.id) {
+      flashFoot(T('panel|无法获取对手用户名，黑名单不可用'));
+      return;
+    }
+    var on = !!isBlacklistedSync(opp.id);
+    var vars = { name: opp.name || '?', id: opp.id };
+    // §1.6's confirm. The explanation rides as its own sentence rather than inside the question,
+    // so both halves are keys that can be translated as sentences — a translator handed
+    // 「加入黑名单？\n\n下次匹配到该玩家时会收到提醒」 has to keep an escaped newline intact, which is
+    // exactly the kind of thing that arrives broken.
+    var msg = (on
+      ? T('panel|将 {name}（{id}）移出黑名单？', vars)
+      : T('panel|将 {name}（{id}）加入黑名单？', vars) + '\n\n' +
+        T('panel|下次匹配到该玩家时会收到提醒。'));
+    if (!confirm(msg)) return;
+    var p = on ? GMStorage.removeFromBlacklist(opp.id)
+               : GMStorage.addToBlacklist(opp.id, opp.name, null);
+    p.then(function () {
+      if (on) {
+        delete blacklistIds[blacklistKey(opp.id)];
+        // The match alert is about a player who is no longer blocked, so it goes too — leaving
+        // 「对手在黑名单中」 on screen after the operator unblocked them would be a lie.
+        if (blacklistHit && sameId(blacklistHit.id, opp.id)) blacklistHit = null;
+      } else {
+        blacklistIds[blacklistKey(opp.id)] = { id: opp.id, displayName: opp.name || null };
+      }
+      if (root) { paintBlacklistButton(); paintStatus(); }
+    }).catch(function () {});
+  }
+
+  // ---- §二.4 — the border state machine ----
+  //
+  // The border is a second, glanceable readout of the same facts the status line spells out, so
+  // it is driven from `paintStatus()` rather than from a timer of its own: one source, one paint.
+  // §2.2's priority is the order of the tests below —
+  //   黑名单提醒（瞬时）> 检测结果 > 检测启动 > 就绪 > 待机
+
+  function setBorderState(state) {
+    if (state === currentBorderState) return;
+    currentBorderState = state;
+    var gm = root && root.querySelector('.gm');
+    if (!gm) return;
+    // Remove every state class rather than the previous one: `currentBorderState` can be stale
+    // after a shell rebuild, and a leftover class would keep an animation running underneath.
+    for (var k in BORDER_STATE) gm.classList.remove('state-' + BORDER_STATE[k]);
+    gm.classList.add('state-' + state);
+  }
+
+  /**
+   * Play a flash, then settle on `nextState`.
+   *
+   * `animationend` is the intended signal, and the timer is the belt: an element that is hidden
+   * (the mini / compact faces hide `.gm`) never fires it, and a border stuck on a flash class
+   * would sit at the keyframe's resting colour for the rest of the game — a state indicator that
+   * silently stops indicating. The token makes a newer flash cancel an older one's callbacks.
+   */
+  function playFlash(state, nextState, ms, onDone) {
+    var gm = root && root.querySelector('.gm');
+    if (!gm) { if (onDone) onDone(); setBorderState(nextState); return; }
+    flashToken++;
+    var token = flashToken;
+    flashing = true;
+    setBorderState(state);
+    var done = function () {
+      if (token !== flashToken) return;      // a newer flash owns the border now
+      gm.removeEventListener('animationend', done);
+      flashing = false;                      // clear the guard BEFORE the state, or the next
+      if (onDone) onDone();                  // paint would read a stale alert flag and re-flash
+      setBorderState(nextState);
+    };
+    gm.addEventListener('animationend', done, { once: true });
+    setTimeout(done, ms || 1200);
+  }
+
+  /** §2.4 — the panel's state, as one of §2.1's six. */
+  function borderStateFromPanel(cur) {
+    if (blacklistAlertActive) return BORDER_STATE.BLACKLIST;
+    // 待机 covers BOTH "not in a game" and "the game is over": §2.1 lists them together, and
+    // they read the same way to the operator — nothing is being watched any more.
+    if (ended) return BORDER_STATE.IDLE;
+    if (!activeMoves().length) return BORDER_STATE.IDLE;
+    var rep = (cur && (cur.report || cur.summary)) || null;
+    if (!rep) {
+      if (!running()) return BORDER_STATE.READY;
+      // 「第一次检测开始」 is a ONE-SHOT (§2.1: 「绿色闪烁 3 下 → 绿色常亮」). After it has played,
+      // a run with no result yet shows the green it settled on, not another flash.
+      return detectingStarted ? BORDER_STATE.LOW : BORDER_STATE.DETECT_START;
+    }
+    // 「同时检测两位玩家时，取较高风险分」 — the max, not the suspected side, because the border
+    // is the panel's alarm and not the per-side verdict (which the cards carry).
+    var maxRisk = Math.max(rep.black ? Number(rep.black.risk) || 0 : 0,
+                           rep.white ? Number(rep.white.risk) || 0 : 0);
+    if (maxRisk >= 70) return BORDER_STATE.HIGH;
+    if (maxRisk >= 40) return BORDER_STATE.SUSPECT;
+    return BORDER_STATE.LOW;
+  }
+
+  /** §2.4/§2.6 — drive the border from the same paint that draws the status line. */
+  function paintBorderState(cur) {
+    if (!root) return;
+    if (flashing) return;                     // a flash owns the border until it finishes
+    var want = borderStateFromPanel(cur);
+    // Entering 高风险 flashes twice first; leaving it does not (§2.1: 「风险降级时…直接切换」),
+    // which the `currentBorderState !== HIGH` test is what distinguishes.
+    if (want === BORDER_STATE.HIGH && currentBorderState !== BORDER_STATE.HIGH) {
+      playFlash(BORDER_STATE.HIGH_FLASH, BORDER_STATE.HIGH, FLASH_MS['high-flash']);
+      return;
+    }
+    if (want === BORDER_STATE.DETECT_START) {
+      detectingStarted = true;
+      playFlash(BORDER_STATE.DETECT_START, BORDER_STATE.LOW, FLASH_MS['detecting-start']);
+      return;
+    }
+    setBorderState(want);
+  }
+
+  /**
+   * §1.8/§2.5 — the alert. Highest priority of the six states, so it interrupts whatever the
+   * border was showing and hands it back afterwards.
+   *
+   * `nextState` is computed BEFORE `blacklistAlertActive` goes up, precisely so the hand-back is
+   * the state that would have been shown without the alert, rather than the alert itself.
+   */
+  function triggerBlacklistAlert(entry) {
+    var next = borderStateFromPanel(currentJob());
+    blacklistAlertActive = true;
+    playFlash(BORDER_STATE.BLACKLIST, next, FLASH_MS['blacklist'], function () {
+      blacklistAlertActive = false;
+    });
+    console.log('[detector] 匹配到黑名单玩家：' + (entry && entry.id ? entry.id : '?') +
+                (entry && entry.displayName ? '（' + entry.displayName + '）' : ''));
+  }
+
   function riskColor(level) {
     return level === '高风险' ? '#e74c3c' : level === '可疑' ? '#f1c40f' : '#2ecc71';
   }
@@ -2559,7 +2996,7 @@
     var moves = activeMoves();
     var inferred = countInferred(moves);
     var serverCount = socketRec ? socketRec.serverMoveNumber : null;
-    var cur = running() || findJob(selectedId) || jobs[jobs.length - 1] || null;
+    var cur = currentJob();
 
     // 0.3.5: a live session stopped by a live four is NOT 「分析中」. Two sources say so,
     // and both are needed: `liveJob._terminal` covers the instant the step came back (before
@@ -2638,6 +3075,15 @@
       '<div class="stats"><span>' + esc(T('panel|玩家：')) + '<b>' + esc(nameTxt) + '</b></span>' +
         (names.source === 'socket' ? '<span class="src">socket</span>'
           : names.source === 'dom' ? '<span class="src">DOM</span>' : '') +
+        // 0.4.9 §一.3 — which route supplied the username the blacklist is keyed on. Shown only
+        // when there IS one, and named because a wrong id is only fixable if the route that
+        // produced it is on the record.
+        (function () {
+          var opp = resolveOpponentId();
+          return opp ? '<span class="src" title="' +
+            esc(T('panel|黑名单键：{id}（来源：{how}）', { id: opp.id, how: opp.how })) +
+            '">' + esc(opp.how) + '</span>' : '';
+        })() +
       '</div>' +
       '<div class="bar"><i style="width:' + Math.max(0, Math.min(100, pct)).toFixed(1) + '%"></i></div>';
 
@@ -2653,6 +3099,15 @@
     if (serverCount != null && serverCount !== moves.length) {
       h += '<div class="note">' + T('panel|站点手数 {server} 手，本地记录 {local} 手 —— 盘面可能尚未同步，等待刷新。',
         { server: serverCount, local: moves.length }) + '</div>';
+    }
+    // 0.4.9 §1.8 — the alert's other half. The border flash is the glance; this line is the
+    // detail, and it names the display name AND the username so the operator can tell which of
+    // two same-named players they blocked. First in the notes because it is the only one that is
+    // about the person rather than about the data.
+    if (blacklistHit) {
+      h += '<div class="note lk">⚠ ' + esc(T('panel|对手在黑名单中：{name}（{id}）',
+        { name: blacklistHit.displayName || '?', id: blacklistHit.id })) +
+        (blacklistHit.note ? ' · ' + esc(blacklistHit.note) : '') + '</div>';
     }
 
     var rep = cur && (cur.report || cur.summary);
@@ -2710,6 +3165,12 @@
     els.foot.textContent = (footMsg && performance.now() < footMsgUntil)
       ? footMsg
       : (T('panel|队列 {n}', { n: jobs.length }) + (running() ? T('panel| · 1 运行中') : ''));
+
+    // 0.4.9 §一.6 / §二.4 — the two readouts this paint also owns. Both are driven from here
+    // rather than from their own timers so that everything the panel says about the current
+    // moment is recomputed at the same instant, from the same facts.
+    paintBlacklistButton();
+    paintBorderState(cur);
   }
 
   // `side` is optional and only meaningful for the two risk cards: 0.4.4 §13's chat adjustment
@@ -2845,7 +3306,7 @@
   // report as progress, and the operator wants the number it produced instead.
   function paintCompact() {
     if (!root || !els.cpB) return;
-    var cur = running() || findJob(selectedId) || jobs[jobs.length - 1] || null;
+    var cur = currentJob();
     var rep = cur && (cur.report || cur.summary);
     var stopped = !!(cur && (cur._terminal || cur.status === '已完成' ||
                              cur.status === '已中止' || cur.status === '失败'));
@@ -3728,7 +4189,7 @@
   }
 
   function currentReport() {
-    var cur = running() || findJob(selectedId) || jobs[jobs.length - 1] || null;
+    var cur = currentJob();
     return (cur && (cur.report || cur.summary)) || null;
   }
 
@@ -3968,6 +4429,9 @@
   // 0.4.8 §2: restore the session facts before anything can ask about them. Fire-and-forget —
   // every reader copes with the pre-restore value, so a late arrival can only add information.
   hydrateSession();
+  // 0.4.9 §一.4 — the blacklist mirror. Same fire-and-forget reasoning: the button starts at
+  // `na` and the match check simply retries, so a late arrival can only add information.
+  hydrateBlacklist();
   loadChatState();
   resetChatForGame();
   setInterval(function () {
@@ -3978,6 +4442,9 @@
     // 0.4.6 §一 — remember the player names while they are still on screen; papergames.io takes
     // its player row away together with the board, and the record is built after that.
     rememberNames();
+    // 0.4.9 §1.5 — the blacklist match. Once per game (it is keyed on gameEpoch), and it can
+    // only answer after `rememberNames()` has had a chance to see the seat list.
+    checkBlacklist();
     // 0.4.4 — the chat clock. All three are cheap and idempotent; each re-checks its own gate.
     tickChat();
   }, 1000);

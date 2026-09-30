@@ -353,6 +353,13 @@
       if (!d) return got;
 
       // (a) [{ id, name, color }]  — the shape recon confirmed
+      //
+      // 0.4.9 §一.3 wants this route to yield the opponent's USERNAME (`playerId`) for the local
+      // blacklist, and it already does — the id is parked in `rec.playerIds[side]` below and
+      // forwarded as `playerIds` in `snapshot()`. The spec spells the field `players.blackId` /
+      // `players.whiteId`; that is the same fact under a different name, and writing it in both
+      // places would be the 「three copies of one answer」 mistake this project has shipped three
+      // times. `playerIds` is the copy that exists; content.js's `resolveOpponentId()` reads it.
       if (Array.isArray(d.players)) {
         for (var i = 0; i < d.players.length; i++) {
           var p = d.players[i];

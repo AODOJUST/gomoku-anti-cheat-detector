@@ -53,6 +53,14 @@
   // operator just closed would come back.
   var UPDATE_KEY = 'updateInfo';
   var UPDATE_DISMISS_KEY = 'updateDismissed';
+  // 0.4.9 §一.4 — the local player blacklist. Keyed by the site's USERNAME (`playerId`), never by
+  // the display name: a display name is editable and repeatable, an id is neither. It stays in
+  // `chrome.storage.local` and is never uploaded anywhere (§1.1) — the whole feature is a
+  // local note-to-self, and the note lives and dies on this machine.
+  var BLACKLIST_KEY = 'blacklist';
+  // Same reasoning as MAX_SAMPLES: the 10MB budget is shared, and a blacklist nobody prunes is a
+  // hoarding problem. 500 ids is far past any real operator's encounter rate.
+  var MAX_BLACKLIST = 500;
   var MAX_ARCHIVES = 200;
   // Samples carry a full record + report + annotations each — bigger per item than an
   // archive — so the cap is lower. The 10MB chrome.storage.local budget is shared with
@@ -1272,6 +1280,237 @@
     return { grown: true, pct: Math.round((now / was - 1) * 100), was: was, now: now };
   }
 
+  // ============================================================================
+  // 0.4.9 §一.4 — the local player blacklist
+  // ============================================================================
+  // §1.1 is explicit about what this is for and — more to the point — what it is not: the
+  // username is collected so that a cheat can be written down locally and warned about on the
+  // next meeting. Nothing here ever leaves the machine; there is no endpoint, no telemetry and
+  // no "share" path, and every write goes to `chrome.storage.local` through the same serial
+  // chain as every other key.
+  //
+  // §1.2 is the reason the key is `id` and not the display name. A display name is user-editable
+  // and not unique (two players can both be 「宇髓天元突破」); the username is neither. The
+  // display name is still stored, but only as a label to show a human — it is refreshed on every
+  // encounter and never matched on.
+  //
+  // The whole object is ONE key so that the list is written atomically: a read-modify-write of
+  // `players` cannot interleave with another and lose an entry, which is exactly the failure
+  // `enqueue()` exists to prevent.
+
+  function blacklistId(v) {
+    if (v == null) return null;
+    var s = String(v).trim();
+    return s ? s : null;
+  }
+
+  // Ids are compared case-insensitively and trimmed on both sides. The three collection routes
+  // (§1.3: the page meta, the socket payload, the profile URL) are three different renderings of
+  // one id, and a route that disagrees about case would otherwise produce a second entry for the
+  // same player — i.e. a blacklist that warns about someone the operator already blocked.
+  function blacklistEq(a, b) {
+    var x = blacklistId(a), y = blacklistId(b);
+    if (x == null || y == null) return false;
+    return x.toLowerCase() === y.toLowerCase();
+  }
+
+  function blacklistIndexOf(list, id) {
+    for (var i = 0; i < list.length; i++) if (blacklistEq(list[i] && list[i].id, id)) return i;
+    return -1;
+  }
+
+  function sanitizeBlacklistEntry(raw) {
+    if (!raw || typeof raw !== 'object') return null;
+    var id = blacklistId(raw.id);
+    if (!id) return null;                       // an entry with no username cannot be matched
+    var now = Date.now();
+    var added = Number(raw.addedAt);
+    var seen = Number(raw.lastSeen);
+    var n = Number(raw.encounterCount);
+    return {
+      id: id,
+      displayName: raw.displayName == null ? null : String(raw.displayName).slice(0, 40),
+      note: raw.note == null ? null : String(raw.note).slice(0, 200),
+      addedAt: isFinite(added) && added > 0 ? added : now,
+      lastSeen: isFinite(seen) && seen > 0 ? seen : (isFinite(added) && added > 0 ? added : now),
+      encounterCount: isFinite(n) && n > 0 ? Math.floor(n) : 1,
+      // Anything that is not the overlay's own marker is treated as a manual entry: the field is
+      // a label, and an unknown value from an older/hand-edited profile must not become a third
+      // state the UI has no wording for.
+      source: raw.source === 'overlay' ? 'overlay' : 'manual',
+    };
+  }
+
+  function normalizeBlacklist(raw) {
+    var list = raw && Array.isArray(raw.players) ? raw.players : [];
+    var out = [];
+    for (var i = 0; i < list.length; i++) {
+      var e = sanitizeBlacklistEntry(list[i]);
+      if (!e) continue;
+      // De-duplicate on the way in as well as on the way out. A hand-edited JSON, or a profile
+      // written by a build whose id comparison differed, is the one input neither writer sees.
+      if (blacklistIndexOf(out, e.id) >= 0) continue;
+      out.push(e);
+    }
+    return { version: 1, players: out };
+  }
+
+  async function loadBlacklist() {
+    var got = null;
+    try { got = await api().get(BLACKLIST_KEY); } catch (e) { got = null; }
+    return normalizeBlacklist(got && got[BLACKLIST_KEY]);
+  }
+
+  function writeBlacklist(bl) {
+    return enqueue(async function () {
+      var put = {}; put[BLACKLIST_KEY] = bl;
+      try { await api().set(put); } catch (e) {}
+      return bl;
+    });
+  }
+
+  /** Add (or refresh) an entry. §1.6's overlay button and §1.7's manual form both come here. */
+  function addToBlacklist(id, displayName, note) {
+    return enqueue(async function () {
+      var got = null;
+      try { got = await api().get(BLACKLIST_KEY); } catch (e) { got = null; }
+      var bl = normalizeBlacklist(got && got[BLACKLIST_KEY]);
+      var now = Date.now();
+      var at = blacklistIndexOf(bl.players, id);
+      var cleanId = blacklistId(id);
+      if (!cleanId) return bl;
+      if (at >= 0) {
+        // Already there: refresh the label and the note rather than stacking a duplicate.
+        var cur = bl.players[at];
+        if (displayName) cur.displayName = String(displayName).slice(0, 40);
+        if (note != null) cur.note = String(note).slice(0, 200);
+      } else {
+        bl.players.push({
+          id: cleanId,
+          displayName: displayName ? String(displayName).slice(0, 40) : null,
+          note: note != null ? String(note).slice(0, 200) : null,
+          addedAt: now,
+          lastSeen: now,
+          encounterCount: 0,
+          source: 'overlay',
+        });
+      }
+      // Newest first, and capped. Trimming from the TAIL keeps the most recently added entries,
+      // which is the opposite of the archive list's rule and correct here: a block list is
+      // ordered by when the operator last cared, not by when the game happened.
+      bl.players.sort(function (a, b) { return (b.addedAt || 0) - (a.addedAt || 0); });
+      if (bl.players.length > MAX_BLACKLIST) bl.players = bl.players.slice(0, MAX_BLACKLIST);
+      var put = {}; put[BLACKLIST_KEY] = bl;
+      try { await api().set(put); } catch (e) {}
+      return bl;
+    });
+  }
+
+  function removeFromBlacklist(id) {
+    return enqueue(async function () {
+      var got = null;
+      try { got = await api().get(BLACKLIST_KEY); } catch (e) { got = null; }
+      var bl = normalizeBlacklist(got && got[BLACKLIST_KEY]);
+      var at = blacklistIndexOf(bl.players, id);
+      if (at < 0) return bl;
+      bl.players.splice(at, 1);
+      var put = {}; put[BLACKLIST_KEY] = bl;
+      try { await api().set(put); } catch (e) {}
+      return bl;
+    });
+  }
+
+  function setBlacklistNote(id, note) {
+    return enqueue(async function () {
+      var got = null;
+      try { got = await api().get(BLACKLIST_KEY); } catch (e) { got = null; }
+      var bl = normalizeBlacklist(got && got[BLACKLIST_KEY]);
+      var at = blacklistIndexOf(bl.players, id);
+      if (at < 0) return bl;
+      bl.players[at].note = note == null || note === '' ? null : String(note).slice(0, 200);
+      var put = {}; put[BLACKLIST_KEY] = bl;
+      try { await api().set(put); } catch (e) {}
+      return bl;
+    });
+  }
+
+  /** §1.5 — the match-time lookup. Returns the ENTRY, not a boolean: the caller shows its note. */
+  async function isBlacklisted(id) {
+    var cleanId = blacklistId(id);
+    if (!cleanId) return null;
+    var bl = await loadBlacklist();
+    var at = blacklistIndexOf(bl.players, cleanId);
+    return at < 0 ? null : bl.players[at];
+  }
+
+  /**
+   * §1.5 — bump lastSeen / encounterCount for a player we just met again.
+   *
+   * Deliberately bumps the count only when the entry was LAST SEEN at an earlier time than the
+   * same session's previous bump would allow… in practice: every call is one encounter, and the
+   * caller is the per-game blacklist check, which runs once per game. A guard against a double
+   * count inside one game therefore lives in content.js (the check is keyed on the game epoch),
+   * not here — a storage layer that second-guessed its caller could not know what a game is.
+   */
+  function touchBlacklistEntry(id, displayName) {
+    return enqueue(async function () {
+      var got = null;
+      try { got = await api().get(BLACKLIST_KEY); } catch (e) { got = null; }
+      var bl = normalizeBlacklist(got && got[BLACKLIST_KEY]);
+      var at = blacklistIndexOf(bl.players, id);
+      if (at < 0) return bl;
+      var cur = bl.players[at];
+      if (displayName) cur.displayName = String(displayName).slice(0, 40);
+      cur.lastSeen = Date.now();
+      cur.encounterCount = (Number(cur.encounterCount) || 0) + 1;
+      var put = {}; put[BLACKLIST_KEY] = bl;
+      try { await api().set(put); } catch (e) {}
+      return bl;
+    });
+  }
+
+  /**
+   * §1.7 — import, on the same envelope the archive/sample libraries use. Accepts the written
+   * envelope, a bare array, or a `{players:[…]}` object, because the three are all things a
+   * person might hand it and refusing two of them would only look like a bug.
+   *
+   * `mode` is 'merge' (default) or 'replace'. Merge keeps existing entries and updates the ones
+   * the file names; replace is the escape hatch for "restore this backup exactly".
+   */
+  function importBlacklist(incoming, mode) {
+    return enqueue(async function () {
+      var list = Array.isArray(incoming) ? incoming
+        : (incoming && Array.isArray(incoming.players)) ? incoming.players : null;
+      if (!list) return { added: 0, updated: 0, total: 0 };
+      var got = null;
+      try { got = await api().get(BLACKLIST_KEY); } catch (e) { got = null; }
+      var bl = mode === 'replace' ? { version: 1, players: [] } : normalizeBlacklist(got && got[BLACKLIST_KEY]);
+      var added = 0, updated = 0;
+      for (var i = 0; i < list.length; i++) {
+        var e = sanitizeBlacklistEntry(list[i]);
+        if (!e) continue;
+        var at = blacklistIndexOf(bl.players, e.id);
+        if (at >= 0) {
+          var cur = bl.players[at];
+          cur.displayName = e.displayName || cur.displayName;
+          cur.note = e.note != null ? e.note : cur.note;
+          cur.addedAt = Math.min(cur.addedAt || e.addedAt, e.addedAt);
+          cur.lastSeen = Math.max(cur.lastSeen || 0, e.lastSeen || 0);
+          cur.encounterCount = Math.max(Number(cur.encounterCount) || 0, e.encounterCount);
+          updated++;
+        } else {
+          bl.players.push(e);
+          added++;
+        }
+      }
+      bl.players.sort(function (a, b) { return (b.addedAt || 0) - (a.addedAt || 0); });
+      if (bl.players.length > MAX_BLACKLIST) bl.players = bl.players.slice(0, MAX_BLACKLIST);
+      var put = {}; put[BLACKLIST_KEY] = bl;
+      try { await api().set(put); } catch (e) {}
+      return { added: added, updated: updated, total: bl.players.length };
+    });
+  }
+
   async function loadLearnedParams() {
     var got = null;
     try { got = await api().get(LEARNED_KEY); } catch (e) { got = null; }
@@ -1955,6 +2194,18 @@
     loadLearnedParams: loadLearnedParams,
     saveLearnedParams: saveLearnedParams,
     resetLearnedParams: resetLearnedParams,
+    // ---- 0.4.9 §一.4 local player blacklist ----
+    BLACKLIST_KEY: BLACKLIST_KEY,
+    MAX_BLACKLIST: MAX_BLACKLIST,
+    blacklistId: blacklistId,
+    normalizeBlacklist: normalizeBlacklist,
+    loadBlacklist: loadBlacklist,
+    addToBlacklist: addToBlacklist,
+    removeFromBlacklist: removeFromBlacklist,
+    setBlacklistNote: setBlacklistNote,
+    isBlacklisted: isBlacklisted,
+    touchBlacklistEntry: touchBlacklistEntry,
+    importBlacklist: importBlacklist,
     __memApi: memApi,
   };
 

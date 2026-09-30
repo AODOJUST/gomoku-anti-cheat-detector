@@ -439,6 +439,10 @@
     // its own compact sizing, and that is a different document anyway.
     if (name === 'replay') refreshArchives();
     if (name === 'samples') refreshSamples();
+    // 0.4.9 §一.7 — the blacklist is read fresh on every visit rather than cached at boot: the
+    // panel's 🚫 button can have added a player since this page was opened, and a stale list
+    // here would show 「不在黑名单」 for someone the operator just blocked.
+    if (name === 'blacklist') refreshBlacklist();
     if (name === 'settings') renderSettings();
   }
   document.querySelectorAll('.navbtn').forEach(function (b) {
@@ -5087,6 +5091,114 @@
   }
 
   // =====================================================================
+  // 0.4.9 §一.7 — 黑名单
+  // =====================================================================
+  // The management half of the blacklist. The panel has the 🚫 button and the match alert; the
+  // list itself lives here, because curating it is a sitting-down task (add an id read off
+  // someone else's report, write a note, drop one that turned out to be a false alarm) and not
+  // something to do mid-game.
+  //
+  // Two rules are load-bearing and both come from §1.2:
+  //   · the USERNAME is the key — it is what `data-id` carries, what the row is sorted by, and
+  //     the only field the add form requires;
+  //   · the display name is a LABEL. It is shown, it is refreshed when the panel meets the
+  //     player again, and it is never matched on — which is why the list can hold two rows with
+  //     the same 显示名 and the operator can still tell them apart.
+  var blRowsData = [];
+
+  async function refreshBlacklist() {
+    var bl = await G.loadBlacklist();
+    blRowsData = bl.players;
+    renderBlacklist();
+  }
+
+  function renderBlacklist() {
+    var host = $('blRows');
+    if (!host) return;
+    var list = blRowsData;
+    $('blCount').textContent = list.length ? T('viewer|共 {n} 条', { n: list.length }) : '—';
+    if (!list.length) {
+      host.innerHTML = '<div class="empty">' + esc(T('viewer|还没有黑名单记录。')) + '</div>';
+      return;
+    }
+    var h = '';
+    for (var i = 0; i < list.length; i++) {
+      var e = list[i];
+      h += '<div class="blrow">' +
+        '<span class="bid" title="' + esc(e.id) + '">' + esc(e.id) + '</span>' +
+        '<span class="bnm">' + esc(e.displayName || '—') + '</span>' +
+        '<span class="bnt" title="' + esc(e.note || '') + '">' + esc(e.note || '—') + '</span>' +
+        '<span class="btm">' + esc(G.beijingTime(e.addedAt)) + '</span>' +
+        '<span class="btm">' + esc(G.beijingTime(e.lastSeen)) + '</span>' +
+        '<span class="bct">' + (Number(e.encounterCount) || 0) + '</span>' +
+        '<span class="bop">' +
+          '<button class="sec" data-bl="note" data-id="' + esc(e.id) + '">' + esc(T('viewer|编辑备注')) + '</button>' +
+          '<button class="danger" data-bl="rm" data-id="' + esc(e.id) + '">' + esc(T('viewer|移除')) + '</button>' +
+        '</span></div>';
+    }
+    host.innerHTML = h;
+  }
+
+  // One delegated listener rather than two per row: the list is re-rendered wholesale on every
+  // change, so per-row listeners would be re-bound on every render and leak the old ones.
+  $('blRows').addEventListener('click', async function (ev) {
+    var btn = ev.target && ev.target.closest ? ev.target.closest('button[data-bl]') : null;
+    if (!btn) return;
+    var id = btn.dataset.id;
+    var entry = null;
+    for (var i = 0; i < blRowsData.length; i++) if (blRowsData[i].id === id) { entry = blRowsData[i]; break; }
+    if (!entry) return;
+    if (btn.dataset.bl === 'note') {
+      // prompt() rather than an inline editor, matching how the sample library edits tags. An
+      // empty answer CLEARS the note; `null` (cancel) leaves it alone — the two are different
+      // and conflating them would make cancel a silent delete.
+      var raw = prompt(T('viewer|备注（可留空以清除）：'), entry.note || '');
+      if (raw === null) return;
+      await G.setBlacklistNote(id, raw);
+    } else {
+      if (!confirm(T('viewer|将 {name}（{id}）移出黑名单？', { name: entry.displayName || '?', id: id }))) return;
+      await G.removeFromBlacklist(id);
+    }
+    await refreshBlacklist();
+  });
+
+  $('blAdd').onclick = async function () {
+    var id = ($('blNewId').value || '').trim();
+    if (!id) { alert(T('viewer|请先填写用户名（playerId）。')); return; }
+    var name = ($('blNewName').value || '').trim();
+    var note = ($('blNewNote').value || '').trim();
+    await G.addToBlacklist(id, name || null, note || null);
+    $('blNewId').value = ''; $('blNewName').value = ''; $('blNewNote').value = '';
+    await refreshBlacklist();
+  };
+
+  $('blExport').onclick = function () {
+    // Same envelope shape as the archive and sample backups, so one JSON reader could in
+    // principle take any of the three.
+    download('blacklist-' + blRowsData.length + '.json',
+      JSON.stringify({ kind: 'gomoku-blacklist', version: 1, exportedAt: Date.now(), players: blRowsData }, null, 2),
+      'application/json');
+  };
+
+  $('blImport').onclick = function () { $('blFile').click(); };
+  $('blFile').onchange = async function () {
+    var f = $('blFile').files && $('blFile').files[0];
+    $('blFile').value = '';
+    if (!f) return;
+    var text;
+    try { text = await f.text(); } catch (e) { alert(T('viewer|读取文件失败：{err}', { err: TE(e.message) })); return; }
+    var parsed;
+    try { parsed = JSON.parse(text); } catch (e) { alert(T('viewer|不是有效的 JSON 文件。')); return; }
+    if (!Array.isArray(parsed) && !(parsed && Array.isArray(parsed.players))) {
+      alert(T('viewer|文件里没有 players 数组。')); return;
+    }
+    var res = await G.importBlacklist(parsed, 'merge');
+    await refreshBlacklist();
+    alert(T('viewer|导入完成：新增 {n} 个', { n: res.added }) +
+      (res.updated ? T('viewer|（另有 {n} 个已存在，已合并备注与统计）', { n: res.updated }) : ''));
+  };
+
+  // =====================================================================
   // cross-page sync
   // =====================================================================
   // The in-page panel and this viewer are two windows onto one settings object. Without
@@ -5125,6 +5237,9 @@
         });
       }
       if (changes.archives) refreshArchives();
+      // 0.4.9 §一.7 — the in-page panel's 🚫 button writes the same key while this window is
+      // open, so the list has to follow without a reload.
+      if (changes.blacklist) refreshBlacklist();
       // 0.3.3: a sample saved here (or 重新学习 run in another tab) has to reach this one,
       // or the library list and the detector's parameter set go stale in silence.
       if (changes.samples) refreshSamples();

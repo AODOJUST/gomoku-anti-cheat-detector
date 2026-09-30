@@ -437,6 +437,26 @@
   .acard .meta{display:block;font-size:var(--ui-detail-small);color:var(--mut);margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .acard .cat{font-size:var(--ui-detail-small);padding:2px 12px;border-radius:14px;border:1px solid var(--chip-line);background:var(--info-bg);color:var(--chip-fg);flex:none}
   .empty{padding:44px;text-align:center;color:var(--mut);font-size:var(--ui-detail-font)}
+  /* ---- 0.4.9 §一.7 the blacklist table ----
+     Seven columns is more than the archive card carries, so this is a real (flex) table rather
+     than the card layout: the operator's question here is "is THIS id on the list", and that is
+     answered by scanning one column, not by reading cards. Every cell clips rather than wraps —
+     a display name is operator data of unknown length, and one long name must not push the
+     操作 column off the screen. */
+  .blrow>span,.blhead>span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .blhead>span{flex:1}
+  .blrow{display:flex;gap:var(--ui-shell-gap);align-items:center;padding:8px var(--ui-shell-padding);border-bottom:1px solid var(--line-soft);font-size:var(--ui-detail-small)}
+  .blrow:hover{background:var(--hover)}
+  .blrow>span{flex:1}
+  /* The username is the key of the whole feature, so it is the one cell set in mono — it is an
+     identifier, not prose, and a mistyped id silently blocks nobody. */
+  .blrow .bid{font-family:ui-monospace,Consolas,"Courier New",monospace;color:var(--txt)}
+  .blrow .bnm{color:var(--txt-2)}
+  .blrow .bnt{color:var(--mut)}
+  .blrow .btm{color:var(--dim);font-variant-numeric:tabular-nums;flex:0 0 118px}
+  .blrow .bct{color:var(--mut);text-align:center;flex:0 0 64px}
+  .blrow .bop{display:flex;gap:6px;flex:0 0 132px}
+  .blrow .bop button{height:auto;padding:2px 10px;font-size:var(--ui-detail-small)}
   /* Pagination, 15 per page. Without it the list is one 12 000px scroll once the 200-archive
      cap is anywhere near full, and "which game was that" stops being answerable by scrolling.
      The pager buttons opt out of the global button height — they are list chrome, not actions. */
@@ -609,6 +629,10 @@
          the nav reads left-to-right in the order a game is actually worked through:
          detect it, replay it, curate it, configure. -->
     <button class="navbtn" data-view="samples">样本库</button>
+    <!-- 0.4.9 §一.7 — the blacklist sits after the libraries: it is the same kind of thing (a
+         local list the operator curates) and reading left to right it comes last because it is
+         the one list that is about PEOPLE rather than about games. -->
+    <button class="navbtn" data-view="blacklist">黑名单</button>
     <button class="navbtn" data-view="settings">设置</button>
   </div>
   <!-- 0.3.5 §3.2: one control for the four step tables' columns. It lives in the header
@@ -1288,6 +1312,44 @@
           <tbody></tbody>
         </table></div>
       </div>
+    </div>
+  </section>
+
+  <!-- ======================= 黑名单（0.4.9 §一.7） ======================= -->
+  <!-- Keyed on the site USERNAME (`playerId`), never the display name — see §1.2. Everything in
+       this file is local: `chrome.storage.local` and nothing else, with no upload path anywhere
+       in the extension (§1.1). The 手动添加 form is first because it is the only thing here the
+       operator can do without having just played a game. -->
+  <section class="view" id="view-blacklist">
+    <div class="panel">
+      <div class="filters-bar">
+        <h2 style="margin:0">黑名单</h2>
+        <span class="hint" id="blCount">—</span>
+        <span class="sp"></span>
+        <button class="sec" id="blExport">导出JSON</button>
+        <button class="sec" id="blImport">批量导入</button>
+        <input type="file" id="blFile" accept=".json,application/json" class="hidden">
+      </div>
+      <div class="btn-row" style="margin-top:10px;line-height:2.2">
+        <label>用户名 <input type="text" id="blNewId" placeholder="playerId" style="width:160px"></label>
+        <label>显示名 <input type="text" id="blNewName" style="width:150px"></label>
+        <label>备注 <input type="text" id="blNewNote" style="width:200px"></label>
+        <button id="blAdd">＋ 添加</button>
+      </div>
+      <div class="hint" style="margin-top:6px">黑名单以用户名（playerId）为唯一键，显示名仅作展示。数据只存在本机，不会上传任何服务器。</div>
+    </div>
+
+    <div class="panel alist">
+      <div class="ahead blhead">
+        <span class="bid">用户名</span>
+        <span class="bnm">显示名</span>
+        <span style="flex:1.4">备注</span>
+        <span class="btm">加入时间</span>
+        <span class="btm">最后遭遇</span>
+        <span class="bct">遭遇次数</span>
+        <span class="bop">操作</span>
+      </div>
+      <div id="blRows"></div>
     </div>
   </section>
 
