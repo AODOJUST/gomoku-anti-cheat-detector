@@ -221,24 +221,35 @@
     return t;
   }
 
-  // ---- 0.4.7 §三.2 透明度 ----
-  // Two alphas out of ONE number, by design (see the CSS block for why they differ):
-  //   level 100 → background alpha 1.00, widgets 1.00   (off, byte-identical to 0.4.6)
-  //   level  50 → background alpha 0.50, widgets 0.90
-  //   level   0 → background alpha 0.00, widgets 0.80   (the readability floor)
-  // A single linear 0→1 alpha for everything would let the slider reach 0 on the widgets too,
-  // which is an invisible window with live buttons on it.
-  function widgetOpacity(level) { return 0.80 + 0.20 * (level / 100); }
-  function bgAlpha(level) { return level / 100; }
-
-  function applyOpacity(setting) {
-    var o = G.normalizeOpacity(setting);
-    var on = !!o.enabled;
+  // ---- 0.5.3 §1.1 透明度与模糊 ----
+  // The stored number is a TRANSPARENCY PERCENTAGE, not a CSS opacity: 0% = 完全不透明,
+  // 100% = 全透明. The conversion — `cssOpacity = 1 - t/100` — lives in storage.js's
+  // `cssOpacity()` so this page and content.js cannot end up disagreeing about it.
+  //
+  // ⚠ 0.4.7 had the direction inverted: its `level: 100` meant FULLY OPAQUE, so its slider ran
+  // backwards against its own label and the CSS had to hand out two different alphas to hide
+  // the contradiction. §1.1 replaces the model instead of reinterpreting the number, which is
+  // why the old `opacity` key is deliberately NOT migrated (see the note in storage.js).
+  //
+  // Five independently capped parts; two are the viewer's, three belong to the overlay and are
+  // applied there by content.js. The ceilings (95 / 80 / 95 / 90 / 80) are enforced by
+  // `normalizeTransparency`, not by the sliders' `max` attributes: the slider's max is an
+  // affordance, while the stored profile is an input this page never validates, and a value
+  // past the ceiling would be written straight into `opacity:` and silently discarded at
+  // computed-value time — leaving the element fully opaque with the readout claiming otherwise.
+  //
+  // Every variable is written even when the part is switched OFF, as 1 / 0px. The stylesheet
+  // reads all four unconditionally, so skipping the write would leave the previous profile's
+  // values behind and the UI would stay faded with the switch off.
+  function applyTransparency(setting) {
+    var t = G.normalizeTransparency(setting);
     var root = document.documentElement;
-    root.classList.toggle('gm-transparent', on);
-    root.style.setProperty('--gm-bg-alpha', String(bgAlpha(o.level)));
-    root.style.setProperty('--gm-widget-alpha', String(widgetOpacity(o.level)));
-    return o;
+    var v = t.viewer.enabled ? t.viewer : null;
+    root.style.setProperty('--viewer-elem-opacity', String(G.cssOpacity(v ? v.element : 0)));
+    root.style.setProperty('--viewer-elem-blur', (v ? v.elementBlur : 0) + 'px');
+    root.style.setProperty('--viewer-btn-opacity', String(G.cssOpacity(v ? v.button : 0)));
+    root.style.setProperty('--viewer-btn-blur', (v ? v.buttonBlur : 0) + 'px');
+    return t;
   }
 
   function esc(s) {
@@ -516,6 +527,10 @@
     // until a reload, which is acceptance #2 of §一.3. `fillSettingsForm()` below restores the
     // selection (rebuilding innerHTML drops it back to the first option).
     fillThemeSelect();
+    // 0.5.3 §1.1.6 — same reason as the theme options directly above: the transparency panel's
+    // ten labels are built in JS, so the static pass cannot reach them. The rebuild resets the
+    // sliders, which is why it has to come before `fillSettingsForm()` restores their values.
+    buildTransparencyPanel();
     // §一.4: the banner and the settings page's status line are built in JS, so they carry no
     // `__gmKey` and the static pass above cannot reach them.
     fillVersionRow();
@@ -598,7 +613,8 @@
     $('setChatAuto').checked = !!S.chatAuto;     // 0.4.4 §七/§八 master switch, default off
     // 0.4.10 §2.2 — the narrower switch, default ON (see storage.js DEFAULTS for why).
     $('setAutoAnnounce').checked = !!S.autoSendAnnouncement;
-    fillOpacityForm();
+    fillTransparencyForm();
+    fillArchiveFilterForm();
     fillLlmForm();
     // 0.5.1 §2.1.4/§2.2 — labels, dropdown contents, the address field and the status line. The
     // custom-model LIST is filled from whatever the registry holds right now; boot() and every
@@ -643,15 +659,11 @@
     sel.innerHTML = G.THEMES.map(function (t) {
       return '<option value="' + esc(t) + '">' + esc(themeLabel(t)) + '</option>';
     }).join('');
-    // These four nodes are built in viewer.html, so the static i18n pass would normally tag
-    // them — but they are `id`-bearing labels the JS already knows by name, and tagging them
-    // here keeps the 主题/透明度 block self-contained rather than split across two files.
+    // These nodes are built in viewer.html, so the static i18n pass would normally tag them —
+    // but they are `id`-bearing labels the JS already knows by name, and tagging them here keeps
+    // the 主题 block self-contained rather than split across two files.
     setTxt('setThemeLabel', T('viewer|主题'));
     setTxt('setThemeHint', T('viewer|跟随系统时由浏览器/操作系统决定；浅色与深色为强制覆盖。'));
-    setTxt('setOpacityLabel', T('viewer|透明度模式'));
-    setTxt('setOpacityHint', T('viewer|启用透明度模式') + ' · ' +
-      T('viewer|仅作用于本查看器窗口，不改变页面浮层。浏览器扩展窗口无法真正透出桌面，这里的「透明」是相对浏览器的底色而言。'));
-    setTxt('setOpacityLevelLabel', T('viewer|透明度'));
   }
 
   function setTxt(id, v) {
@@ -659,21 +671,192 @@
     if (el) el.textContent = v;
   }
 
-  // ---- 0.4.7 §三.2: the opacity controls ----
-  // The level readout is deliberately worded as a DEFINITION, not a percentage: 「100% = 完全不
-  // 透明；0% = 底层全透明，功能部件 80%」. A bare "透明度 60%" would be read as "60% see-through"
-  // by half the operators and "60% opaque" by the other half — and the widget floor means
-  // neither reading is even right.
-  function fillOpacityForm() {
-    var o = G.normalizeOpacity(S.opacity);
-    var en = $('setOpacityEnabled'), lv = $('setOpacityLevel'), val = $('setOpacityVal');
-    if (en) en.checked = !!o.enabled;
-    if (lv) { lv.value = String(o.level); lv.disabled = !o.enabled; }
-    if (val) val.textContent = T('viewer|100% = 完全不透明；0% = 底层全透明，功能部件 80%');
-    setTxt('setOpacityLabel', T('viewer|透明度模式'));
-    setTxt('setOpacityHint', T('viewer|启用透明度模式') + ' · ' +
-      T('viewer|仅作用于本查看器窗口，不改变页面浮层。浏览器扩展窗口无法真正透出桌面，这里的「透明」是相对浏览器的底色而言。'));
-    setTxt('setOpacityLevelLabel', T('viewer|透明度'));
+  // ---- 0.5.3 §3.1: 棋谱代码的复制 / 粘贴 / 清空 ----
+  // One delegated listener per `.code-box` rather than one per button, and it reads the target's
+  // `data-act` — the same shape the step tables use for their buttons, so adding a fourth action
+  // later is a matter of writing the button and one more branch.
+  //
+  // ⚠ 粘贴 is the one that cannot be guaranteed. `navigator.clipboard.readText()` needs both a
+  // user gesture (we have one — this is a click) and, in some builds, an explicit permission;
+  // a chrome-extension:// page has the gesture but may still be refused. §3.1.3 says to fall
+  // back to asking the operator to paste by hand, so a rejection produces a warning that says
+  // exactly that rather than an error that leaves them guessing. The textarea is focused in that
+  // case, so Ctrl+V lands where they expect.
+  function bindCodeBoxes() {
+    var boxes = document.querySelectorAll('.code-box');
+    for (var i = 0; i < boxes.length; i++) {
+      (function (box) {
+        var ta = box.querySelector('textarea');
+        if (!ta) return;
+        box.addEventListener('click', async function (e) {
+          var btn = e.target && e.target.closest ? e.target.closest('.code-btn') : null;
+          if (!btn) return;
+          var act = btn.getAttribute('data-act');
+          if (act === 'copy') {
+            try {
+              await navigator.clipboard.writeText(ta.value);
+              GmToast.show(T('toast|已复制到剪贴板'), 'success');
+            } catch (err) {
+              GmToast.show(T('toast|复制失败：{err}', { err: TE(err.message) }), 'error');
+            }
+            return;
+          }
+          if (act === 'paste') {
+            var got = '';
+            try {
+              got = await navigator.clipboard.readText();
+            } catch (err) {
+              ta.focus();
+              GmToast.show(T('toast|无法读取剪贴板，请手动粘贴（Ctrl+V）'), 'warn');
+              return;
+            }
+            if (!got) { GmToast.show(T('toast|剪贴板是空的'), 'warn'); return; }
+            ta.value = got;
+            // The `input` event is what every consumer of these boxes listens on (`oninput`),
+            // so writing `.value` alone would leave the draft, the board and the parse all
+            // showing the previous record.
+            ta.dispatchEvent(new Event('input', { bubbles: true }));
+            GmToast.show(T('toast|已粘贴'), 'success');
+            return;
+          }
+          if (act === 'clear') {
+            if (!ta.value) { ta.focus(); return; }
+            if (!confirm(T('viewer|清空棋谱代码？'))) return;
+            ta.value = '';
+            ta.dispatchEvent(new Event('input', { bubbles: true }));
+            GmToast.show(T('toast|已清空'), 'info');
+          }
+        });
+      })(boxes[i]);
+    }
+  }
+
+  // ---- 0.5.3 §2.2.4: 回放过滤 ----
+  // Three controls and one warning. The warning is the point: §2.2.5 says `minRisk > maxRisk` is
+  // an INVALID configuration, and the honest reading of "invalid" is "the filter does nothing"
+  // rather than "the filter blocks everything" — an inverted interval matches no score, so
+  // leaving it armed would quietly disable archiving entirely. `shouldSkipArchive` returns false
+  // for it, and this function says so out loud instead of leaving the operator to notice that
+  // their archives stopped appearing.
+  function fillArchiveFilterForm() {
+    var f = G.normalizeArchiveFilter(S.archiveFilter);
+    var en = $('afEnabled'), lo = $('afMin'), hi = $('afMax');
+    if (en) en.checked = !!f.enabled;
+    // Never rewrite a box the operator is typing into. The commit is debounced by 400ms and
+    // `fillArchiveFilterForm()` runs when it resolves, so without this guard a save that landed
+    // between two keystrokes would move the caret and eat the rest of the number — the same
+    // "operator is typing" rule content.js applies before its full repaint.
+    var typing = (typeof document !== 'undefined') ? document.activeElement : null;
+    if (lo && lo !== typing) lo.value = String(f.minRisk);
+    if (hi && hi !== typing) hi.value = String(f.maxRisk);
+    var bad = G.archiveFilterInvalid(f);
+    if (lo) lo.disabled = !f.enabled;
+    if (hi) hi.disabled = !f.enabled;
+    setTxt('afTitle', T('viewer|回放过滤'));
+    setTxt('afEnabledLabel', T('viewer|启用'));
+    setTxt('afEnabledHint', T('viewer|开启后，AI 率落在下面范围内的对局不自动保存回放。'));
+    setTxt('afRangeLabel', T('viewer|AI 率范围'));
+    setTxt('afHint', bad
+      ? T('viewer|范围无效：下限大于上限，过滤已停用。请把下限调到不大于上限。')
+      : T('viewer|该范围内的对局不保存回放；双方同时检测时以较高的一侧为基准。手动「存为存档」不受此过滤影响。'));
+  }
+
+  // ---- 0.5.3 §1.1.6: 透明度与模糊 ----
+  // The panel is BUILT, not written into viewer.html, from the same table storage clamps
+  // against. Two things have to agree for a slider to be usable — its `max` and the ceiling
+  // `normalizeTransparency` applies — and a hand-written slider whose max disagreed would snap
+  // back on release with no visible cause. Ten of them is ten chances to make that mistake.
+  //
+  // The readout spells the direction out rather than printing a bare percentage: 「透明度 60%」
+  // is read as "60% see-through" by half the operators and "60% opaque" by the other half, and
+  // 0.4.7 shipped the wrong one of those. Saying 「透明 60% · 不透明 40%」 leaves no room.
+  var TP_GROUPS = [
+    {
+      part: 'viewer',
+      // Only the parts that have a ceiling of their own are listed; `TRANSPARENCY_LIMITS` is
+      // the authority and the loop below reads every max straight out of it.
+      rows: ['element', 'elementBlur', 'button', 'buttonBlur'],
+    },
+    {
+      part: 'overlay',
+      rows: ['background', 'backgroundBlur', 'element', 'elementBlur', 'button', 'buttonBlur'],
+    },
+  ];
+
+  // Every label is a LITERAL `T()` call in a switch, never `T(TP_LABEL[key])` and never
+  // `T('viewer|' + key)`. A computed key is invisible to `_tools/keys.cjs` (it sees the SHAPE,
+  // not the key), so the generated tables would carry no entry for it and every non-Chinese
+  // locale would print the raw Chinese text — the same trap `themeLabel()` above documents.
+  function tpLabel(key) {
+    if (key === 'element') return T('viewer|元素透明度');
+    if (key === 'elementBlur') return T('viewer|元素模糊度');
+    if (key === 'button') return T('viewer|按钮透明度');
+    if (key === 'buttonBlur') return T('viewer|按钮模糊度');
+    if (key === 'background') return T('viewer|背景透明度');
+    if (key === 'backgroundBlur') return T('viewer|背景模糊度');
+    return key;
+  }
+  function tpGroupLabel(part) {
+    if (part === 'viewer') return T('viewer|查看器');
+    if (part === 'overlay') return T('viewer|浮层');
+    return part;
+  }
+  function tpIsBlur(key) { return key.indexOf('Blur') > 0; }
+  function tpId(part, key) { return 'tp-' + part + '-' + key; }
+
+  function buildTransparencyPanel() {
+    var grid = $('tpGrid');
+    if (!grid) return;
+    setTxt('tpTitle', T('viewer|透明度与模糊'));
+    setTxt('tpHint', T('viewer|模糊度需要透明度大于 0 才看得见。查看器窗口无法真正透出桌面，这里的「透明」是相对浏览器底色而言；有背景图时，透明度越高背景图越明显。'));
+    var html = '';
+    TP_GROUPS.forEach(function (grp) {
+      var lim = (G.TRANSPARENCY_LIMITS || {})[grp.part] || {};
+      html += '<div class="set-item"><label>' + esc(tpGroupLabel(grp.part)) + '</label><div class="fx">' +
+        '<input type="checkbox" id="' + tpId(grp.part, 'enabled') + '">' +
+        '<span class="hint">' + esc(T('viewer|启用')) + '</span></div></div>';
+      grp.rows.forEach(function (key) {
+        var max = lim[key];
+        if (typeof max !== 'number') return;   // no ceiling => not configurable, see the table
+        var blur = tpIsBlur(key);
+        html += '<div class="set-item"><label for="' + tpId(grp.part, key) + '">' +
+          esc(tpLabel(key)) + '</label><div class="fx">' +
+          '<input type="range" id="' + tpId(grp.part, key) + '" min="0" max="' + max + '" step="1">' +
+          '<span class="hint" id="' + tpId(grp.part, key) + '-val"></span>' +
+          // §1.1.5 — the two are independent, and a blur with nothing to blur through does
+          // nothing visible. Saying so next to the control is cheaper than a support question.
+          (blur ? '<span class="hint">' + esc(T('viewer|需透明度 > 0 才可见')) + '</span>' : '') +
+          '</div></div>';
+      });
+    });
+    grid.innerHTML = html;
+  }
+
+  // Paints every control from `S.transparency`. The slider's `disabled` follows its group's
+  // switch, but the VALUE is left alone: switching a group off is a temporary mute, and an
+  // operator who flips it back expects their tuned numbers, not zeros.
+  function fillTransparencyForm() {
+    var t = G.normalizeTransparency(S.transparency);
+    TP_GROUPS.forEach(function (grp) {
+      var en = $(tpId(grp.part, 'enabled'));
+      var on = !!t[grp.part].enabled;
+      if (en) en.checked = on;
+      grp.rows.forEach(function (key) {
+        var el = $(tpId(grp.part, key)), val = $(tpId(grp.part, key) + '-val');
+        if (!el) return;
+        el.value = String(t[grp.part][key]);
+        el.disabled = !on;
+        if (!val) return;
+        var n = t[grp.part][key];
+        if (tpIsBlur(key)) {
+          val.textContent = n + 'px';
+        } else {
+          // Both halves of the same fact. `cssOpacity` is the one the browser acts on, so
+          // printing it makes the slider self-checking: drag to 95 and read 0.05.
+          val.textContent = T('viewer|透明 {t}% · 不透明 {o}', { t: n, o: G.cssOpacity(n) });
+        }
+      });
+    });
   }
 
   // ---- 0.4.4 §十六: the LLM API panel ----
@@ -1188,7 +1371,7 @@
   // currently showing; `bgOff` is the drag state, kept OUT of the DOM on purpose — a
   // `pointermove` fires dozens of times a second, and reading the offsets back off a
   // `background-position` string would mean parsing percentages mid-drag. The live repaint is
-  // immediate and the WRITE is debounced, the same split `bindOpacityControls` uses for its
+  // immediate and the WRITE is debounced, the same split `bindTransparencyControls` uses for its
   // slider and for the same reason: one storage round-trip per pixel of travel.
   var BG_SAVE_DELAY = 250;
   var bgCur = null;                    // { blob, opacity, blur, offsetX, offsetY, scale } | null
@@ -1845,6 +2028,30 @@
       function () { renderUpdateBanner(null); });
   }
 
+  // ---- 0.5.3 §1.3: the one-time notice that goes WITH the banner, not instead of it ----
+  // §1.3.1 puts this in boot() and nowhere else, and the flag makes that explicit rather than
+  // incidental: `refreshUpdateBanner()` above also runs on every settings broadcast, so a toast
+  // fired from there would reappear each time the operator touched any control on the page.
+  //
+  // The banner stays permanent and carries the 一键更新 button; this is the 8-second nudge for
+  // an operator who opened the viewer to look at a game and would never scroll to the top.
+  var updToastShown = false;
+  function notifyUpdateOnce() {
+    if (updToastShown) return Promise.resolve(null);
+    return G.pendingUpdate().then(function (info) {
+      if (!info || !info.available) return null;
+      updToastShown = true;
+      GmToast.show(T('toast|发现新版本 {v}', { v: info.latestVersion }), 'warn', {
+        link: info.releaseUrl || info.downloadUrl || G.UPDATE_RELEASES,
+        linkText: T('toast|前往下载'),
+        // §1.3.1 asks for 8s rather than the 3s default: this one carries a link the operator
+        // has to notice, aim at and click.
+        duration: 8000,
+      });
+      return info;
+    }, function () { return null; });
+  }
+
   function openUpdatePage() {
     var url = (updInfo && (updInfo.releaseUrl || updInfo.downloadUrl)) || G.UPDATE_RELEASES;
     try { window.open(url, '_blank', 'noopener'); } catch (e) { /* popup blocked */ }
@@ -1936,42 +2143,120 @@
     }, 1800);
   }
 
-  // ---- 0.4.7 §三.2 ----
+  // ---- 0.5.3 §1.1.6 ----
   // Same reason as bindLlmFields: the value written is a freshly-built object, so
-  // `bindSetting`'s `v === last` dedupe could never fire and the two controls would race each
+  // `bindSetting`'s `v === last` dedupe could never fire and two controls would race each
   // other's writes. The commit is unconditional and rides `G.saveSetting` so it is still on
   // GMStorage's serialised chain.
-  function bindOpacityControls() {
-    var en = $('setOpacityEnabled'), lv = $('setOpacityLevel'), val = $('setOpacityVal');
-    if (!en || !lv) return;
+  //
+  // ⚠ The commit reads EVERY control, not just the one that fired. `saveSetting` replaces the
+  // whole `transparency` value, so a partial object would silently reset the nine controls that
+  // did not move — and the damage would only show on the next reload.
+  function bindTransparencyControls() {
+    var grid = $('tpGrid');
+    if (!grid) return;
+    var timer = null;
+
+    function readAll() {
+      var out = {};
+      TP_GROUPS.forEach(function (grp) {
+        var en = $(tpId(grp.part, 'enabled'));
+        out[grp.part] = { enabled: !!(en && en.checked) };
+        grp.rows.forEach(function (key) {
+          var el = $(tpId(grp.part, key));
+          if (el) out[grp.part][key] = parseInt(el.value, 10);
+        });
+      });
+      return out;
+    }
+
+    function commit() {
+      if (timer) { clearTimeout(timer); timer = null; }
+      var next = G.normalizeTransparency(readAll());
+      lastSelfWrite = Date.now();
+      applyTransparency(next);
+      G.saveSetting('transparency', next).then(function (s) {
+        S = s;
+        fillTransparencyForm();
+        flashSaved();
+      });
+    }
+
+    // `input` while dragging repaints immediately so the operator can SEE the value they are
+    // choosing (§1.1.6 实时预览), but the write waits 250 ms — a range drag fires this event
+    // dozens of times and every one of them would otherwise be a storage round-trip.
+    //
+    // The live repaint goes through `applyTransparency` on a NORMALISED copy, so a value the
+    // slider cannot yet produce (a profile restored from elsewhere) still previews as what will
+    // actually be stored.
+    function preview() {
+      var next = G.normalizeTransparency(readAll());
+      applyTransparency(next);
+      // The readouts and the enabled/disabled state follow the drag, not just the commit.
+      TP_GROUPS.forEach(function (grp) {
+        grp.rows.forEach(function (key) {
+          var val = $(tpId(grp.part, key) + '-val');
+          if (!val) return;
+          var n = next[grp.part][key];
+          if (tpIsBlur(key)) val.textContent = n + 'px';
+          else val.textContent = T('viewer|透明 {t}% · 不透明 {o}', { t: n, o: G.cssOpacity(n) });
+          var el = $(tpId(grp.part, key));
+          if (el) el.disabled = !next[grp.part].enabled;
+        });
+      });
+    }
+
+    grid.addEventListener('change', function (e) {
+      var t = e.target;
+      if (!t) return;
+      // A checkbox commit is immediate (nothing to debounce), and so is the `change` that ends
+      // a drag — a drag that ends without a further `input` would otherwise leave the 250ms
+      // debounce as the only write, and `commit` clears that timer itself.
+      if (t.type === 'checkbox' || t.type === 'range') commit();
+    });
+    grid.addEventListener('input', function (e) {
+      if (!e.target || e.target.type !== 'range') return;
+      preview();
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(commit, 250);
+    });
+  }
+
+  // ---- 0.5.3 §2.2.4 ----
+  // Same shape as the transparency binder and for the same reason: `archiveFilter` is an object,
+  // so `bindSetting`'s scalar dedupe cannot apply, and a partial write would reset the other two
+  // fields. An empty box is read as the field's default rather than as 0 — clearing the input
+  // while retyping must not silently arm a filter that excludes every game.
+  function bindArchiveFilter() {
+    var en = $('afEnabled'), lo = $('afMin'), hi = $('afMax');
+    if (!en || !lo || !hi) return;
     var timer = null;
 
     function commit() {
       if (timer) { clearTimeout(timer); timer = null; }
-      // Read BOTH fields every time. Writing only the one that changed would drop the other
-      // back to its default on the next load, because `saveSetting` replaces the whole value.
-      var next = G.normalizeOpacity({ enabled: !!en.checked, level: parseInt(lv.value, 10) });
+      var next = G.normalizeArchiveFilter({
+        enabled: !!en.checked,
+        minRisk: lo.value === '' ? 0 : parseInt(lo.value, 10),
+        maxRisk: hi.value === '' ? 54 : parseInt(hi.value, 10),
+      });
       lastSelfWrite = Date.now();
-      applyOpacity(next);
-      lv.disabled = !next.enabled;
-      G.saveSetting('opacity', next).then(function (s) {
+      // Rewrite the boxes from the CLAMPED result, so the control can never display a number
+      // storage did not accept — the same rule `setMinMoves` follows above.
+      G.saveSetting('archiveFilter', next).then(function (s) {
         S = s;
-        fillOpacityForm();
+        fillArchiveFilterForm();
         flashSaved();
       });
     }
 
     en.addEventListener('change', commit);
-    // `input` while dragging repaints immediately so the operator can SEE the level they are
-    // choosing, but the write waits 250 ms — a range drag fires this event dozens of times and
-    // every one of them would otherwise be a storage round-trip.
-    lv.addEventListener('input', function () {
-      applyOpacity({ enabled: !!en.checked, level: parseInt(lv.value, 10) });
-      if (timer) clearTimeout(timer);
-      timer = setTimeout(commit, 250);
+    [lo, hi].forEach(function (el) {
+      el.addEventListener('input', function () {
+        if (timer) clearTimeout(timer);
+        timer = setTimeout(commit, 400);
+      });
+      el.addEventListener('change', commit);
     });
-    lv.addEventListener('change', commit);
-    if (val) val.textContent = T('viewer|100% = 完全不透明；0% = 底层全透明，功能部件 80%');
   }
   bindSetting($('setSuspect'), 'suspect', function (e) { return e.value; });
   bindSetting($('setMode'), 'mode', function (e) { return e.value; });
@@ -1998,6 +2283,8 @@
   // 0.4.10 §三 — the tutorial button. Guarded: `openTutorial` lives with the modal helpers far
   // below, and a viewer.html without the button (a trimmed build) must not throw here.
   if ($('tutorialBtn')) $('tutorialBtn').onclick = openTutorial;
+  // 0.5.3 §1.4.3 — 标签百科, same guard and same reason.
+  if ($('tagWikiBtn')) $('tagWikiBtn').onclick = openTagWiki;
   // A language change is written like any other setting; the repaint comes from the
   // storage.onChanged broadcast (§1.8), which is also what keeps the toolbar menu's checkmark
   // and this dropdown from disagreeing when the change was made on the other entry point.
@@ -2013,8 +2300,12 @@
   // anywhere — a failure mode this project has hit and does not want twice.
   bindSetting($('setTheme'), 'theme', function (e) { return applyTheme(e.value); });
   // §三.2 — the checkbox and the slider are two fields of ONE object, so neither can ride
-  // `bindSetting` (which dedupes a scalar). Both commit the whole `opacity` object.
-  bindOpacityControls();
+  // `bindSetting` (which dedupes a scalar). Both commit the whole `transparency` object.
+  bindTransparencyControls();
+  bindArchiveFilter();
+  // 0.5.3 §3.1 — one delegated listener per code box. The boxes are static markup, so this runs
+  // once at module evaluation, like every other binding on this line.
+  bindCodeBoxes();
   bindLlmFields();
   // 0.4.8 §3 — the searchable model drawer rides on top of the plain Model field.
   bindModelPicker();
@@ -2520,6 +2811,13 @@
     };
   }
 
+  // A side's risk score as a notice prints it. An integer, because the score is a percentage
+  // and the archive stores one; a missing side reads 0, the same default `shouldSkipArchive`
+  // and the archive grid's `Math.max` both use.
+  function riskText(side) {
+    return String(Math.round(side && isFinite(side.risk) ? side.risk : 0));
+  }
+
   $('run').onclick = async function () {
     var text = $('input').value.trim();
     if (!text) { alert(T('viewer|请先粘贴或选择棋谱')); return; }
@@ -2532,6 +2830,12 @@
     rec.stones = currentRecord().stones;
     if (rec.moves.length < 5) { alert(T('viewer|有效手数过少: {n}', { n: rec.moves.length })); return; }
     $('run').disabled = true; engineBusy = true; setPauseLabel();
+    // 0.5.3 §1.2.3 — the run can take a minute and the operator is usually looking at the step
+    // table, not at the status line at the top of the page. A toast is the only notice that
+    // neither blocks them nor goes unseen. The three ALERTS above stay as they are: an empty
+    // textarea is something the operator must fix before anything can proceed, and that wants an
+    // acknowledgement, whereas a failed engine run wants to be told and then got on with.
+    GmToast.show(T('toast|分析开始'), 'info');
     var jid = gmJobId('global');
     pauseCtrl.jobId = jid; pauseCtrl.paused = false;
     jobSinks[jid] = setProgress;
@@ -2560,9 +2864,14 @@
       report = resp.report;
       renderReport();
       await archiveCurrent('global');
+      // §1.2.3 — both scores in the notice, because "分析完成" alone would send the operator
+      // hunting for the two numbers it just computed.
+      GmToast.show(T('toast|分析完成 · 黑 {b} 白 {w}', {
+        b: riskText(report && report.black), w: riskText(report && report.white),
+      }), 'success');
     } catch (e) {
-      alert(T('viewer|分析出错: {err}', { err: TE(e.message) }));
       setStatus(T('viewer|引擎错误: {err}', { err: TE(e.message) }));
+      GmToast.show(T('toast|分析失败：{err}', { err: TE(e.message) }), 'error');
     } finally {
       delete jobSinks[jid];
       pauseCtrl.jobId = null;
@@ -2572,12 +2881,33 @@
 
   // 存档：detect tab analyses are archived too, so the replay list is the single
   // history for both the page panel and this page.
-  async function archiveCurrent(mode) {
+  // 0.5.3 §2.2.3 — `opts.manual` is the whole distinction §2.2.5 draws: the AUTOMATIC archives
+  // (the one that follows an analysis, and the one that ends a stepwise session) honour the
+  // operator's filter, while the 「存为存档」 button deliberately ignores it. An explicit action
+  // must never be silently swallowed by a rule the operator set for automatic behaviour.
+  async function archiveCurrent(mode, opts) {
     if (!report) return null;
+    var manual = !!(opts && opts.manual);
     // A null aggregate is a legitimate outcome (nothing survived the filters), not a
     // reason to throw the game away — the record and the per-move verdicts are still
     // worth replaying. Only a report with no verdicts at all is refused.
     if (!anyAggregate(report) && !(report.steps || []).length) return null;
+    // §2.2.2 — the filter is judged on the HIGHER of the two sides, so a game where only one
+    // side is suspicious is filtered on that side rather than on the average.
+    if (!manual && G.shouldSkipArchive(report, S.archiveFilter)) {
+      var f = G.normalizeArchiveFilter(S.archiveFilter);
+      var skipRisk = Math.round(Math.max(
+        report.black ? (report.black.risk || 0) : 0,
+        report.white ? (report.white.risk || 0) : 0));
+      // A status line rather than a toast: this is the ordinary outcome of a setting the
+      // operator chose, not an event that needs to interrupt them. §2.2.3's own snippet writes
+      // it into the job's note for the same reason, and the wording is IDENTICAL to the
+      // overlay's (`panel|…`) on purpose — the dictionary is keyed by text, so one row
+      // translates both and the two surfaces cannot drift apart.
+      setStatus(T('viewer|AI 率 {r}% 在过滤范围内（{min}%–{max}%），未存档。',
+        { r: skipRisk, min: f.minRisk, max: f.maxRisk }));
+      return null;
+    }
     var rec = currentRecord();
     var minMoves = G.clampMinMoves(S.minArchiveMoves);
     // 0.3.4: this test must use the length of the RECORD, not the number of hands that happened
@@ -2610,7 +2940,7 @@
   }
   $('saveArchive').onclick = async function () {
     if (!report) { alert(T('viewer|先完成一次分析。')); return; }
-    await archiveCurrent(detectMode === 'stepwise' ? 'stepwise' : 'global');
+    await archiveCurrent(detectMode === 'stepwise' ? 'stepwise' : 'global', { manual: true });
   };
 
   // ---- stepwise ----
@@ -4508,6 +4838,92 @@
 
   function openTutorial() {
     openModal(T('viewer|新手教程'), tutorialHtml());
+  }
+
+  // =====================================================================
+  // 0.5.3 §1.4 标签百科
+  // =====================================================================
+  // The list is rendered, filtered and re-rendered on every keystroke rather than being built
+  // once and hidden with CSS. 36 entries is small enough that the rebuild is free, and a
+  // rebuild is the only version that cannot leave a stale row visible: hiding rows means
+  // remembering to un-hide them, and that is where this kind of UI goes wrong.
+  //
+  // The search runs over the FILLED text (see `GM_TAG_WIKI.matches`), so typing `75` finds the
+  // AI bands and typing `吻合` finds the signal whose displayed name contains it but whose slug
+  // does not — the name is resolved through TO() here and handed to the matcher, because
+  // tagWiki.js deliberately has no i18n dependency.
+  var twState = { q: '', cat: 'all' };
+
+  function twNameOf(entry) { return TO(entry.nameNs, entry.nameVal); }
+
+  // Literal `T()` calls, for the reason spelled out at `tpLabel()`: the category id is a
+  // runtime value, so a computed key would be invisible to `_tools/keys.cjs` and every
+  // non-Chinese locale would print the Chinese category name.
+  function twCatLabel(id) {
+    if (id === 'all') return T('viewer|全部');
+    if (id === 'preset') return T('viewer|预设标签');
+    if (id === 'ann') return T('viewer|人工标注');
+    if (id === 'type') return T('viewer|AI分类');
+    if (id === 'signal') return T('viewer|检测信号');
+    return id;
+  }
+
+  function tagWikiHtml() {
+    var list = GM_TAG_WIKI.filter({ q: twState.q, cat: twState.cat, nameOf: twNameOf });
+    if (!list.length) return '<div class="tw-empty">' + esc(T('viewer|没有匹配的标签')) + '</div>';
+    return '<div class="tw-list">' + list.map(function (entry) {
+      var body = GM_TAG_WIKI.resolve(entry, LANG);
+      // §1.4.3's card: name, category, then 意义 / 用法 / 影响. The 「仅记录」 chip appears only
+      // on the entries whose effect the code does not implement — see the header of tagWiki.js
+      // for why three of them say so.
+      return '<div class="tw-item"><h4>' + esc(twNameOf(entry)) +
+        '<span class="tw-cat-chip">' + esc(twCatLabel(entry.cat)) + '</span>' +
+        (body.applied ? '' : '<span class="tw-rec">' + esc(T('viewer|仅记录')) + '</span>') +
+        '</h4><dl>' +
+        '<dt>' + esc(T('viewer|意义')) + '</dt><dd>' + esc(body.meaning) + '</dd>' +
+        '<dt>' + esc(T('viewer|用法')) + '</dt><dd>' + esc(body.usage) + '</dd>' +
+        '<dt>' + esc(T('viewer|影响')) + '</dt><dd>' + esc(body.impact) + '</dd>' +
+        '</dl></div>';
+    }).join('') + '</div>';
+  }
+
+  function tagWikiChrome() {
+    var cats = [{ id: 'all' }].concat(GM_TAG_WIKI.CATS);
+    return '<div class="tw-bar">' +
+      '<input type="search" id="twQ" placeholder="' + esc(T('viewer|搜索标签')) + '" value="' + esc(twState.q) + '">' +
+      '<div class="tw-cats">' + cats.map(function (c) {
+        return '<span class="tw-cat' + (twState.cat === c.id ? ' on' : '') + '" data-cat="' +
+          esc(c.id) + '">' + esc(twCatLabel(c.id)) + '</span>';
+      }).join('') + '</div></div>' +
+      '<div id="twBody">' + tagWikiHtml() + '</div>';
+  }
+
+  function openTagWiki() {
+    twState = { q: '', cat: 'all' };
+    openModal(T('viewer|标签百科'), tagWikiChrome(), function (bd) {
+      var q = bd.querySelector('#twQ');
+      var body = bd.querySelector('#twBody');
+      // Only the body is repainted while typing, so the input keeps focus and the caret does not
+      // jump to the end on every keystroke — the same reason the settings page refuses to
+      // rewrite a focused box.
+      function repaint() {
+        if (body) body.innerHTML = tagWikiHtml();
+        var chips = bd.querySelectorAll('.tw-cat');
+        for (var i = 0; i < chips.length; i++) {
+          chips[i].classList.toggle('on', chips[i].getAttribute('data-cat') === twState.cat);
+        }
+      }
+      if (q) {
+        q.addEventListener('input', function () { twState.q = q.value; repaint(); });
+        q.focus();
+      }
+      bd.addEventListener('click', function (e) {
+        var chip = e.target && e.target.closest ? e.target.closest('.tw-cat') : null;
+        if (!chip) return;
+        twState.cat = chip.getAttribute('data-cat') || 'all';
+        repaint();
+      });
+    });
   }
 
   // =====================================================================
@@ -6539,7 +6955,7 @@
       // Nothing to recompute in the palette — that is the stylesheet's job. The value is
       // re-applied anyway because it is cheap and idempotent, and because a future editor
       // who adds a JS-side dependency on the resolved theme will find the hook already here.
-      applyOpacity(S.opacity);
+      applyTransparency(S.transparency);
     };
     if (mqDark.addEventListener) mqDark.addEventListener('change', onScheme);
     else if (mqDark.addListener) mqDark.addListener(onScheme);   // Safari < 14
@@ -6689,11 +7105,11 @@
           if (langChanged) { applyLang(S.lang); repaintForLang(); return; }
           // 0.4.7 §三.1/§三.2 — these two are NOT part of the `self` short-circuit below. A
           // theme or opacity change made in the in-page panel arrives here as a foreign write,
-          // and even our own echo has to re-apply: the applyTheme/applyOpacity calls in the
+          // and even our own echo has to re-apply: the applyTheme/applyTransparency calls in the
           // bindings read the clamp's OUTPUT, but a change made in another tab leaves this
           // document holding the old attribute until something puts it back.
           applyTheme(S.theme);
-          applyOpacity(S.opacity);
+          applyTransparency(S.transparency);
           // Our own write echoed back: S/syncDetectControls are enough. Re-filling the
           // whole form here would reach into whatever box the user moved on to.
           var self = (Date.now() - lastSelfWrite) < 1000;
@@ -6775,11 +7191,14 @@
     // switch from overwriting a player name with a stale static string.
     applyLang(S.lang);
     GMI18n.apply(document);
-    // 0.4.7 §三.1/§三.2 — theme and opacity go on <html> BEFORE the first paint. Both are
-    // attribute/class swaps that the stylesheet resolves on its own, so doing them here costs
-    // nothing and doing them later would flash the wrong palette on load.
+    // 0.4.7 §三.1/§三.2 — theme and transparency go on <html> BEFORE the first paint. Both are
+    // attribute/custom-property swaps that the stylesheet resolves on its own, so doing them
+    // here costs nothing and doing them later would flash the wrong palette on load.
     applyTheme(S.theme);
-    applyOpacity(S.opacity);
+    applyTransparency(S.transparency);
+    // 0.5.3 §1.2 — the toast stack lives in this document. Attached before anything can raise
+    // one (the analysis notices come from a click, the update notice from the end of boot).
+    GmToast.attach(document);
     // 0.5.2 §5.1 — the operator's own backdrop, if they set one. Awaited so the picture is on
     // screen with the first frame: `has-bg` swaps `body` from an opaque `--bg` to transparent,
     // and a late arrival would show one frame of the default palette first.
@@ -6787,6 +7206,10 @@
     fillLangSelect();
     fillThreadSelect();
     fillThemeSelect();
+    // 0.5.3 §1.1.6 — the panel's markup is generated (see buildTransparencyPanel), so it has to
+    // exist before fillSettingsForm paints it. Rebuilt on a language switch too: its labels are
+    // JS-built and carry no `__gmKey` for the static pass to reach.
+    buildTransparencyPanel();
     // 0.5.1 §2.1.4 — the custom models live in IndexedDB, so the registry has to be filled before
     // the three dropdowns can name them. Reads only; the engine status line is deliberately NOT
     // asked for here (see renderSettings).
@@ -6820,6 +7243,8 @@
     // 「检测更新」 button do that.
     fillVersionRow();
     refreshUpdateBanner();
+    // 0.5.3 §1.3 — the one-shot companion to the banner above (see notifyUpdateOnce).
+    notifyUpdateOnce();
     // 0.4.3 §1.3: the four tables' segment legends are static markup in viewer.html but their
     // text lives in the dictionary, so they are filled once here — a later language switch goes
     // through `repaintForLang`.

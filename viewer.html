@@ -143,35 +143,40 @@
       --badge-sim-bg:rgba(176,90,160,.85); --badge-sim-fg:#fff;
     }
   }
-  /* ---- 0.4.7 §三.2 透明度 ----
-     Two independent alphas, set by applyOpacity() from settings.opacity:
-       · the BACKGROUND surfaces breathe, --bg-rgb / --panel-rgb with an alpha; at level 0
-         they go fully transparent so the desktop shows through;
-       · the FUNCTIONAL widgets (cards, tables, controls — everything that carries text you
-         have to READ) stop at 0.80. An operator who drags the slider to 0 gets a translucent
-         window, never an invisible one: a panel you cannot find the close button on is a
-         bug, not a feature.
+  /* ---- 0.5.3 §1.1 透明度与模糊 ----
+     ⚠ 0.4.7 read this setting the way CSS `opacity` reads it — 100 = fully opaque — which is
+     the OPPOSITE of what the requirement asks for. §1.1 states the semantic plainly: 0% =
+     完全不透明, 100% = 全透明, i.e. the number is a TRANSPARENCY percentage and converts with
+     `cssOpacity = 1 - t/100`. `applyTransparency()` in viewer.js does that conversion; the
+     variables below therefore already hold a CSS opacity, and are named after what they PAINT
+     rather than after the slider that fed them (the same rule `--gm-bg-dim` follows).
 
-     `html{background:transparent}` is what makes the root actually see-through — without it
-     the canvas paints its own opaque colour behind everything and the alpha below is moot.
-     It is unconditional: when transparency is off, `body` paints the opaque `--bg` anyway.
+     Two parts, each with its own ceiling (元素 95 / 按钮 80 — §1.1.2), each with its own blur.
+     The ceiling lives in `normalizeTransparency`, not just in the slider's `max`: the stored
+     profile is an input this page never validates, and an out-of-range number written straight
+     into `opacity:` would be discarded at computed-value time, silently leaving the element
+     fully opaque.
 
-     NOTE this cannot show the real desktop. A `chrome-extension://` window is composited by
-     the browser and has no per-window alpha channel, so "transparent" here means "transparent
-     against whatever the browser paints behind the page". The settings UI says so. */
+     Why `opacity` and not an alpha on the fill: §1.1.7 asks for the background picture to show
+     THROUGH the panels, and only `opacity` fades the element's borders, text and children along
+     with its fill. The picture itself is untouched — it is painted on `html::before`, which is
+     below all of this and carries no variable from here.
+
+     `html{background:transparent}` is unconditional and is what makes the root see-through;
+     `body` paints the opaque `--bg` instead, and gives it up under `has-bg` (see the background
+     block below). With transparency off both variables are written as 1 / 0px, so this block is
+     a byte-for-byte no-op. */
   html{background:transparent}
-  html.gm-transparent, html.gm-transparent body{background:rgba(var(--bg-rgb),var(--gm-bg-alpha,1))}
-  html.gm-transparent header,
-  html.gm-transparent .panel,
-  html.gm-transparent .card,
-  html.gm-transparent aside,
-  html.gm-transparent .set-group,
-  html.gm-transparent .scroll,
-  html.gm-transparent .archive-grid{background:rgba(var(--panel-rgb),var(--gm-bg-alpha,1))}
-  /* The readability floor. Applied to the CONTENT shells, not to the surfaces above: the
-     point is that text stays legible over a transparent backdrop, so it is the box holding
-     the text that has to keep a solid-enough fill. */
-  html.gm-transparent .gm-opaque{opacity:var(--gm-widget-alpha,1)}
+  header, .panel, .card, .acard, .facts, .scroll, .archive-grid, .set-group{
+    opacity:var(--viewer-elem-opacity,1);
+    backdrop-filter:blur(var(--viewer-elem-blur,0px));
+  }
+  /* Buttons carry their own, LOWER ceiling: at 元素 95% a panel is a ghost, but a ghost button
+     is one you cannot find. §1.1.2 caps this part at 80% for exactly that reason. */
+  button, .navbtn, .tab{
+    opacity:var(--viewer-btn-opacity,1);
+    backdrop-filter:blur(var(--viewer-btn-blur,0px));
+  }
 
   /* ---- 0.5.2 §5.1 自定义背景（查看器）----
      ⚠ The spec's version of this block hangs the picture on `body.has-bg` and its scrim on
@@ -205,6 +210,64 @@
     content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;
     background:rgba(0,0,0,var(--gm-bg-dim,0));
   }
+
+  /* ---- 0.5.3 §1.2 Toast 通知 ----
+     Fixed to the bottom-right and `column-reverse`, which is what makes the stack grow UPWARD
+     (§1.2.1 往上堆积) while `appendChild` keeps adding to the end of the list — the newest toast
+     is the last child and the bottom-most box, so the list order and the visual order agree
+     without any insertion logic.
+
+     `pointer-events:none` on the container and `auto` on each toast: the container spans a
+     fixed box that would otherwise swallow clicks on whatever is under it, and the toasts
+     themselves must stay clickable (the update toast carries a link).
+
+     NOTE the same block is repeated inside content.js's shadow root. It has to be: a shadow
+     root's stylesheet cannot be shared with the document's without a constructed-stylesheet
+     dance that MV3's CSP makes awkward. The BEHAVIOUR is shared — that lives in toast.js. */
+  .toast-container{position:fixed;inset-inline-end:16px;bottom:16px;display:flex;flex-direction:column-reverse;gap:8px;z-index:9999;pointer-events:none}
+  .toast{pointer-events:auto;background:var(--panel);border:1px solid var(--line);border-inline-start:4px solid var(--blue);border-radius:var(--ui-detail-radius);padding:12px 32px 12px 14px;min-width:260px;max-width:360px;box-shadow:0 8px 24px rgba(0,0,0,.4);position:relative;animation:toast-in .2s ease-out;font-size:var(--ui-detail-small)}
+  .toast.success{border-inline-start-color:var(--green)}
+  .toast.warn{border-inline-start-color:var(--yellow)}
+  .toast.error{border-inline-start-color:var(--red)}
+  .toast .tx{word-break:break-word}
+  .toast .lk{display:inline-block;margin-top:6px;color:var(--blue);text-decoration:underline;cursor:pointer}
+  .toast .close{position:absolute;top:6px;inset-inline-end:8px;cursor:pointer;color:var(--mut);font-size:16px;line-height:1;user-select:none}
+  .toast .close:hover{color:var(--txt)}
+  @keyframes toast-in{from{transform:translateY(8px);opacity:0}to{transform:translateY(0);opacity:1}}
+
+  /* ---- 0.5.3 §3.1 棋谱代码框的复制 / 粘贴 / 清空 ----
+     ⚠ §3.1.2's `.code-btn` fills itself with `rgba(42,52,65,.9)` — a dark surface. This page
+     ships a light theme too, and a hardcoded dark chip on a light panel reads as a rendering
+     bug, so the fill is `var(--panel)` and the border carries the separation instead. Same
+     geometry, same behaviour.
+
+     `padding-top:36px` on the textarea is what keeps the buttons from covering the first line
+     (§3.1.4 #5) — the button row is absolutely positioned INSIDE the box, so without it the
+     caret and the 📋 button occupy the same 24px. */
+  .code-box{position:relative}
+  .code-box textarea{padding-top:36px}
+  .code-actions{position:absolute;top:8px;inset-inline-end:8px;display:flex;gap:4px;z-index:1}
+  .code-btn{min-height:0;padding:4px 8px;font-size:13px;background:var(--panel);border:1px solid var(--line);border-radius:4px;cursor:pointer;user-select:none;color:var(--txt)}
+  .code-btn:hover{background:var(--blue);color:#fff;border-color:var(--blue)}
+
+  /* ---- 0.5.3 §1.4 标签百科 ----
+     The modal's own chrome. The entries are plain cards so a 36-row list stays scannable and
+     each row's 意义/用法/影响 lines wrap independently. */
+  .tw-bar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:12px}
+  .tw-bar input[type=search]{flex:1 1 220px;min-width:180px;font-size:var(--ui-detail-font);padding:8px 10px}
+  .tw-cats{display:flex;gap:6px;flex-wrap:wrap}
+  .tw-cat{padding:4px 12px;border:1px solid var(--line);border-radius:999px;cursor:pointer;user-select:none;font-size:var(--ui-detail-small);background:var(--panel);color:var(--txt)}
+  .tw-cat:hover{border-color:var(--blue)}
+  .tw-cat.on{background:var(--blue);color:#fff;border-color:var(--blue)}
+  .tw-list{display:flex;flex-direction:column;gap:10px}
+  .tw-item{border:1px solid var(--line);border-radius:var(--ui-detail-radius);padding:12px 14px;background:rgba(var(--panel-rgb),.45)}
+  .tw-item h4{margin:0 0 6px;font-size:var(--ui-detail-font);font-weight:600}
+  .tw-cat-chip{display:inline-block;margin-inline-start:8px;padding:1px 8px;border-radius:999px;font-size:11px;font-weight:400;background:rgba(var(--panel-rgb),.9);border:1px solid var(--line);color:var(--mut);vertical-align:2px}
+  .tw-rec{display:inline-block;margin-inline-start:6px;padding:1px 8px;border-radius:999px;font-size:11px;font-weight:400;background:rgba(230,126,34,.18);border:1px solid rgba(230,126,34,.45);color:#e0c060;vertical-align:2px}
+  .tw-item dl{margin:0;display:grid;grid-template-columns:auto 1fr;gap:2px 10px;font-size:var(--ui-detail-small)}
+  .tw-item dt{color:var(--mut);white-space:nowrap}
+  .tw-item dd{margin:0}
+  .tw-empty{color:var(--mut);padding:24px 0;text-align:center}
 
   *{box-sizing:border-box}
   /* ---- 0.4.6 §二.2: RTL ----
@@ -830,7 +893,17 @@
 
         <div class="panel">
           <h2>棋谱代码</h2>
-          <textarea id="input" placeholder="分享串 / JSON"></textarea>
+          <!-- 0.5.3 §3.1 — copy / paste / clear. The buttons sit INSIDE the box (see
+               `.code-box textarea{padding-top:36px}`) so they travel with the textarea rather
+               than floating at a guessed offset. -->
+          <div class="code-box">
+            <textarea id="input" placeholder="分享串 / JSON"></textarea>
+            <div class="code-actions">
+              <button class="code-btn" data-act="copy" title="复制">📋</button>
+              <button class="code-btn" data-act="paste" title="粘贴">📥</button>
+              <button class="code-btn" data-act="clear" title="清空">✕</button>
+            </div>
+          </div>
         </div>
 
         <div class="panel">
@@ -1370,7 +1443,14 @@
         <div class="right-col">
           <div class="panel">
             <h2>步骤 1 · 棋谱代码</h2>
-            <textarea id="seInput" placeholder="分享串 / JSON"></textarea>
+            <div class="code-box">
+              <textarea id="seInput" placeholder="分享串 / JSON"></textarea>
+              <div class="code-actions">
+                <button class="code-btn" data-act="copy" title="复制">📋</button>
+                <button class="code-btn" data-act="paste" title="粘贴">📥</button>
+                <button class="code-btn" data-act="clear" title="清空">✕</button>
+              </div>
+            </div>
             <div class="hint" id="seInputInfo" style="margin-top:6px">—</div>
           </div>
 
@@ -1504,6 +1584,9 @@
       <div class="hint">从零了解检测器：每个功能做什么、每个标签意味着什么、如何让检测更准。</div>
       <div class="btn-row" style="margin-top:10px">
         <button class="sec" id="tutorialBtn">打开教程</button>
+        <!-- 0.5.3 §1.4.3 — 标签百科, beside 新手教程 because they answer the two halves of the
+             same question: the tutorial says what the tool DOES, this says what its WORDS mean. -->
+        <button class="sec" id="tagWikiBtn">标签介绍</button>
       </div>
     </div>
 
@@ -1664,23 +1747,54 @@
             <span class="hint">显示 / 隐藏步骤明细的列（四张表共用）</span>
           </div>
         </div>
-        <div class="set-item">
-          <label id="setOpacityLabel">透明度模式</label>
-          <div class="fx">
-            <input type="checkbox" id="setOpacityEnabled">
-            <span class="hint" id="setOpacityHint"></span>
-          </div>
-        </div>
-        <div class="set-item">
-          <label id="setOpacityLevelLabel">透明度</label>
-          <div class="fx">
-            <input type="range" id="setOpacityLevel" min="0" max="100" step="5">
-            <span class="hint" id="setOpacityVal"></span>
-          </div>
         </div>
       </div>
       <div class="btn-row" style="margin-top:10px">
         <span class="hint">也可以在浏览器工具栏图标上点右键，从「语言」菜单里切换 —— 两条入口写的是同一份设置，改一处两处都会跟着变。</span>
+      </div>
+    </div>
+
+    <!-- 0.5.3 §1.1.6 — 透明度与模糊. Replaces 0.4.7's single 透明度模式 switch, whose number ran
+         the opposite way (100 = opaque) from the requirement (100 = see-through).
+
+         The rows are BUILT BY `buildTransparencyPanel()` from `TRANSPARENCY_LIMITS` rather than
+         written out here, because every slider's `max` is that table's ceiling and every readout
+         needs the same value. Ten hand-written controls would mean ten chances to typo a ceiling,
+         and a slider whose max disagrees with the value storage clamps to is a control that
+         silently snaps back when released. -->
+    <div class="panel set-panel">
+      <h2 id="tpTitle">透明度与模糊</h2>
+      <div class="set-grid" id="tpGrid"></div>
+      <div class="btn-row" style="margin-top:10px">
+        <span class="hint" id="tpHint"></span>
+      </div>
+    </div>
+
+    <!-- 0.5.3 §2.2.4 — 回放过滤. Number inputs rather than sliders, which is what §2.2.4 asks
+         for: the operator is naming an exact interval (the default ceiling of 54 is the top of
+         the 高手玩家 band), and a slider that lands on 53 or 55 makes that impossible to hit. -->
+    <div class="panel set-panel">
+      <h2 id="afTitle">回放过滤</h2>
+      <div class="set-grid">
+        <div class="set-item">
+          <label id="afEnabledLabel">启用</label>
+          <div class="fx">
+            <input type="checkbox" id="afEnabled">
+            <span class="hint" id="afEnabledHint"></span>
+          </div>
+        </div>
+        <div class="set-item">
+          <label id="afRangeLabel">AI 率范围</label>
+          <div class="fx">
+            <input type="number" id="afMin" min="0" max="100" step="1" style="width:80px">
+            <span class="hint">–</span>
+            <input type="number" id="afMax" min="0" max="100" step="1" style="width:80px">
+            <span class="hint">%</span>
+          </div>
+        </div>
+      </div>
+      <div class="btn-row" style="margin-top:10px">
+        <span class="hint" id="afHint"></span>
       </div>
     </div>
 
@@ -1913,6 +2027,14 @@
 <script src="custom-engine.js"></script>
 <script src="app.js"></script>
 <script src="learn.js"></script>
+<!-- 0.5.3 §1.2/§1.4 — the toast stack and the tag encyclopedia.
+     Both come AFTER app.js on purpose: `tagWiki.js` reads `BASE_WEIGHTS` / `BASE_THRESHOLDS`
+     as bare identifiers at RENDER time, and those are top-level `const`s in app.js, which a
+     classic script publishes into the shared global lexical environment. Loading this file
+     first would still work for the module itself (the probe is inside a function) but the
+     figures would read as unreachable and every weight would print as an em dash. -->
+<script src="toast.js"></script>
+<script src="tagWiki.js"></script>
 <script src="viewer.js"></script>
 </body>
 </html>

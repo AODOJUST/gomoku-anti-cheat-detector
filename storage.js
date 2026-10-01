@@ -115,12 +115,46 @@
     // the behaviour the viewer had before there was a setting at all, so it is the default: an
     // operator who never opens the settings page sees exactly what they saw in 0.4.6.
     theme: 'auto',
-    // 0.4.7 §三.2 — page translucency. `level` is 0..100 where 100 = fully opaque and 0 = the
-    // background layers are fully transparent (functional widgets floor at opacity 0.80). It
-    // only ever applies to the VIEWER: the in-page panel floats over a game, and a translucent
-    // panel is unreadable. `enabled: false` means every derived value is exactly 1, so an
-    // untouched profile renders byte-identically to 0.4.6.
-    opacity: { enabled: false, level: 100 },
+    // 0.5.3 §1.1 — TRANSPARENCY, and the direction matters.
+    //
+    // 0.4.7 §三.2 called this setting `opacity` and read it with CSS `opacity` semantics:
+    // `level: 100` meant FULLY OPAQUE and 0 meant fully transparent. The requirement's own
+    // wording — 「透明度最高可以到 95%」 — is the opposite way round: 透明度 is TRANSPARENCY,
+    // so 0% is opaque and 100% is invisible. Half the operators read "透明度 60%" as
+    // "60% see-through" and the other half as "60% opaque"; 0.4.7 picked the minority reading
+    // and the slider has been backwards ever since. 0.5.3 §1.1 replaces it outright.
+    //
+    //   cssOpacity = 1 - transparencyPercent / 100
+    //
+    // Five INDEPENDENT parts, each with its own ceiling — the ceilings are the requirement's
+    // 「最高为 X%」 values and they are enforced here (see clampTransparency), not merely
+    // suggested by a slider's `max`, because the profile is the one input the UI never
+    // validates:
+    //
+    //              transparency   css opacity
+    //   viewer     element  0–95   1.00–0.05
+    //              button   0–80   1.00–0.20
+    //   overlay    background 0–95 1.00–0.05
+    //              element  0–90   1.00–0.10
+    //              button   0–80   1.00–0.20
+    //
+    // It applies to the UI LAYER only — elements, buttons, and the panel's own background.
+    // The background PICTURE (§5.1) is never faded: it is the bottom layer, and making the
+    // bottom layer translucent just shows the page through it. `enabled: false` means every
+    // derived value is exactly 1, so an untouched profile renders byte-identically to 0.5.2.
+    transparency: {
+      viewer: { enabled: false, element: 0, elementBlur: 0, button: 0, buttonBlur: 0 },
+      overlay: {
+        enabled: false, background: 0, backgroundBlur: 0,
+        element: 0, elementBlur: 0, button: 0, buttonBlur: 0,
+      },
+    },
+    // 0.5.3 §2.1 — 回放过滤. A game whose risk lands inside [minRisk, maxRisk] is analysed and
+    // shown but NOT archived. The default (0–54) is the range an operator most often does not
+    // want filling the archive list: below 55 is 「职业选手」 and weaker (see classifySide), and
+    // a low-risk game is the one they are least likely to come back to. `enabled: false` means
+    // every game is archived, which is exactly 0.5.2's behaviour.
+    archiveFilter: { enabled: false, minRisk: 0, maxRisk: 54 },
     // 0.4.4 §十六 — the LLM panel. The DEFAULTS live in llm.js (GMLLM.DEFAULTS) because the
     // service worker loads that file too; a second literal here would drift. `llm.js` is loaded
     // before this file (manifest order), so the reference resolves. `{}` in a broken build is
@@ -206,18 +240,111 @@
     return (typeof v === 'string' && THEMES.indexOf(v) >= 0) ? v : 'auto';
   }
 
-  // `opacity` is a small object, so it is rebuilt field by field rather than trusted: the
-  // `level` is clamped to 0..100 on whole points, and `enabled` is coerced to a boolean. A
-  // non-object (an old profile has no such key, but a corrupted one might) becomes the
-  // default. Returning a FRESH object every time is deliberate — the caller may hold the
-  // result for a while, and handing back a reference into DEFAULTS would let one file's edit
-  // silently change every other caller's "default".
-  function normalizeOpacity(v) {
-    if (!v || typeof v !== 'object') return { enabled: !!DEFAULTS.opacity.enabled, level: DEFAULTS.opacity.level };
-    var n = parseInt(v.level, 10);
-    if (!isFinite(n)) n = DEFAULTS.opacity.level;
-    n = Math.max(0, Math.min(100, Math.round(n)));
-    return { enabled: !!v.enabled, level: n };
+  // ---------- 0.5.3 §1.1 transparency ----------
+  // The five ceilings, in one table so no caller can invent a sixth. §1.1.2 gives each part a
+  // 「最高为 X%」; the value is the TRANSPARENCY percentage, so it is also the CSS-opacity FLOOR
+  // (transparency 95 ⇒ opacity 0.05). A part with no ceiling of its own is not configurable.
+  var TRANSPARENCY_LIMITS = {
+    viewer: { element: 95, button: 80, elementBlur: 8, buttonBlur: 4 },
+    overlay: { background: 95, element: 90, button: 80, backgroundBlur: 12, elementBlur: 8, buttonBlur: 4 },
+  };
+
+  /** One numeric field of one part, clamped to its own ceiling. */
+  function clampTransparencyNum(part, key, v, dflt) {
+    var lim = TRANSPARENCY_LIMITS[part] && TRANSPARENCY_LIMITS[part][key];
+    if (lim == null) return dflt;
+    var n = parseInt(v, 10);
+    if (!isFinite(n)) return dflt;
+    return Math.max(0, Math.min(lim, Math.round(n)));
+  }
+
+  /**
+   * Rebuild `transparency` field by field rather than trusting it, like every other setting:
+   * the profile is the one input the UI never validates. Two things a hand-edited profile must
+   * not be able to do — push a part past its ceiling, and reach the DOM as a non-number (a
+   * `--viewer-elem-opacity` of `"abc"` makes the whole `opacity:` declaration
+   * invalid-at-computed-value-time, so the panel silently keeps opacity 1 and the operator
+   * reports the slider as broken).
+   *
+   * A FRESH object every time is deliberate: callers hold the result, and handing back a
+   * reference into DEFAULTS would let one file's edit change every other caller's "default".
+   */
+  function normalizeTransparency(v) {
+    var src = (v && typeof v === 'object') ? v : {};
+    var vw = (src.viewer && typeof src.viewer === 'object') ? src.viewer : {};
+    var ov = (src.overlay && typeof src.overlay === 'object') ? src.overlay : {};
+    var d = DEFAULTS.transparency;
+    return {
+      viewer: {
+        enabled: !!vw.enabled,
+        element: clampTransparencyNum('viewer', 'element', vw.element, d.viewer.element),
+        elementBlur: clampTransparencyNum('viewer', 'elementBlur', vw.elementBlur, d.viewer.elementBlur),
+        button: clampTransparencyNum('viewer', 'button', vw.button, d.viewer.button),
+        buttonBlur: clampTransparencyNum('viewer', 'buttonBlur', vw.buttonBlur, d.viewer.buttonBlur),
+      },
+      overlay: {
+        enabled: !!ov.enabled,
+        background: clampTransparencyNum('overlay', 'background', ov.background, d.overlay.background),
+        backgroundBlur: clampTransparencyNum('overlay', 'backgroundBlur', ov.backgroundBlur, d.overlay.backgroundBlur),
+        element: clampTransparencyNum('overlay', 'element', ov.element, d.overlay.element),
+        elementBlur: clampTransparencyNum('overlay', 'elementBlur', ov.elementBlur, d.overlay.elementBlur),
+        button: clampTransparencyNum('overlay', 'button', ov.button, d.overlay.button),
+        buttonBlur: clampTransparencyNum('overlay', 'buttonBlur', ov.buttonBlur, d.overlay.buttonBlur),
+      },
+    };
+  }
+
+  /** Transparency percent -> CSS opacity. The ONE conversion, so no caller can invert it. */
+  function cssOpacity(transparencyPercent) {
+    var t = Number(transparencyPercent);
+    if (!isFinite(t)) t = 0;
+    t = Math.max(0, Math.min(100, t));
+    return Math.round((1 - t / 100) * 1000) / 1000;
+  }
+
+  // ---------- 0.5.3 §2.1 回放过滤 ----------
+  function normalizeArchiveFilter(v) {
+    var d = DEFAULTS.archiveFilter;
+    var src = (v && typeof v === 'object') ? v : {};
+    var n = function (x, dflt) {
+      var y = parseInt(x, 10);
+      if (!isFinite(y)) return dflt;
+      return Math.max(0, Math.min(100, Math.round(y)));
+    };
+    return {
+      enabled: !!src.enabled,
+      minRisk: n(src.minRisk, d.minRisk),
+      maxRisk: n(src.maxRisk, d.maxRisk),
+    };
+  }
+
+  /**
+   * Should this report be kept OUT of the archive? §2.2.2.
+   *
+   * Both sides are analysed, so the question "how risky was this game" has two answers; §2.2
+   * says to judge by the HIGHER one. Taking the max rather than the average is the conservative
+   * reading: a game with one AI side is a game worth remembering, and averaging would let a
+   * clean opponent drag a 90 down into the filtered band.
+   *
+   * `minRisk > maxRisk` is an INVALID configuration (§2.2.5) and filters nothing — a range
+   * that cannot contain any number would otherwise silently archive everything while the
+   * settings page showed a switch that was on.
+   */
+  function shouldSkipArchive(report, filter) {
+    var f = normalizeArchiveFilter(filter);
+    if (!f.enabled) return false;
+    if (f.minRisk > f.maxRisk) return false;
+    if (!report) return false;
+    var b = (report.black && isFinite(report.black.risk)) ? report.black.risk : 0;
+    var w = (report.white && isFinite(report.white.risk)) ? report.white.risk : 0;
+    var risk = Math.max(b, w);
+    return risk >= f.minRisk && risk <= f.maxRisk;
+  }
+
+  /** True when the stored filter is enabled but its range is impossible (§2.2.5's warning). */
+  function archiveFilterInvalid(filter) {
+    var f = normalizeArchiveFilter(filter);
+    return !!f.enabled && f.minRisk > f.maxRisk;
   }
 
   // ---------- storage shim ----------
@@ -277,7 +404,13 @@
     // silently fall back to its light defaults, which is the hardest kind of bug to notice.
     // Same reasoning as clampMinMoves above.
     out.theme = clampTheme(out.theme);
-    out.opacity = normalizeOpacity(out.opacity);
+    // 0.5.3 §1.1 replaces 0.4.7's `opacity`. The old key is NOT migrated: its value means the
+    // opposite thing (level 100 was "fully opaque"), so carrying it forward would silently give
+    // an operator who had transparency ON a profile that reads as fully transparent. It is
+    // simply absent from DEFAULTS, and the projection loop above drops any key not in DEFAULTS —
+    // so an old profile loses it on the first read, which is the honest outcome.
+    out.transparency = normalizeTransparency(out.transparency);
+    out.archiveFilter = normalizeArchiveFilter(out.archiveFilter);
     // 0.5.2 §4.1 — clamped on the way IN as well as out, like every other setting: the profile
     // is the one input the UI never validates, and a hand-edited list must not be able to put a
     // non-array (or a 200-row list, or a row with no English) in front of the send path.
@@ -294,7 +427,8 @@
       s.engineId = clampEngineId(s.engineId);
       s.engineUrl = clampEngineUrl(s.engineUrl);
       s.theme = clampTheme(s.theme);
-      s.opacity = normalizeOpacity(s.opacity);
+      s.transparency = normalizeTransparency(s.transparency);
+      s.archiveFilter = normalizeArchiveFilter(s.archiveFilter);
       s.customQuestions = clampCustomQuestions(s.customQuestions);
       var put = {}; put[SETTINGS_KEY] = s;
       try { await api().set(put); } catch (e) {}
@@ -307,7 +441,22 @@
     return saveSettings(patch);
   }
 
-  function defaults() { return Object.assign({}, DEFAULTS); }
+  // A shallow copy is not enough for the object-valued settings. `Object.assign({}, DEFAULTS)`
+  // shares the nested objects, so `defaults().transparency.viewer.element = 50` — or anything
+  // that mutates a nested field in place — would edit DEFAULTS itself and change the meaning of
+  // "default" for the rest of the session. That was harmless while the only object-valued keys
+  // were read-only, and stopped being harmless the moment `transparency` and `archiveFilter`
+  // arrived: both are rebuilt field by field and it would be easy to write a mutating
+  // "normalise in place" helper later without noticing.
+  //
+  // The two normalisers already return FRESH objects, so this is belt and braces — but it is the
+  // cheap kind: it removes the hazard rather than relying on every future caller being careful.
+  function defaults() {
+    var out = Object.assign({}, DEFAULTS);
+    out.transparency = normalizeTransparency(DEFAULTS.transparency);
+    out.archiveFilter = normalizeArchiveFilter(DEFAULTS.archiveFilter);
+    return out;
+  }
 
   // ---------- 0.5.2 §4.1 玩家自定义问题 ----------
   // A list of questions the operator writes themselves, each with a mandatory English version.
@@ -2491,7 +2640,17 @@
     // same reason every other clamp above is on this list.
     clampEngineId: clampEngineId,
     clampEngineUrl: clampEngineUrl,
-    normalizeOpacity: normalizeOpacity,
+    // 0.5.3 §1.1 — the transparency model that replaces 0.4.7's `opacity`. `cssOpacity` is
+    // exported because it is the ONE place the percent→opacity conversion lives: the viewer,
+    // the overlay and the suite all read it rather than each writing `1 - t / 100` (this
+    // project has been bitten four times by a rule with more than one copy).
+    TRANSPARENCY_LIMITS: TRANSPARENCY_LIMITS,
+    normalizeTransparency: normalizeTransparency,
+    cssOpacity: cssOpacity,
+    // 0.5.3 §2.1 — 回放过滤.
+    normalizeArchiveFilter: normalizeArchiveFilter,
+    shouldSkipArchive: shouldSkipArchive,
+    archiveFilterInvalid: archiveFilterInvalid,
     DEFAULT_OVERLAY: DEFAULT_OVERLAY,
     loadOverlay: loadOverlay,
     saveOverlay: saveOverlay,

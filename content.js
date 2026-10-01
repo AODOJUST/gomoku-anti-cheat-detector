@@ -77,6 +77,32 @@
     root.host.setAttribute('data-theme', GMStorage.clampTheme(setting));
   }
 
+  // ---------- 0.5.3 §1.1 透明度与模糊（浮层）----------
+  // Six custom properties on the HOST — the same place the background variables go, and for the
+  // same reason: `renderShell()` replaces `root.innerHTML` on a language change, so anything
+  // parked on `.gm` would be wiped and the overlay would snap back to fully opaque until the
+  // next repaint.
+  //
+  // `cssOpacity()` does the `1 - t/100` conversion rather than this function doing it inline, so
+  // the overlay and the viewer cannot disagree about the direction of the number. `enabled:
+  // false` writes 1 / 0px rather than skipping the writes: the stylesheet reads all six
+  // unconditionally, and a stale value from the previous profile would leave the panel faded
+  // with the switch off.
+  function applyOverlayTransparency(setting) {
+    if (!root || !root.host) return null;
+    var t = GMStorage.normalizeTransparency(setting);
+    var host = root.host;
+    var o = t.overlay.enabled ? t.overlay : null;
+    var set = function (name, val) { host.style.setProperty(name, val); };
+    set('--ov-bg-opacity', String(GMStorage.cssOpacity(o ? o.background : 0)));
+    set('--ov-bg-blur', (o ? o.backgroundBlur : 0) + 'px');
+    set('--ov-elem-opacity', String(GMStorage.cssOpacity(o ? o.element : 0)));
+    set('--ov-elem-blur', (o ? o.elementBlur : 0) + 'px');
+    set('--ov-btn-opacity', String(GMStorage.cssOpacity(o ? o.button : 0)));
+    set('--ov-btn-blur', (o ? o.buttonBlur : 0) + 'px');
+    return t;
+  }
+
   // ---------- 0.5.2 §5.1 自定义背景（浮层）----------
   // The picture itself can never be read from here: a content script's `indexedDB` is the HOST
   // PAGE's store, and the background table belongs to the extension origin. `gm-bg-get` is the
@@ -190,6 +216,11 @@
   var lastStepBudget = null;
   var lastArchive = null;
   var lastSkip = null;      // { moves, min } — the last analysis that was too short to keep
+  // 0.5.3 §2.2 — the last game the RISK FILTER kept out. Deliberately its own variable rather
+  // than a second shape in `lastSkip`: the status renderer above prints `lastSkip.moves`, so a
+  // filter record written into that slot would render 「仅 undefined 手」. Two reasons, two
+  // messages, two variables.
+  var lastFilterSkip = null;   // { risk, min, max }
   // Engine status as the offscreen document reports it: which build won, and whether it is
   // a pthread build. Shown as a note only when something is worth saying (degraded to
   // single-thread, or an explicit thread count on a multi build).
@@ -1060,6 +1091,31 @@
       if (root) paintStatus();
       return null;
     }
+    // 0.5.3 §2.2.2/§2.2.3 — the operator's own AI-rate filter. AFTER the length gate above,
+    // because a game that is both short and in range would not have been kept with the filter
+    // off either, so 「对局过短」 is the more fundamental of the two explanations.
+    //
+    // §2.2.5: this is the AUTOMATIC path only. There is no manual 「存为存档」 here to exempt —
+    // the overlay has no such button; the viewer's does, and viewer.js passes `{manual:true}`.
+    if (GMStorage.shouldSkipArchive(report, S.archiveFilter)) {
+      var af = GMStorage.normalizeArchiveFilter(S.archiveFilter);
+      var afRisk = Math.round(Math.max(
+        report.black ? (report.black.risk || 0) : 0,
+        report.white ? (report.white.risk || 0) : 0));
+      job.note = T('panel|AI 率 {r}% 在过滤范围内（{min}%–{max}%），未存档。',
+        { r: afRisk, min: af.minRisk, max: af.maxRisk });
+      lastFilterSkip = { risk: afRisk, min: af.minRisk, max: af.maxRisk };
+      lastSkip = null;
+      lastArchive = null;
+      // Marked handled for the same reason as the length gate: the finalize path re-evaluates on
+      // every later signal, and re-deciding a game the operator's own rule already excluded would
+      // re-run the whole check on each move.
+      if (job._epoch != null) markEpochArchived(job._epoch);
+      console.log('[detector] ' + job.note);
+      if (root) paintStatus();
+      return null;
+    }
+    lastFilterSkip = null;
     try {
       var entry = GMStorage.buildArchive({
         report: report,
@@ -1081,6 +1137,16 @@
     } catch (e) {
       console.warn('[detector] 存档失败：' + ((e && e.message) || e));
       job.note = T('panel|存档失败：{err}', { err: TE((e && e.message) || e) });
+      // 0.5.3 §1.2 — the overlay's one toast, and the reason it has a stack at all.
+      //
+      // A failure here means the game was NOT saved. The only other surface for it is a red
+      // line inside one row of the job queue (see the `cur.status === '失败'` branch in
+      // paintStatus), which is a box the operator scrolls past and which the NEXT game's job
+      // pushes off the top — i.e. the data is gone and nothing said so. This is exactly the
+      // "something happened, but it must not stop what I am doing" case §1.2 opens with: the
+      // game is still in progress, so a modal would be wrong and a queue row is not enough.
+      GmToast.show(T('toast|存档失败：{err}', { err: TE((e && e.message) || e) }), 'error');
+      if (root) paintStatus();
       return null;
     }
   }
@@ -2107,7 +2173,7 @@
     // from the media query below. Both are declared AFTER the `:host` block above for the same
     // reason the two `dir` rules are: these are `:host([...])` selectors, and putting them
     // inside the split `:host{` block would make them bogus declarations.
-    ':host{--gm-bg:#161b22;--gm-panel:#1a2029;--gm-head:#1a2029;--gm-line:#2a3441;--gm-line-soft:#22303c;',
+    ':host{--gm-bg:#161b22;--gm-bg-rgb:22,27,34;--gm-panel:#1a2029;--gm-head:#1a2029;--gm-line:#2a3441;--gm-line-soft:#22303c;',
     '--gm-txt:#e6edf3;--gm-txt-2:#c8d2dc;--gm-mut:#9aa7b4;--gm-dim:#6e7b8a;--gm-off:#4a5563;',
     '--gm-lk:#7aa2ff;--gm-in:#0d1117;--gm-bar:#0d1117;',
     // 0.4.8 §一 — the second tier. Same defect the viewer had: these were inline, so the light
@@ -2131,13 +2197,13 @@
     // moment this was introduced. Declared once here because a glow is data ink — it is the
     // same in both themes (the state colours are).
     '--gm-glow:0 0 0 rgba(0,0,0,0)}',
-    ':host([data-theme="light"]){--gm-bg:#ffffff;--gm-panel:#f5f5f5;--gm-head:#ececec;--gm-line:#d0d0d0;',
+    ':host([data-theme="light"]){--gm-bg:#ffffff;--gm-bg-rgb:255,255,255;--gm-panel:#f5f5f5;--gm-head:#ececec;--gm-line:#d0d0d0;',
     '--gm-line-soft:#e0e0e0;--gm-txt:#1a1a1a;--gm-txt-2:#333333;--gm-mut:#555555;--gm-dim:#6b6b6b;',
     '--gm-off:#aaaaaa;--gm-lk:#2a4bd7;--gm-in:#f0f0f0;--gm-bar:#e2e2e2;',
     '--gm-hov:#ececec;--gm-btn-hov:#d8d8d8;--gm-pri-hov:#3d5fd8;--gm-div:#e0e0e0;',
     '--gm-info-bg:#e8f0fe;--gm-info-line:#a8c4f0;--gm-info-fg:#1f3f7a;',
     '--gm-warn:#b8860b;--gm-warn-bg:rgba(184,134,11,.14)}',
-    '@media (prefers-color-scheme: light){:host([data-theme="auto"]){--gm-bg:#ffffff;--gm-panel:#f5f5f5;',
+    '@media (prefers-color-scheme: light){:host([data-theme="auto"]){--gm-bg:#ffffff;--gm-bg-rgb:255,255,255;--gm-panel:#f5f5f5;',
     '--gm-head:#ececec;--gm-line:#d0d0d0;--gm-line-soft:#e0e0e0;--gm-txt:#1a1a1a;--gm-txt-2:#333333;',
     '--gm-mut:#555555;--gm-dim:#6b6b6b;--gm-off:#aaaaaa;--gm-lk:#2a4bd7;--gm-in:#f0f0f0;--gm-bar:#e2e2e2;',
     '--gm-hov:#ececec;--gm-btn-hov:#d8d8d8;--gm-pri-hov:#3d5fd8;--gm-div:#e0e0e0;',
@@ -2153,7 +2219,7 @@
     // the corner of an eye over a live board, and a state indicator nobody notices is the same as
     // no indicator. The `--gm-glow` slot rides AFTER the panel's own drop shadow so a state adds
     // a halo instead of losing the shadow (see the `:host` definition for that story).
-    '.gm{background:var(--gm-bg);border:4px solid var(--gm-line);border-radius:10px;box-shadow:0 10px 34px rgba(0,0,0,.55),var(--gm-glow,0 0 0 rgba(0,0,0,0));overflow:hidden;display:flex;flex-direction:column;max-height:var(--gm-max);position:relative;',
+    '.gm{background:rgba(var(--gm-bg-rgb),var(--ov-bg-opacity,1));border:4px solid var(--gm-line);border-radius:10px;box-shadow:0 10px 34px rgba(0,0,0,.55),var(--gm-glow,0 0 0 rgba(0,0,0,0));overflow:hidden;display:flex;flex-direction:column;max-height:var(--gm-max);position:relative;',
     'transition:border-color .3s ease,box-shadow .3s ease}',
     // ---- 0.5.2 §5.1 自定义背景（浮层）----
     // The operator's own picture behind the panel. `--gm-bg-image` / `--gm-bg-pos` /
@@ -2178,6 +2244,43 @@
     'background:rgba(0,0,0,var(--gm-bg-dim,0));',
     'backdrop-filter:blur(var(--gm-bg-blur,0px));-webkit-backdrop-filter:blur(var(--gm-bg-blur,0px))}',
     ':host(.has-bg) .gm > *{z-index:1}',
+    // ---- 0.5.3 §1.1 透明度与模糊（浮层）----
+    // The three parts §1.1.2 caps for the overlay. `--ov-*-opacity` already holds a CSS
+    // opacity — applyOverlayTransparency() does the `1 - t/100` conversion — so the names
+    // describe what they PAINT, not the slider that fed them.
+    //
+    // ⚠ The background is an ALPHA on the fill rather than an `opacity` on `.gm`, and the
+    // difference is the whole point of giving it its own control: `opacity` on `.gm` would fade
+    // the text and the border along with the fill, so 「背景透明度 50%」 would make the panel
+    // unreadable instead of letting the picture show through behind it. That is why this needs
+    // an RGB triplet (`--gm-bg-rgb`) where the rest of the palette is hex — there is no way to
+    // put an alpha on `var(--gm-bg)`. Both palettes define it, because the hardcoded
+    // `rgba(22,27,34,…)` §1.1.4 prints would paint a near-black wash on the LIGHT theme.
+    //
+    // `.gmcp` (缩略) is the other face the panel can wear and it takes the same fill; `.mface`
+    // (图标) does not, because it is a 48px icon with no background of its own.
+    '.gmcp{background:rgba(var(--gm-bg-rgb),var(--ov-bg-opacity,1))}',
+    ':is(.sec,.card,.qi){opacity:var(--ov-elem-opacity,1);',
+    'backdrop-filter:blur(var(--ov-elem-blur,0px));-webkit-backdrop-filter:blur(var(--ov-elem-blur,0px))}',
+    ':is(button,.lk,.mn,.x){opacity:var(--ov-btn-opacity,1);',
+    'backdrop-filter:blur(var(--ov-btn-blur,0px));-webkit-backdrop-filter:blur(var(--ov-btn-blur,0px))}',
+    // ---- 0.5.3 §1.2 Toast 通知（浮层）----
+    // The same block as viewer.html's, and it has to be duplicated: a shadow root's stylesheet
+    // cannot be shared with the document's without a constructed-stylesheet dance that MV3's
+    // CSP makes awkward. The BEHAVIOUR is shared — that is the whole reason toast.js exists as
+    // a module. `--gm-*` names here, not `--ui-*`: the overlay's palette is its own.
+    '.toast-container{position:fixed;inset-inline-end:16px;bottom:16px;display:flex;flex-direction:column-reverse;gap:8px;z-index:2147483647;pointer-events:none}',
+    '.toast{pointer-events:auto;background:var(--gm-panel);border:1px solid var(--gm-line);border-inline-start:4px solid var(--gm-lk);',
+    'border-radius:8px;padding:12px 32px 12px 14px;min-width:260px;max-width:360px;box-shadow:0 8px 24px rgba(0,0,0,.4);',
+    'position:relative;animation:gm-toast-in .2s ease-out;font-size:12px;color:var(--gm-txt)}',
+    '.toast.success{border-inline-start-color:#2ecc71}',
+    '.toast.warn{border-inline-start-color:#f1c40f}',
+    '.toast.error{border-inline-start-color:#e74c3c}',
+    '.toast .tx{word-break:break-word}',
+    '.toast .lk{display:inline-block;margin-top:6px;color:var(--gm-lk);text-decoration:underline;cursor:pointer}',
+    '.toast .close{position:absolute;top:6px;inset-inline-end:8px;cursor:pointer;color:var(--gm-mut);font-size:16px;line-height:1;user-select:none}',
+    '.toast .close:hover{color:var(--gm-txt)}',
+    '@keyframes gm-toast-in{from{transform:translateY(8px);opacity:0}to{transform:translateY(0);opacity:1}}',
     // 0.4.9 §二.3 — the six states, as CSS animations.
     //
     // The colours here are LITERAL and deliberately NOT themed, the same way the risk numbers
@@ -2533,6 +2636,12 @@
   function renderShell() {
     if (!root) return;
     root.innerHTML = '<style>' + CSS + '</style>' + shellHtml();
+    // 0.5.3 §1.2 — the toast container lives inside this shadow root, and the line above just
+    // replaced `root.innerHTML`, so any stack on screen is now detached. Re-attaching here drops
+    // the stale references and lets `ensureBox()` build a fresh container in the new tree. It has
+    // to come after the assignment: attaching first would point the module at a tree that is
+    // about to be thrown away.
+    GmToast.attach(root);
     els.top = root.querySelector('[data-slot=top]');
     els.queue = root.querySelector('[data-slot=queue]');
     els.ctrl = root.querySelector('[data-slot=ctrl]');
@@ -2961,6 +3070,9 @@
     // the host.
     applyLang(S.lang);
     applyTheme(S.theme);
+    // 0.5.3 §1.1 — the six overlay custom properties. Here rather than in boot() for the reason
+    // directly above: this is the line that creates the host, and the helper no-ops without one.
+    applyOverlayTransparency(S.transparency);
     renderShell();
     (document.body || document.documentElement).appendChild(host);
 
@@ -3846,6 +3958,15 @@
     if (!running() && !lastArchive && lastSkip) {
       h += '<div class="note">' + T('panel|对局过短：仅 {n} 手（少于 {min} 手），未存档。阈值可在设置里改。',
         { n: lastSkip.moves, min: lastSkip.min }) + '</div>';
+    }
+    // 0.5.3 §2.2.3 — the other reason a game is not kept, and it gets its own line rather than
+    // sharing `lastSkip`: the two say different things, and the 对局过短 message above prints
+    // `moves` / `min`, so writing a risk-filter record into the same slot would render
+    // 「仅 undefined 手」. A skip the operator asked for also has to be visible — otherwise
+    // turning the filter on looks like archiving silently stopped working.
+    if (!running() && !lastArchive && lastFilterSkip) {
+      h += '<div class="note">' + T('panel|AI 率 {r}% 在过滤范围内（{min}%–{max}%），未存档。',
+        { r: lastFilterSkip.risk, min: lastFilterSkip.min, max: lastFilterSkip.max }) + '</div>';
     }
 
     els.top.innerHTML = h;
@@ -5307,6 +5428,10 @@
         // but it does have to beat the `root.activeElement` guard below, because a theme change
         // made from the viewer (or another tab) should land even while this panel has focus.
         if (themeChanged) applyTheme(S.theme);
+        // 0.5.3 §1.1 — same placement and same reason as the theme directly above: a transparency
+        // change made from the viewer's settings page (or another tab) has to land even while
+        // this panel holds focus, so it must beat the `root.activeElement` guard below.
+        applyOverlayTransparency(S.transparency);
         if (root.activeElement) paintStatus(); else paint();
       });
     });

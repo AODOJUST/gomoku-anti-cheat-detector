@@ -7,6 +7,20 @@ nobody ever read the history from there anyway.
 
 Every entry below is the original prose, verbatim — only the headings and blank lines are new.
 
+## 0.5.3
+
+0.5.3 turns the transparency setting the right way round (the release’s only P0), adds bottom-right toasts, collects every tag and signal into a searchable 标签百科, lets a band of AI rates stay out of the archive, and puts 复制 / 粘贴 / 清空 buttons on both record inputs.
+
+**透明度 pointed the wrong way (P0).** 0.4.7 read the setting the way CSS `opacity` reads it: 100 meant fully opaque, so the slider’s maximum changed nothing and its minimum made the panel vanish. The requirement means the opposite — 0% is fully opaque and 100% is fully transparent — which in CSS is `cssOpacity = 1 − transparency / 100`. The conversion now lives in one `cssOpacity()` in `storage.js` that both the viewer and the overlay call, and the five ceilings are enforced in `normalizeTransparency` (viewer element 95, viewer button 80, overlay background 95, overlay element 90, overlay button 80). A ceiling written only into a slider’s `max` is not enough: the stored profile is an input this UI never validates, and an out-of-range number inside an `opacity:` declaration invalidates the whole declaration at computed-value time, leaving the element silently opaque. Blur is a separate axis on `backdrop-filter` and neither part moves the other. Transparency acts on the UI layer and never on the background picture, which is painted on `html::before` — below all of it, and reading none of these variables. A new 「透明度与模糊」 panel groups the five parts; the old global 「透明度模式」 switch is gone.
+
+**Toast notifications.** A bottom-right stack, at most five at a time, three seconds each, closeable with a button or a right-click, in four colours. The viewer’s 开始分析 / 分析完成（黑 x 白 y）/ 分析失败 all go through it, and the blocking `alert` on the failure path is gone with them. A new version raises a toast carrying the GitHub link, alongside the permanent banner 0.4.0 introduced: the banner is for always, the toast is for noticed.
+
+**标签百科.** A 「标签介绍」 button beside 新手教程 opens a modal with a search box and category chips (全部 / 预设标签 / 人工标注 / AI 分类 / 检测信号) covering the nine preset tags, seven manual annotations, seven classification bands and thirteen detection signals. The weights are deliberately not copied into the entries: eight of the thirteen in the spec’s own table disagree with the implementation, so an entry stores the key and the renderer reads the live `BASE_WEIGHTS`, printing an em dash rather than 0 when a signal is unreachable — a number that expires is worse than no number.
+
+**回放过滤.** An AI-rate range can be set so games inside it stop being archived automatically, which keeps the 「human-ish but not quite」 middle out of the list. An inverted range — minimum above maximum — is invalid: the filter turns itself off with a warning instead of silently filtering nothing. Existing archives are untouched, and the manual 「存为存档」 button ignores the filter, because that is an explicit instruction from the operator and should not be blocked by their own rule.
+
+**复制 / 粘贴 / 清空.** Three buttons on both record inputs. 复制 writes to the clipboard and reports with a toast; 粘贴 reads the clipboard and dispatches an `input` event, since writing `.value` alone leaves the board showing the previous record; 清空 confirms first. A refused clipboard read falls back to asking for a manual Ctrl+V and focuses the textarea.
+
 ## 0.5.2
 
 0.5.2 adds two detection signals that only mean anything inside a run, fixes the P0 that showed an imported archive as an empty board, and finishes the update path, the question list and the panel’s look.
