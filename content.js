@@ -3208,27 +3208,49 @@
     setTimeout(done, ms || 1200);
   }
 
-  /** §2.4 — the panel's state, as one of §2.1's six. */
+  /**
+   * §2.4 — the panel's state, as one of §2.1's six.
+   *
+   * 0.4.12 §一 — **the tests below are in §2.2's order, and that is the whole function.**
+   *
+   * §2.2 gives the priority explicitly: 黑名单提醒 > **检测结果** > 检测启动 > 就绪 > **待机**. §2.1's
+   * table defines 待机 as 「未加入对局 或 对局已结束」, and the first version of this function tested
+   * `ended` up front — so 「待机」 outranked the verdict it was supposed to sit beneath, and the
+   * moment a game finished the border dropped whatever colour it was showing and went back to the
+   * blue breathing. Reported from a real game: 黑方 73.5 · 高风险 / 白方 72.8 · 高风险 on the cards,
+   * blue breathing on the border.
+   *
+   * That is the exact failure `paintBorderState`'s own comment forbids two functions down — 「the
+   * border is a second, glanceable readout of the same facts the status line spells out」 — and it
+   * is the worst possible moment to lose the alarm: the verdict is FINAL then, which is precisely
+   * when the operator wants it. A game that has ended is not 「nothing to look at」 if a report is
+   * on screen; the panel still says so, and the border has to agree with the panel.
+   *
+   * So 检测结果 is tested FIRST. `inGame || ended` keeps the other half of 待机 intact: with no
+   * board and no finished game there is no 检测结果 to show even if a job carries one (导入回放 on
+   * an empty board), and that is still 待机.
+   */
   function borderStateFromPanel(cur) {
     if (blacklistAlertActive) return BORDER_STATE.BLACKLIST;
-    // 待机 covers BOTH "not in a game" and "the game is over": §2.1 lists them together, and
-    // they read the same way to the operator — nothing is being watched any more.
-    if (ended) return BORDER_STATE.IDLE;
-    if (!activeMoves().length) return BORDER_STATE.IDLE;
+    var inGame = activeMoves().length > 0;
     var rep = (cur && (cur.report || cur.summary)) || null;
-    if (!rep) {
-      if (!running()) return BORDER_STATE.READY;
-      // 「第一次检测开始」 is a ONE-SHOT (§2.1: 「绿色闪烁 3 下 → 绿色常亮」). After it has played,
-      // a run with no result yet shows the green it settled on, not another flash.
-      return detectingStarted ? BORDER_STATE.LOW : BORDER_STATE.DETECT_START;
+    if (rep && (inGame || ended)) {
+      // 「同时检测两位玩家时，取较高风险分」 — the max, not the suspected side, because the border
+      // is the panel's alarm and not the per-side verdict (which the cards carry).
+      var maxRisk = Math.max(rep.black ? Number(rep.black.risk) || 0 : 0,
+                             rep.white ? Number(rep.white.risk) || 0 : 0);
+      if (maxRisk >= 70) return BORDER_STATE.HIGH;
+      if (maxRisk >= 40) return BORDER_STATE.SUSPECT;
+      return BORDER_STATE.LOW;
     }
-    // 「同时检测两位玩家时，取较高风险分」 — the max, not the suspected side, because the border
-    // is the panel's alarm and not the per-side verdict (which the cards carry).
-    var maxRisk = Math.max(rep.black ? Number(rep.black.risk) || 0 : 0,
-                           rep.white ? Number(rep.white.risk) || 0 : 0);
-    if (maxRisk >= 70) return BORDER_STATE.HIGH;
-    if (maxRisk >= 40) return BORDER_STATE.SUSPECT;
-    return BORDER_STATE.LOW;
+    // 待机 covers BOTH "not in a game" and "the game is over": §2.1 lists them together, and with
+    // no verdict to show they read the same way to the operator.
+    if (ended) return BORDER_STATE.IDLE;
+    if (!inGame) return BORDER_STATE.IDLE;
+    if (!running()) return BORDER_STATE.READY;
+    // 「第一次检测开始」 is a ONE-SHOT (§2.1: 「绿色闪烁 3 下 → 绿色常亮」). After it has played,
+    // a run with no result yet shows the green it settled on, not another flash.
+    return detectingStarted ? BORDER_STATE.LOW : BORDER_STATE.DETECT_START;
   }
 
   /** §2.4/§2.6 — drive the border from the same paint that draws the status line. */

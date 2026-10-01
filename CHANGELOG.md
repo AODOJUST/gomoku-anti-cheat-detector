@@ -7,6 +7,18 @@ nobody ever read the history from there anyway.
 
 Every entry below is the original prose, verbatim — only the headings and blank lines are new.
 
+## 0.4.12
+
+0.4.12 fixes one border-state defect, found in a real game: the border is a second, glanceable readout of the numbers on the panel, and at the end of a game it was contradicting them.
+
+**A finished game cancelled its own verdict.** The two cards read 「黑方 73.5 · 高风险 / 白方 72.8 · 高风险」 and the border breathed blue — i.e. 待机. §2.2 states the priority explicitly: 黑名单提醒 > **检测结果** > 检测启动 > 就绪 > **待机**. §2.1's table defines 待机 as 「未加入对局 或 对局已结束」, and the first implementation of `borderStateFromPanel()` tested `ended` up front — so the last entry of that table outranked the verdict it was written to sit beneath. The moment a game ended, the border dropped whatever colour it was showing and went back to breathing.
+
+That is the exact failure `paintBorderState()`'s own comment forbids — the border is not an independent indicator, it is the same facts the status line spells out, read at a glance — and the end of a game is the worst possible moment to lose it, because that is precisely when the verdict becomes FINAL. The operator's answer to "was that a cheater?" arrives at the whistle, not at move 30.
+
+检测结果 is tested first now: if a report is on screen (the numbers on the cards), its colour wins; with no report, 「对局已结束」 is still 待机. The two branches are one line apart and both halves are asserted. `inGame || ended` keeps the rest of 待机 intact, so a report that is not about the board in front of you — 导入回放 on an empty board — still reads as 待机.
+
+The regression test is behavioural rather than textual. `behave-049-border.cjs` §6b boots the real `content.js`, hands the stubbed engine a 高风险 report, and drives the real 「对局结束 → 收尾分析」 path. It asserts the border is red and STEADY, that the cards say 73.5 / 72.8 in the same paint, and that lowering the risk to 可疑 and then to 低 switches directly with no flash — §2.1's 「风险降级时…直接切换」, after the game as well as during it. The twenty-move fixture is deliberate and the reason is recorded in the file: a game shorter than 最小存档 (14) is refused by `finalizeGame()` before it ever creates the 收尾分析 job, so a shorter fixture would have re-proved the no-report case (§5) instead of the one that was reported.
+
 ## 0.4.11
 
 0.4.11 fixes nine defects that were all silent — none of them throws, none of them is visible as an error, and each one produces a WRONG verdict under a specific condition, which is the one failure mode an anti-cheat tool cannot afford. It also annotates each preset question with its wording in the interface language.
