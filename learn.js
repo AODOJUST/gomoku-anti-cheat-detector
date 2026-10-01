@@ -47,6 +47,10 @@
     // with the base. See app.js BASE_WEIGHTS for why §1.2's single 1.00 table is not adopted.
     sharpStreak: 0.04,
     sharpTotal: 0.03,
+    // 0.5.2 §1.1.4/§1.2.4: the two pool surcharges. Same status as the five above, and same
+    // reason §1.1.4's 「缩小到总和 1.00」 is not adopted (see app.js BASE_WEIGHTS).
+    goodPool: 0.03,
+    liveThree: 0.03,
   };
   var FALLBACK_THRESHOLDS = {
     // 0.4.3 §1.1: the ramp aTop1 reads. top1Lo/top1Hi stay for a pre-0.4.3 archive and for the
@@ -84,8 +88,18 @@
   // Top1/ACPL/… and move every existing score. The surcharge budget is now 0.15 (0.06 + 0.04
   // + 0.05), read off the defaults by `group()` below, so adding the key here is all the
   // wiring the learner needs.
-  var EVASION_KEYS = ['evasion', 'winBlunder', 'uselessFour', 'sharpStreak', 'sharpTotal'];
+  var EVASION_KEYS = ['evasion', 'winBlunder', 'uselessFour', 'sharpStreak', 'sharpTotal',
+                      // 0.5.2 §1.1.4/§1.2.4 — the surcharge budget is read off the defaults by
+                      // `group()` below, so listing the two keys here is the whole wiring.
+                      'goodPool', 'liveThree'];
   var WEIGHT_KEYS = BASE_KEYS.concat(EVASION_KEYS);
+
+  // 0.5.2 §1.1/§1.2 — the two pool thresholds, mirrored from app.js (GOOD_POOL_MIN /
+  // LIVE_POOL_MIN). learn.js is a separate module and cannot import app.js, so they are repeated
+  // here; verify-055 asserts the two files agree, so an edit to one cannot move without the
+  // other being reported.
+  var GOOD_POOL_MIN = 3;
+  var LIVE_POOL_MIN = 2;
 
   var WEIGHT_LABEL = {
     top1: 'Top1 吻合', acpl: 'ACPL 均损', sharp: '唯一手', out: 'Top5 之外',
@@ -95,6 +109,8 @@
     uselessFour: '无用冲四',
     // 0.4.8 §1.2
     sharpStreak: '唯一手连续', sharpTotal: '唯一手累计',
+    // 0.5.2 §1.1.4/§1.2.4
+    goodPool: '好点池', liveThree: '活三好手',
   };
   var THRESHOLD_LABEL = {
     topProxLo: '接近度下界', topProxHi: '接近度上界',
@@ -116,6 +132,16 @@
   // ---------- small stats helpers ----------
   function mean(a) { return a.length ? a.reduce(function (s, x) { return s + x; }, 0) / a.length : 0; }
   function clamp(x, lo, hi) { return Math.max(lo, Math.min(hi, x)); }
+  // 0.5.2 §1.1.4/§1.2.4 — the longest run of a per-hand pool figure over a sequence. Absent or
+  // non-numeric reads as 0, which is what makes a pre-0.5.2 archive score 0 on both new terms.
+  function maxOf(list, key) {
+    var m = 0;
+    for (var i = 0; i < list.length; i++) {
+      var v = list[i][key];
+      if (isFinite(v) && v > m) m = v;
+    }
+    return m;
+  }
   function r3(x) { return Math.round(x * 1000) / 1000; }
   function r4(x) { return Math.round(x * 10000) / 10000; }
   function clone(o) { var r = {}; for (var k in o) r[k] = o[k]; return r; }
@@ -515,12 +541,28 @@
     // filter above belongs to the six, and a sharp hand is evidence whether or not an evasion
     // sat beside it.
     var ss = sharpStreakFigures(all);
-    var aSharpStreak = ss.maxStreak >= 3 ? clamp((ss.maxStreak - 2) / 7, 0, 1) : 0;
-    var aSharpTotal = ss.streakHits >= 3 ? clamp((ss.streakHits - 2) / 18, 0, 1) : 0;
+    // 0.5.2 §1.3.2, mirrored from app.js sideAggregate(): both curves are exponential now. The
+    // learner has to move with the detector or it would fit weights against a curve the detector
+    // no longer uses — and the two would drift silently, each staying internally consistent.
+    var aSharpStreak = ss.maxStreak >= 3 ? clamp((Math.pow(1.3, ss.maxStreak - 2) - 1) / 5, 0, 1) : 0;
+    var aSharpTotal = ss.streakHits >= 3 ? clamp((Math.pow(1.15, ss.streakHits - 2) - 1) / 8, 0, 1) : 0;
+    // 0.5.2 §1.1.4/§1.2.4, mirrored from app.js sideAggregate(): the two pool terms. Read off the
+    // per-hand values slimStep() persists rather than re-walked here — both walks live in app.js
+    // and a second copy is how this project has gone wrong before. The population is `steps`, the
+    // evasion-excluded list, which is what app.js takes its max over.
+    //
+    // An archive written before 0.5.2 carries neither field, so both max to 0 and such a sample
+    // trains exactly as it did — the same "read both shapes" rule the rest of this file follows.
+    var gpMax = maxOf(steps, 'goodPool');
+    var aGoodPool = gpMax >= GOOD_POOL_MIN ? clamp((gpMax - 2) / 10, 0, 1) : 0;
+    var ltMax = maxOf(steps, 'liveThreePool');
+    var aLiveThree = ltMax >= LIVE_POOL_MIN
+      ? clamp((Math.pow(1.3, ltMax - 1) - 1) / 4, 0, 1) : 0;
     return {
       top1: aTop1, acpl: aAcpl, sharp: aSharp, out: aOut, desperate: aDesperate, time: aTime,
       evasion: aEvasion, winBlunder: aWinBlunder, uselessFour: aUselessFour,
       sharpStreak: aSharpStreak, sharpTotal: aSharpTotal,
+      goodPool: aGoodPool, liveThree: aLiveThree,
       // raw, un-ramped aggregates — the ramp anchors are learned from these
       n: steps.length, rawTop1: top1, rawTopProx: topProx, rawLoss: meanLoss,
       rawSharpHit: sharpHit, rawOutTop5: outTop5,
@@ -529,6 +571,7 @@
       uselessFourCount: steps.filter(function (x) { return x.fourKind === 'useless'; }).length,
       uselessFourRuns: uselessRuns,
       sharpStreakMax: ss.maxStreak, sharpStreakHits: ss.streakHits,
+      goodPoolMax: gpMax, liveThreeMax: ltMax,
     };
   }
 

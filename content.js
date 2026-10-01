@@ -77,6 +77,51 @@
     root.host.setAttribute('data-theme', GMStorage.clampTheme(setting));
   }
 
+  // ---------- 0.5.2 §5.1 自定义背景（浮层）----------
+  // The picture itself can never be read from here: a content script's `indexedDB` is the HOST
+  // PAGE's store, and the background table belongs to the extension origin. `gm-bg-get` is the
+  // only route, and it answers with a DATA URL — a `blob:chrome-extension://…` URL is
+  // cross-origin in this document and would be subject to the page's own `img-src`.
+  //
+  // The four variables go on the HOST, not on `.gm`: `renderShell()` replaces `root.innerHTML`
+  // on every language change, so anything parked on `.gm` would be gone and the backdrop would
+  // vanish until the next refresh. The host is the one element that outlives a rebuild.
+  //
+  // `overlayBgToken` discards a late answer to a superseded request. Two rapid changes (or a
+  // change racing the first load) would otherwise be able to land out of order and leave the
+  // panel showing the picture the operator just replaced.
+  var overlayBgToken = 0;
+
+  function refreshOverlayBg() {
+    if (!root || !root.host) return Promise.resolve(false);
+    var host = root.host;
+    var token = ++overlayBgToken;
+    return new Promise(function (resolve) {
+      try {
+        chrome.runtime.sendMessage({ type: 'gm-bg-get', slot: 'bg-overlay' }, function (resp) {
+          if (token !== overlayBgToken) { resolve(false); return; }
+          // `set: false` is the ordinary "no background chosen" state, not a failure, so it
+          // takes the same branch as an error: remove the class and leave the default palette.
+          if (chrome.runtime.lastError || !resp || !resp.ok || !resp.set || !resp.dataUrl) {
+            host.classList.remove('has-bg');
+            host.style.removeProperty('--gm-bg-image');
+            resolve(false);
+            return;
+          }
+          var cfg = GMStorage.clampBgConfig(resp);
+          host.style.setProperty('--gm-bg-image', 'url("' + resp.dataUrl + '")');
+          host.style.setProperty('--gm-bg-pos', cfg.offsetX + '% ' + cfg.offsetY + '%');
+          // The complement of 透明度 — see bgVars() in viewer.js for why the variable is named
+          // after the scrim it paints rather than after the slider.
+          host.style.setProperty('--gm-bg-dim', String(Math.max(0, Math.min(1, 1 - cfg.opacity / 100))));
+          host.style.setProperty('--gm-bg-blur', cfg.blur + 'px');
+          host.classList.add('has-bg');
+          resolve(true);
+        });
+      } catch (e) { resolve(false); }
+    });
+  }
+
   // ---------- settings (persisted, shared with viewer.html) ----------
   var S = GMStorage.defaults();
   var moreOpen = false;
@@ -87,6 +132,19 @@
   function saveSetting(key, value) {
     S[key] = value;
     return GMStorage.saveSetting(key, value);
+  }
+
+  // 0.5.2 §4.1 — the operator's own questions, mirrored here from the shared settings blob.
+  // Kept as its own module variable rather than read out of `S` at the point of use because the
+  // picker renders them on every open, and `S.customQuestions` is already the clamped list.
+  var customQuestions = [];
+  function refreshCustomQuestions() {
+    return GMStorage.loadCustomQuestions().then(function (list) {
+      customQuestions = list || [];
+      // Only repaint if the picker is actually open on the custom level — a repaint of a closed
+      // menu would rebuild the box under the operator's cursor for nothing.
+      if (openMenu === 'ask-q') paintMenus();
+    }, function () { customQuestions = []; });
   }
 
   // ---------- state ----------
@@ -114,7 +172,20 @@
   // begins a new game bumps it, and every successful archive marks the epoch it belongs to,
   // so a finished game can never be silently dropped and can never be archived twice.
   var gameEpoch = 1;
-  var archivedEpoch = {};   // { epoch: true }
+  var archivedEpoch = {};   // { epoch: true } — a COMPLETED decision (archived, or ruled too short)
+  // 0.3.7 §一.1 — a claim taken the moment finalizeGame() decides it owns a game, i.e.
+  // SYNCHRONOUSLY, before any async work exists. `archivedEpoch` above is only written when the
+  // archive FINISHES, and checking that at the top of finalizeGame left the whole in-flight
+  // window unguarded:
+  //
+  //   game ends → onGameEnd() → finalizeGame() → 收尾分析 job starts (seconds: 40 MB engine)
+  //                                  ▲
+  //   next game → reset ─────────────┘  arrives INSIDE that window, guard still false
+  //
+  // so every next-game signal (reset / grid rebuilt / board cleared) built ANOTHER identical
+  // job over the same snapshot, and one game produced two or three identical archives.
+  // Never released — see claimEpoch().
+  var claimedEpoch = {};    // { epoch: true } — in-memory: a reload kills the in-flight job anyway
   var selectedId = null;
   var lastStepBudget = null;
   var lastArchive = null;
@@ -175,6 +246,17 @@
     archivedEpoch[epoch] = true;
     var o = {}; o[SESSION_KEYS.archived] = archivedEpoch;
     persistSession(o);
+  }
+
+  // 0.3.7 §一.1 — take ownership of a game, once. Returns false when someone already holds it,
+  // which is what makes finalizeGame() idempotent ACROSS the in-flight window and not merely
+  // after it. Deliberately NOT persisted to the session area: the claim only has to outlive the
+  // job it guards, and a reload kills that job — persisting it would only mean a game whose
+  // analysis was cut short by a reload could never be analysed again.
+  function claimEpoch(epoch) {
+    if (epoch == null || claimedEpoch[epoch]) return false;
+    claimedEpoch[epoch] = true;
+    return true;
   }
 
   function setLiveStopped(v) {
@@ -950,7 +1032,22 @@
     // many more. Testing the scored count threw away a 25-move game that stopped at move 12
     // ("对局过短：仅 12 手"), i.e. the data could not be saved at all. `originalTotalMoves`
     // is the real length; it is what viewer.js's archiveCurrent already uses.
-    var total = report.originalTotalMoves || report.totalMoves || record.moves.length || 0;
+    // 0.3.5 added `originalTotalMoves` because `totalMoves` is how many hands we SCORED, which
+    // is not the same as how long the game was. But `||` stops at the first TRUTHY value, so a
+    // report that scored 7 hands and carried no `originalTotalMoves` reported 7 — and the
+    // record's own 22 moves, which were sitting right there, were never consulted. The operator
+    // saw a 22-move game thrown away as 「仅 7 手（少于 14 手）」.
+    //
+    // The record IS the ground truth for "how long was this game": every distinct stone we
+    // collected, already de-duplicated by `toRecord`. The two report numbers are the engine's
+    // own account of the same quantity. Taking the LARGEST is the only reading that cannot
+    // discard a game we demonstrably watched — any one of the three saying "long enough" is
+    // enough, because this gate exists to drop 6-move aborts, not to second-guess a full board.
+    var total = Math.max(
+      report.originalTotalMoves || 0,
+      report.totalMoves || 0,
+      record.moves.length || 0
+    );
     var minMoves = GMStorage.clampMinMoves(S.minArchiveMoves);
     if (total < minMoves) {
       job.note = T('panel|对局过短：仅 {n} 手（少于 {min} 手），未存档。', { n: total, min: minMoves });
@@ -1546,6 +1643,13 @@
       // The `×` removed the panel; the extension icon asks us to put it back.
       sendResponse({ restored: restorePanel() });
     }
+    // 0.5.2 §5.1 — the viewer writes the background to IndexedDB, which fires no
+    // `storage.onChanged`, so the settings page relays the change through the worker. Without
+    // this the overlay would keep the old picture (or no picture at all) until the tab reloaded.
+    if (msg.type === 'gm-bg-changed') {
+      if (!msg.slot || msg.slot === 'bg-overlay') refreshOverlayBg();
+      return;
+    }
   });
 
   // ---------- job queue ----------
@@ -1779,6 +1883,19 @@
   async function liveFinish() {
     if (!liveJob) return;
     var job = liveJob;
+    // 0.3.7 §一.1 — take ownership of the game this session belongs to, for the same reason
+    // finalizeGame() does: the archive below is asynchronous, and this function is reachable
+    // WITHOUT going through finalizeGame — the manual 「结束并出报告」 button, gm-abort, and the
+    // 活四 stop above. With no claim, the game-end signal that follows found `liveJob` already
+    // retired, took the no-live-session branch, and archived the SAME game a second time. That is
+    // one of the routes by which one game produced two identical archives.
+    //
+    // `job._epoch` is then set, so archiveFromJob()'s markEpochArchived() fires: the epoch guard
+    // and the panel's 「已存档」 both learn about this game from the session's own archive, not
+    // only from a 收尾分析 job.
+    var epoch = job._epoch != null ? job._epoch : gameEpoch;
+    if (!claimEpoch(epoch)) return;
+    job._epoch = epoch;
     liveJob = null;
     job._busy = false;
     // 0.4.7 §2.2: set BEFORE the await, and unconditionally. The old code only reached
@@ -1858,17 +1975,28 @@
       }
       return null;
     }
+    // ---- from here on THIS call owns the game ----
+    // Everything above either declined (nothing to archive, or too short — both already settled)
+    // or deferred: the `!S.autoAnalyze` branch deliberately leaves a normal ending for the manual
+    // button, and a later force=true call is still allowed to take it.
     if (liveJob) {
       // The live session already holds everything it scored; let it produce the report.
       liveJob._snap = snap;
       liveJob._epoch = epoch;
       console.log('[detector] 收尾：' + reason + '（实时会话 ' + total + ' 手）');
+      // liveFinish() takes the claim itself — it is ALSO reachable directly (the manual
+      // 「结束并出报告」 button, gm-abort, the 活四 stop), so the claim cannot live here without
+      // double-claiming.
       await liveFinish();
       return null;
     }
     // No live session: this game was never analysed (auto-analysis was off, the detector was
     // opened mid-game, or the session was retired). The stones are on record, so produce the
     // report now — otherwise the game is lost, which is the bug being fixed.
+    //
+    // The claim goes HERE because everything below starts async work, and that ordering is the
+    // fix for the duplicate archives — see the note on claimedEpoch.
+    if (!claimEpoch(epoch)) return null;
     var job = newJob(S.mode === 'stepwise' ? 'step-live' : 'global', '收尾分析');
     job._snap = snap;
     job._epoch = epoch;
@@ -2027,6 +2155,29 @@
     // a halo instead of losing the shadow (see the `:host` definition for that story).
     '.gm{background:var(--gm-bg);border:4px solid var(--gm-line);border-radius:10px;box-shadow:0 10px 34px rgba(0,0,0,.55),var(--gm-glow,0 0 0 rgba(0,0,0,0));overflow:hidden;display:flex;flex-direction:column;max-height:var(--gm-max);position:relative;',
     'transition:border-color .3s ease,box-shadow .3s ease}',
+    // ---- 0.5.2 §5.1 自定义背景（浮层）----
+    // The operator's own picture behind the panel. `--gm-bg-image` / `--gm-bg-pos` /
+    // `--gm-bg-dim` / `--gm-bg-blur` are written onto the HOST by refreshOverlayBg(); the host
+    // is the only element that survives a `renderShell()` (a language switch replaces
+    // `root.innerHTML`), so variables parked there are the ones that do not need re-applying
+    // after one.
+    //
+    // Two corrections to the spec's CSS, both of which it needs to work at all:
+    //   · `.gm > *{position:relative}` — the `position` half is NOT needed and IS harmful: `.rz`
+    //     (the resize handle) is `position:absolute` and a later `.gm > *` rule of equal
+    //     specificity would win by order and turn it into a static box. `.gm` is a flex
+    //     container, so a `z-index` on a flex item already creates the stacking context that
+    //     lifts the content above the scrim — no `position` required.
+    //   · the scrim carries `var(--gm-bg-dim,0)`: an unset custom property makes the whole
+    //     `rgba()` invalid-at-computed-value-time, which silently drops to `transparent` — a
+    //     background that renders with no dimming at all and no error anywhere.
+    ':host(.has-bg) .gm{background-image:var(--gm-bg-image);background-size:cover;',
+    'background-repeat:no-repeat;background-position:var(--gm-bg-pos,50% 50%)}',
+    ':host(.has-bg) .gm::before{content:"";position:absolute;pointer-events:none;z-index:0;',
+    'inset:calc(-1 * (var(--gm-bg-blur,0px) + 2px));',
+    'background:rgba(0,0,0,var(--gm-bg-dim,0));',
+    'backdrop-filter:blur(var(--gm-bg-blur,0px));-webkit-backdrop-filter:blur(var(--gm-bg-blur,0px))}',
+    ':host(.has-bg) .gm > *{z-index:1}',
     // 0.4.9 §二.3 — the six states, as CSS animations.
     //
     // The colours here are LITERAL and deliberately NOT themed, the same way the risk numbers
@@ -2104,6 +2255,12 @@
     '.gmban .sp{flex:1}',
     '.gmban .blk{color:var(--gm-lk);cursor:pointer;white-space:nowrap;flex:none}',
     '.gmban .blk:hover{text-decoration:underline}',
+    // 0.5.2 §2.1 — the 一键更新 button. `.bnow` is the primary action in the strip, so it is
+    // weighted like one; `.busy` is the several seconds the download takes, during which a
+    // second click is ignored (see oneClickUpdate). No spinner: the label already changes to
+    // 「下载中…」, and a spinner in a 12px strip is noise.
+    '.gmban .bnow{font-weight:700}',
+    '.gmban .bnow.busy{color:var(--gm-dim);cursor:default;text-decoration:none}',
     // Minimised: no chrome at all, just the 48x48 shield restored by a click.
     ':host(.mg) .gm{display:none}',
     '.mface{display:none;width:48px;height:48px;border-radius:12px;background:var(--gm-bg);border:1px solid var(--gm-line);',
@@ -2255,6 +2412,17 @@
     '.cpnl .cwarn{padding:6px 10px;color:#e8a33d;font-size:11px;line-height:1.5;border-top:1px solid #3a2f1c}',
     '.cpnl .cft{padding:6px 10px;color:var(--gm-dim);font-size:11px;display:flex;align-items:center;gap:8px}',
     '.cpnl .cft .lk{color:var(--gm-lk);cursor:pointer}',
+    // 0.5.2 §4.1.4 — the hand-grading block. Bordered and tinted like `.cwarn` rather than like a
+    // record row, because it is a pending decision: the operator has to be able to tell "the
+    // exchange is finished" from "it is waiting on me" at a glance.
+    '.cpnl .cgrade{padding:8px 10px;border-top:1px solid var(--gm-line-soft);background:var(--gm-in)}',
+    '.cpnl .cgt{color:var(--gm-txt-2);font-size:11px;margin-bottom:5px}',
+    '.cpnl .cgq{margin:0 0 7px;padding:5px 7px;background:var(--gm-bg);border:1px solid var(--gm-line-soft);border-radius:3px;color:var(--gm-mut);font-size:11px;line-height:1.5;word-break:break-word}',
+    '.cpnl .cgbtns{display:flex;flex-wrap:wrap;gap:6px}',
+    // Five buttons, so they wrap; each carries its own delta so the arithmetic is visible.
+    '.cpnl .cglv{color:var(--gm-lk);cursor:pointer;border:1px solid var(--gm-line-soft);border-radius:3px;padding:3px 7px;font-size:11px;white-space:nowrap}',
+    '.cpnl .cglv:hover{background:var(--gm-bg);text-decoration:none}',
+    '.cpnl .cglv .cgd{margin-left:5px;color:var(--gm-dim);font-variant-numeric:tabular-nums}',
     '.hd .lk[data-ask-state=off]{color:var(--gm-off);cursor:default}',
     // 0.4.9 §一.6 — the 🚫 blacklist button. Three states, in the order the operator meets them:
     //   off — the opponent is not on the list; grey, and one click (＋confirm) blocks them.
@@ -2279,6 +2447,12 @@
       '<div class="gmban">' +
         '<span class="bi" aria-hidden="true">↑</span>' +
         '<span class="bt" data-slot="updtext"></span><span class="sp"></span>' +
+        // 0.5.2 §2.1.3 — the banner is now [一键更新] [查看详情] [暂不更新]. The first is the
+        // new one and it is deliberately FIRST: it is the action the banner exists for, and the
+        // other two are the ways out of it. It carries its own state class (`bnow`) because the
+        // download takes seconds and a button that looks identical while it works reads as a
+        // button that did not register the click.
+        '<span class="blk bnow" data-act="upd-now">' + esc(T('update.oneClick')) + '</span>' +
         '<span class="blk" data-act="upd-open">' + esc(T('update.view')) + '</span>' +
         '<span class="blk" data-act="upd-dismiss">' + esc(T('update.dismiss')) + '</span>' +
       '</div>' +
@@ -2538,7 +2712,61 @@
             : ' title="' + esc(askBlockReason(why)) + '"') + '>' +
         questionLabelHtml(q, lang, LANG) + '</div>';
     }
+
+    // 0.5.2 §4.1.6 — the 自定义问题 category, under the preset bank and clearly separated from
+    // it: the two behave differently (a preset is auto-graded by its tree, a custom one is
+    // graded by the operator), and the remaining-quota line belongs to the custom block only.
+    //
+    // The whole block is absent when the operator has written no questions, rather than an empty
+    // heading: 0.5.1's menu is then exactly what it was.
+    if (customQuestions.length) {
+      var left = Math.max(0, GMChat.MAX_CUSTOM_ADJUSTS - chat.customCount);
+      html += '<div class="cth">' + esc(T('panel|自定义问题')) +
+        '<span class="sp"></span>' +
+        '<span style="font-weight:400">' +
+          esc(T('panel|本局剩余 {n} 次', { n: left })) + '</span></div>';
+      for (var k = 0; k < customQuestions.length; k++) {
+        var cq = customQuestions[k];
+        var cwhy = customAskBlockReason(ctx, left, cq);
+        var cok = cwhy === null;
+        html += '<div class="it wrap q-item' + (cok ? '' : ' dis') + '"' +
+          (cok ? ' data-act="pick-ask-customq" data-v="' + esc(cq.id) + '" role="menuitem"'
+               : ' title="' + esc(cwhy) + '"') + '>' +
+          // Shown in the language it will be SENT in, with the operator's own reading language as
+          // the note — the same contract questionLabelHtml() implements for the bank, and for the
+          // same reason: the operator is about to put these words in front of a stranger.
+          customQuestionLabelHtml(cq, lang, LANG) + '</div>';
+      }
+    }
     return html;
+  }
+
+  // The custom counterpart of questionLabelHtml(). A custom question's own language is unknown
+  // (the operator may have written it in any of them), so the label is simply what will go out.
+  function customQuestionLabelHtml(cq, sendLang, uiLang) {
+    var main = GMStorage.pickCustomQuestionText(cq, sendLang);
+    var note = '';
+    if (sendLang !== uiLang) {
+      // Which version is being sent, and — when it is the English fallback rather than a real
+      // translation — say so. §4.1.3's fallback is invisible otherwise, and the operator would
+      // believe their question went out in the language they picked.
+      note = cq.translations && cq.translations[sendLang]
+        ? '<div class="hint">（' + esc(cq.text) + '）</div>'
+        : '<div class="hint">' + esc(T('panel|（无 {lang} 翻译，发送英文版）',
+            { lang: GMI18n.langLabel(sendLang) })) + '</div>';
+    }
+    return '<div class="q-main">' + esc(main) + '</div>' + note;
+  }
+
+  // Why a custom question cannot be sent, as a human sentence, or null when it can. Mirrors the
+  // shape of askBlockReason() so the two blocks grey their rows the same way.
+  function customAskBlockReason(ctx, left, cq) {
+    if (ctx.spectating) return askBlockReason('spectating');
+    if (!ctx.chatAvailable) return askBlockReason('noChat');
+    if (left <= 0) return T('panel|本局自定义提问已达上限（3 次）');
+    if (ctx.lastSentAt && ctx.now - ctx.lastSentAt < 10000) return askBlockReason('cooldown');
+    if (chat.pending) return T('panel|上一个问题还在等回答');
+    return null;
   }
 
   // The reasons a question is greyed. Literal `T()` arguments on purpose: this project has
@@ -2669,6 +2897,55 @@
     GMStorage.dismissUpdate(v).catch(function () {});
   }
 
+  // ---------- 0.5.2 §2.1: 一键更新 ----------
+  // The download runs in the service worker (`chrome.downloads` does not exist in a content
+  // script). This side owns only the three things the worker cannot do: the button's own state,
+  // the message, and telling the operator what happened.
+  //
+  // It never touches the banner's visibility or `updateInfo`: a failed download must leave the
+  // 「有新版本」 strip exactly as it was, so the button can simply be pressed again.
+  var updNowBusy = false;
+
+  function setUpdNow(label, busy) {
+    if (!root) return;
+    var btn = root.querySelector('[data-act=upd-now]');
+    if (!btn) return;
+    btn.textContent = label;
+    btn.classList.toggle('busy', !!busy);
+  }
+
+  function oneClickUpdate() {
+    if (updNowBusy) return;
+    updNowBusy = true;
+    setUpdNow(T('update.downloading'), true);
+    var done = function (resp) {
+      updNowBusy = false;
+      setUpdNow(T('update.oneClick'), false);
+      if (resp && resp.ok) {
+        alert(T('update.downloaded', { file: (resp && resp.filename) || 'baishen-update.zip' }));
+      } else {
+        // Deliberately an alert and not a silent no-op: the operator pressed a button and
+        // nothing visible happened, so the failure has to be stated. The message names the
+        // alternative route (查看详情 → the release page) rather than only the error code.
+        //
+        // ⚠ `update.dlFailed`, not `update.failed`: the latter already exists and means the
+        // update CHECK could not reach the repository (0.4.0 §一). Two different failures —
+        // reuse would have shown 「检测失败（网络不可用或仓库不可达）」 for a download that
+        // started fine and then died, which is a wrong diagnosis, not just a wrong word.
+        alert(T('update.dlFailed', { err: (resp && resp.error) || '?' }));
+      }
+    };
+    try {
+      chrome.runtime.sendMessage({ type: 'gm-download-update' }, function (resp) {
+        if (chrome.runtime.lastError) {
+          done({ ok: false, error: chrome.runtime.lastError.message });
+          return;
+        }
+        done(resp);
+      });
+    } catch (e) { done({ ok: false, error: String((e && e.message) || e) }); }
+  }
+
   function build() {
     host = document.createElement('div');
     host.id = '__gm_panel';
@@ -2764,6 +3041,7 @@
       if (act === 'restore') { setOverlayState('normal'); return; }
       if (act === 'resize') return;   // handled by mousedown below, not by click
       if (act === 'open-viewer') { openViewer(); return; }
+      if (act === 'upd-now') { oneClickUpdate(); return; }
       if (act === 'upd-open') { openUpdatePage(); return; }
       if (act === 'upd-dismiss') { dismissBanner(); return; }
       if (act === 'copy') { copyResult(); return; }
@@ -2795,6 +3073,18 @@
         if (chosen) askQuestion(chosen);
         return;
       }
+      // ---- 0.5.2 §4.1 ----
+      if (act === 'pick-ask-customq') {
+        var cqid = hit.getAttribute('data-v');
+        var picked = null;
+        for (var ci = 0; ci < customQuestions.length; ci++) {
+          if (customQuestions[ci].id === cqid) { picked = customQuestions[ci]; break; }
+        }
+        closeMenus();
+        if (picked) askCustomQuestion(picked);
+        return;
+      }
+      if (act === 'custom-grade') { applyCustomLevel(hit.getAttribute('data-v')); return; }
       // ---- 0.4.4 §12/§14 ----
       if (act === 'chat-close') { chatOpen = false; paintChatPanel(); return; }
       if (act === 'chat-confirm-yes') {
@@ -3630,6 +3920,18 @@
   function paintControls() {
     if (!root) return;
     var busy = !!running();
+    // 0.5.1 §一.4 — `busy` counts `liveJob`, which is right for every control EXCEPT the analyze
+    // button in 逐步分析 mode: there, the SAME button is the 「结束并出报告」 control for the live
+    // session. Gating it on `busy` therefore rendered it `disabled` for exactly as long as a live
+    // session existed, so the manual finish was unreachable — the operator could only wait for the
+    // game to end on its own. (That dead control is also why the duplicate-archive routes were the
+    // ONLY ones that ever fired: every finish went through finalizeGame, never through this button.)
+    //
+    // A batch job must still block it. `runningJob` and `liveJob` are mutually exclusive by
+    // construction — liveStepFor() returns early while `runningJob` is set — so for the stepwise
+    // branch `!!runningJob` is the precise gate: enabled to stop a live session, disabled while a
+    // 全局/回放 job is in flight.
+    var busyBatch = !!runningJob;
     var h =
       '<div class="row"><label>' + esc(T('panel|分析模式')) + '</label>' +
         '<select data-act="select-mode"' + (busy ? ' disabled' : '') + '>' +
@@ -3687,7 +3989,7 @@
         (S.mode === 'global'
           ? '<button class="p" data-act="analyze"' + (busy ? ' disabled' : '') + '>' +
               esc(T('panel|分析当前对局')) + '</button>'
-          : '<button class="p" data-act="analyze"' + (busy ? ' disabled' : '') + '>' +
+          : '<button class="p" data-act="analyze"' + (busyBatch ? ' disabled' : '') + '>' +
               esc(liveJob ? T('panel|结束并出报告') : T('panel|开始实时逐步')) + '</button>') +
         '<button data-act="replay"' + (busy ? ' disabled' : '') + '>' + esc(T('panel|导入回放')) + '</button>' +
         '<button data-act="export"' + (selectedId ? '' : ' disabled') + '>' + esc(T('panel|导出JSON')) + '</button>' +
@@ -3797,6 +4099,14 @@
     resolvedKey: null,
     asks: 0,
     total: 0,
+    // 0.5.2 §4.1.5 — how many CUSTOM questions went out this game. A separate counter from
+    // `asks` on purpose: `asks` counts the whole exchange (presets included) and is only shown
+    // in the footer, while this one is the §4.1.5 cap and is printed in the picker as
+    // 「本局剩余 N 次」. Folding them together would make a preset question eat the custom quota.
+    customCount: 0,
+    // The custom question we are waiting on an answer to, and its risk-level buttons' state.
+    // {id, level} while the operator is choosing; null otherwise.
+    customPending: null,
     history: [],            // §14 提问记录
     lastSentAt: 0,
     // §7.3 — did any message of OURS actually reach the box this game? `announced` only records
@@ -3824,6 +4134,8 @@
     chat.resolvedKey = null;
     chat.asks = 0;
     chat.total = 0;
+    chat.customCount = 0;
+    chat.customPending = null;
     chat.history = [];
     chat.lastSentAt = 0;
     chat.sentAny = false;
@@ -4350,9 +4662,96 @@
     paintChatPanel();
   }
 
+  // 0.5.2 §4.1.3 — send one of the operator's own questions.
+  //
+  // Deliberately parallel to askQuestion() rather than folded into it: the preset path resolves
+  // its wording through `pickQuestion()` (the bank's own locale tables) and its grading through
+  // `GMChat.grade()`, and neither applies here. What IS shared is the send/retry/failure
+  // machinery, the per-game quota accounting, and the "count it only once the message really
+  // left" rule — a failed attempt must not consume one of the three.
+  function askCustomQuestion(cq, lang) {
+    if (!cq) return;
+    if (!chatAvailable()) { flashFoot(T('panel|聊天栏不可用，已跳过声明')); return; }
+    var left = Math.max(0, GMChat.MAX_CUSTOM_ADJUSTS - chat.customCount);
+    if (left <= 0) { flashFoot(T('panel|本局自定义提问已达上限（3 次）')); return; }
+    if (chat.pending) { flashFoot(T('panel|上一个问题还在等回答')); return; }
+
+    var sendLang = lang || askMenuLang();
+    var text = GMStorage.pickCustomQuestionText(cq, sendLang);
+    if (!text) return;
+    // §4.1.3's fallback is silent unless it is announced: the operator picked a language, and
+    // what went out is English. Same treatment askQuestion() gives its own fallback.
+    var fellBack = !(cq.translations && cq.translations[sendLang]);
+
+    // `q` carries the id the 提问记录 files the exchange under, and `custom` is what
+    // gradePending() branches on.
+    chat.pending = {
+      q: { id: cq.id, text: {} }, lang: sendLang, askedAt: performance.now(),
+      stage: 'asked', custom: cq,
+    };
+    sendChatWithRetry(text, function (why) {
+      // Nothing went out — do not sit waiting for an answer that cannot come.
+      chat.pending = null;
+      sendFailFoot(why);
+    }, function () {
+      // Counted only once the message really left, and the quota is what §4.1.5 caps.
+      chat.customCount++;
+      chat.asks++;
+      if (fellBack) flashFoot(T('panel|该题没有 {lang} 版本，已发送英文版', { lang: sendLang }));
+      paintChatPanel();
+    });
+    paintChatPanel();
+  }
+
+  // The operator's verdict on a custom exchange. §4.1.4's five levels, applied through the SAME
+  // §13.3 budget every other adjustment uses — see CUSTOM_Q_DELTA in chat.js for why that matters.
+  //
+  // `unplaced` is handled exactly as the preset path handles it: with the sender's colour unknown
+  // there is nobody to move, so the level is recorded as evidence with a delta of 0 rather than
+  // making 「累计调整」 advertise a change that never reaches a card.
+  function applyCustomLevel(level) {
+    var cp = chat.customPending;
+    if (!cp) return;
+    var delta = GMChat.customDelta(level);
+    if (delta == null) return;
+    var unplaced = chat.senderIsBlack == null;
+    var applied = unplaced ? { ok: false, delta: 0 } : GMChat.applyBudget(chat.history, delta);
+    if (applied.ok) chat.total += applied.delta;
+    // The verdict string is namespaced so the 提问记录 can tell a hand-graded custom exchange
+    // from a preset one that happened to land on the same word.
+    recordChat({ id: cp.id, text: {} }, cp.text, 'custom:' + level,
+      applied.ok ? applied.delta : 0, cp.lang);
+    if (unplaced) flashFoot(T('panel|发送者颜色未确定，本次问答不调整 AI 率'));
+    else if (!applied.ok && delta) {
+      flashFoot(applied.reason === 'maxAdjusts'
+        ? T('panel|本局调整次数已达上限（3 次）')
+        : T('panel|调整额度已用尽（±20）'));
+    }
+    chat.customPending = null;
+    chat.pending = null;
+    paintChatPanel();
+    paintStatus();
+  }
+
   function gradePending(text, now) {
     var p = chat.pending;
     if (!p) return;
+
+    // 0.5.2 §4.1.3 — a CUSTOM question is not graded here, because there is no tree to grade it
+    // with: `GMChat.grade()` reads the preset bank's own answer vocabulary, and a question the
+    // operator wrote has none. §4.1.3 hands the judgement to the operator instead, so this
+    // branch stops at "the answer arrived" and lets applyCustomLevel() finish the exchange.
+    //
+    // `chat.pending` deliberately stays set: the exchange is not over until a level is chosen,
+    // and leaving it set is what greys the picker rows (see customAskBlockReason) so a second
+    // question cannot be fired at an opponent who is still answering the first.
+    if (p.custom) {
+      chat.customPending = { id: p.custom.id, text: text, lang: p.lang, level: null };
+      p.stage = 'custom-grade';
+      paintChatPanel();
+      return;
+    }
+
     var rep = currentReport();
     var opening = (socketRec && socketRec.opening) || (rep && rep.opening) || null;
     var code = opening && (opening.code || (typeof opening === 'string' ? opening : null));
@@ -4601,6 +5000,35 @@
     chatObserver.observe(box, { childList: true, subtree: true });
   }
 
+  // 0.5.2 §4.1.4 — the five risk-level buttons, plus the answer they are about.
+  //
+  // The answer is repeated here even though the 提问记录 row above already carries it: the record
+  // is a log (newest first, and it scrolls), while this block is a decision waiting to be made.
+  // The operator has to be able to read the sentence they are judging without hunting for it.
+  //
+  // Each button prints its own delta, because §4.1.4's five numbers are not guessable from the
+  // words — 「难以判断 +3」 is a choice about arithmetic as much as about the reply.
+  function customGradeHtml() {
+    var cp = chat.customPending;
+    if (!cp) return '';
+    var btns = '';
+    for (var i = 0; i < GMChat.CUSTOM_LEVELS.length; i++) {
+      var lv = GMChat.CUSTOM_LEVELS[i];
+      var d = GMChat.CUSTOM_Q_DELTA[lv];
+      // `TO('customLevel', lv)` — the runtime-key route (see i18n-extra.js), NOT
+      // `T('panel|' + label)`: a concatenated key is invisible to keys.cjs, so the text would
+      // exist at runtime and in no table and every non-Chinese locale would show Chinese.
+      btns += '<span class="lk cglv" data-act="custom-grade" data-v="' + esc(lv) + '">' +
+        esc(TO('customLevel', lv)) +
+        '<span class="cgd">' + (d > 0 ? '+' + d : String(d)) + '</span></span>';
+    }
+    return '<div class="cgrade">' +
+      '<div class="cgt">' + esc(T('panel|对手已回复，请判定：')) + '</div>' +
+      '<div class="cgq">' + esc(cp.text) + '</div>' +
+      '<div class="cgbtns">' + btns + '</div>' +
+      '</div>';
+  }
+
   function paintChatPanel() {
     if (!els.chatPanel) return;
     if (!chatOpen) { els.chatPanel.innerHTML = ''; els.chatPanel.style.display = 'none'; return; }
@@ -4624,6 +5052,10 @@
         ? '<div class="cwarn">' + esc(T('panel|发送失败：{why}。消息未发出。',
             { why: TO('sendWhy', chat.lastSendWhy) })) + '</div>'
         : '') +
+      // 0.5.2 §4.1.4 — the hand-grading block. It appears only between the opponent's reply and
+      // the operator's verdict, and it is the one place in the panel where a click moves the AI
+      // rate by an amount the operator chose rather than one the grading tree computed.
+      customGradeHtml() +
       '<div class="cft">' + esc(T('panel|提问 {n} 次 · 累计调整 {d}', { n: chat.asks, d: chat.total })) +
         '<span class="sp"></span>' +
         '<span class="lk" data-act="chat-ask">' + esc(T('panel|提问')) + '</span></div>';
@@ -4858,6 +5290,12 @@
         // the check depend on whether some other surface had already written it.
         var themeChanged = v.theme !== S.theme;
         S = v;
+        // 0.5.2 §4.1 — the custom questions live inside the same `settings` blob, so an edit made
+        // on the viewer's settings page arrives on this broadcast. Read straight off `v` rather
+        // than through refreshCustomQuestions(), which would re-read the same object from storage.
+        var cqChanged = JSON.stringify(customQuestions) !== JSON.stringify(v.customQuestions || []);
+        customQuestions = v.customQuestions || [];
+        if (cqChanged && openMenu === 'ask-q') paintMenus();
         if (!root) return;
         // §1.8: a language change invalidates the SHELL, not just the values in it — every
         // label in it was baked into the DOM by shellHtml(). So it takes a rebuild. It also
@@ -4889,10 +5327,17 @@
     // 0.4.0 §一.4 — reads whatever the last check left behind; it never triggers a check of
     // its own (only the service worker and the viewer's button do that).
     refreshUpdateBanner();
+    // 0.5.2 §5.1 — the operator's own backdrop, if they set one. Fire-and-forget: the panel is
+    // already on screen, and a picture that arrives a frame later is a picture, not a bug.
+    refreshOverlayBg();
   }
+  // 0.5.2 §4.1 — the custom questions are loaded alongside the settings and NOT awaited before
+  // boot(): the picker is behind a click and a second or two of an empty 自定义问题 block is
+  // invisible, while holding the panel back behind another storage read would not be.
   loadSettings().then(function () {
     if (document.body) boot();
     else document.addEventListener('DOMContentLoaded', boot, { once: true });
+    refreshCustomQuestions();
   });
 
   startDomObserver();

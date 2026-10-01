@@ -1812,6 +1812,12 @@ async function analyzeStepwise(record, opts, onProgress, onStep) {
   // which is where sideAggregate() counts `fourKind === 'useless'`.
   recordPrevBestWR(steps);
   markFourRuns(steps, riskParams(learned).t);
+  // 0.5.2 §1.1/§1.2: the two pool passes, after the four-run pass for the same reason it runs
+  // after markEvasion — a hand's 冲四豁免 verdict has to be settled before markGoodPool decides
+  // whether the hand joins the run, and the live-three flags read `cands`/`top1`/`top3`, which
+  // are final by now. Both are idempotent, so re-running them over a partially analysed list is
+  // safe (the live summary does exactly that).
+  markPoolSignals(steps);
   // 0.3.3 C: same fingerprint pass as analyzeGame, for the same reason.
   if (learned && learned.features && learned.features.length &&
       typeof GMLearn !== 'undefined' && GMLearn && GMLearn.matchFeatures) {
@@ -1833,6 +1839,10 @@ function summarizeSteps(steps, times, opts) {
   // too — same reason as the line above. Both are idempotent (they reset their own fields).
   recordPrevBestWR(steps);
   markFourRuns(steps, riskParams(params).t);
+  // 0.5.2 §1.1/§1.2 — same two passes as the finished report, same reason as the two above: the
+  // live score has to equal the score the game ends with. Both reset their own fields, so they
+  // are safe to re-run on every update.
+  markPoolSignals(steps);
   // Two steps in a row by the same side cannot happen in a real game. The live session
   // only holds PLAYED moves, so an adjacency here means the capture lost one.
   let issues = 0;
@@ -1914,6 +1924,18 @@ const BASE_WEIGHTS = {
   // surcharges keep their values and these two are added at the magnitudes §1.2 names.
   sharpStreak: 0.04,
   sharpTotal: 0.03,
+  // 0.5.2 §1.1.4 / §1.2.4: the two pool terms. Surcharges again, for the third release running.
+  //
+  // ⚠ §1.1.4 says 「权重表新增 goodPool: 0.03（其余项按比例缩小到总和 1.00）」 — the same
+  // instruction 0.4.8 §1.2 gave, and it is not taken, for the same reason: scaling the existing
+  // eleven so the table sums to 1.00 multiplies EVERY archived risk score by ~0.87 and flips
+  // games sitting on the 70/40 cuts from 高风险 to 可疑. That would silently invalidate the whole
+  // archive corpus's comparability, which is the property the surcharge model exists to protect
+  // (see BASE_WEIGHTS' note above, and verify-048 which asserts the six still sum to 1.00 and the
+  // surcharges ride on top). Both new terms are exactly 0 on a game with no pool signal, so such
+  // a game scores bit-for-bit what it scored before.
+  goodPool: 0.03,
+  liveThree: 0.03,
 };
 const BASE_THRESHOLDS = {
   // 0.4.3 §1.1: the ramp aTop1 now reads. `top1Lo`/`top1Hi` are kept because a pre-0.4.3
@@ -2340,6 +2362,129 @@ function sharpStreakStats(steps, side) {
   return { maxStreak, totalSharp, streakHits };
 }
 
+// ---------- 0.5.2 §1.1 好点积累池 ----------
+// 好点 = 落在引擎 Top3 及其以内. §1.1.1 states the predicate as `step.top1 || step.top3` and
+// then glosses it as `stepProximity >= 0.75`; the two are NOT the same thing in this codebase and
+// the predicate wins.
+//
+// Why: `PROX` (see stepProximity) grades top3 at 0.80 — but 0.4.7 deliberately merged the Top2-3
+// and Top4-5 tiers into ONE 0.80 band, because the engine's ordering past its first pick is noisy
+// at a fixed time budget. So `stepProximity(s) >= 0.75` is true for Top2-5, i.e. the gloss would
+// silently widen 好点 from three candidates to five. The spec's own §1.2 then settles which
+// reading was meant: the 活三 boundary there is written straight as `step.top3`, never as a
+// proximity. Same boundary, so the same reading is used here.
+//
+// `GOOD_PROX` is kept as the named constant the spec asks for and is asserted by the suite, but
+// the predicate is the one §1.1.1 writes out.
+const GOOD_PROX = 0.75;
+const GOOD_POOL_MIN = 3;      // consecutive good points before the term starts scoring
+
+function isGoodPoint(s) { return !!(s && (s.top1 || s.top3)); }
+
+// Stamps the running 好点 streak on every hand, per side. Same "neither a hit nor a failure"
+// semantics as sharpStreakStats: a hand that is un-analysed, in the opening cutoff, or a 冲四豁免
+// (exempt) is SKIPPED — it neither extends the run nor breaks it. Everything else either extends
+// it or resets it to 0, so a streak counts consecutive SCORED hands of that player.
+//
+// Walks the whole step list once per side rather than filtering first, so the stamped value is a
+// property of the hand in table order — the viewer reads it directly and must not have to rebuild
+// the run. Idempotent: the first loop resets every hand to 0.
+function markGoodPool(steps) {
+  for (let i = 0; i < steps.length; i++) steps[i].goodPool = 0;
+  for (const side of ['B', 'W']) {
+    let streak = 0;
+    for (let i = 0; i < steps.length; i++) {
+      const s = steps[i];
+      if (s.side !== side || !s.analyzed || s.isOpening || isExemptUnique(s)) continue;
+      if (isGoodPoint(s)) {
+        streak++;
+        s.goodPool = streak;
+      } else {
+        streak = 0;
+      }
+    }
+  }
+  return steps;
+}
+
+// ---------- 0.5.2 §1.2 活三特例 ----------
+// 对手形成活三时，防点通常只有两个，且引擎对这两个点的胜率几乎一样。§1.2.1 splits the
+// response three ways, and the split only means anything if the detector can tell a 活三 defence
+// apart from an ordinary hand — hence the two-part test below: the opponent really had an open
+// three, AND the engine's top two candidates are close enough that they are the same decision.
+//
+// The second half is what keeps this from firing on every hand. A position can hold an open three
+// for the opponent while the engine's first choice is still ten points clear of its second — that
+// is not a two-way choice, and calling it one would hand out 活三 credit for an ordinary move.
+const LIVE_THREE_WR_GAP = 0.15;
+const LIVE_POOL_MIN = 2;      // consecutive 活三 hits before the term starts scoring
+
+function isLiveThreeDefense(step, prevBoard, cands) {
+  if (!step || !prevBoard) return false;
+  const opp = step.side === 'B' ? 'W' : 'B';
+  const t = scanThreats(prevBoard);
+  if (!t || !t[opp].openThree) return false;
+  if (!cands || cands.length < 2) return false;
+  const p1 = cands[0].move, p2 = cands[1].move;
+  if (eqCoord(p1, p2)) return false;
+  const wr1 = cands[0].winrate || 0, wr2 = cands[1].winrate || 0;
+  return Math.abs(wr1 - wr2) <= LIVE_THREE_WR_GAP;
+}
+
+// The per-hand fact. Needs the board AS IT WAS BEFORE the hand — which is why this walk is
+// incremental rather than a lookup: `scanThreats` reads a stone list, and nothing on a step
+// records the position that preceded it. Building `board` as we go costs one push per hand and
+// keeps the whole thing O(n) instead of re-deriving a prefix board per step.
+function markLiveThreeFlags(steps) {
+  const board = [];
+  for (let i = 0; i < steps.length; i++) {
+    const s = steps[i];
+    s.liveThreeDefense = isLiveThreeDefense(s, board, s.cands);
+    s.liveThreeHit = !!(s.liveThreeDefense && s.top1);
+    s.liveThreeTop2 = !!(s.liveThreeDefense && !s.top1 && s.top3);
+    s.liveThreeMiss = !!(s.liveThreeDefense && !s.top1 && !s.top3);
+    if (s.actual) board.push({ x: s.actual[0], y: s.actual[1], side: s.side });
+  }
+  return steps;
+}
+
+// The INDEPENDENT 活三 pool. §1.2.2 is the whole point of this function:
+//   · 走 Top2 — no credit, and NO reset. Top2 on a two-way defence is what an ordinary strong
+//     player picks, so it is not evidence either way.
+//   · 走 Top1 — a hit; the run extends.
+//   · Top3 外 — the defence was missed; the run breaks.
+//   · a hand that is not a 活三 defence at all — neither extends nor breaks, so a good point in
+//     between does not disturb the 活三 run and the two pools stay genuinely independent.
+function markLiveThreePool(steps) {
+  for (let i = 0; i < steps.length; i++) steps[i].liveThreePool = 0;
+  for (const side of ['B', 'W']) {
+    let streak = 0;
+    for (let i = 0; i < steps.length; i++) {
+      const s = steps[i];
+      if (s.side !== side || !s.analyzed || s.isOpening) continue;
+      if (s.liveThreeTop2) continue;
+      if (s.liveThreeHit) {
+        streak++;
+        s.liveThreePool = streak;
+      } else if (s.liveThreeMiss) {
+        streak = 0;
+      }
+    }
+  }
+  return steps;
+}
+
+// Both 0.5.2 pools, in the order the pipeline needs them. Kept as one entry point so the two
+// callers (analyzeGame and summarizeSteps) cannot run one pass and forget the other — the live
+// summary and the finished report have to agree, or the risk score visibly moves at the moment
+// the game ends.
+function markPoolSignals(steps) {
+  markGoodPool(steps);
+  markLiveThreeFlags(steps);
+  markLiveThreePool(steps);
+  return steps;
+}
+
 function sideAggregate(steps, side, hasTime, params, opts) {
   const { w, t } = riskParams(params);
   // 0.4.2 §2.3: an evasion hand is excluded from the main statistics. That exclusion IS the
@@ -2444,8 +2589,34 @@ function sideAggregate(steps, side, hasTime, params, opts) {
   // 3-run is worth 0.14, ten in a row saturates); `aSharpTotal` over the total number of hits,
   // which catches a side that keeps finding the only move without ever running long.
   const ss = sharpStreakStats(steps, side);
-  const aSharpStreak = ss.maxStreak >= 3 ? clamp((ss.maxStreak - 2) / 7, 0, 1) : 0;
-  const aSharpTotal = ss.streakHits >= 3 ? clamp((ss.streakHits - 2) / 18, 0, 1) : 0;
+  // 0.5.2 §1.3.2 — both curves are now EXPONENTIAL. §1.3.1's linear ramps treated the 4th, 5th
+  // and 6th consecutive hit as worth the same as the 2nd, which is the opposite of what a run
+  // means: the longer a player matches the engine's only move, the less "good at gomoku"
+  // explains it, and the increment should grow with the run rather than stay flat.
+  //
+  // ⚠ The spec prints example values beside both formulas that the formulas do not produce
+  // (§1.3.2 glosses 5 → 0.29 and 7 → 0.78 where the expression gives 0.24 and 0.54). The
+  // FORMULA is implemented: it is the code, it is unambiguous, and §1.3.3's acceptance criteria
+  // (a small increment at 3, near-full at 8, growth that increases) are satisfied by it. Same
+  // call as 0.4.8 made when §1.2's weight table contradicted §1.2's own criterion.
+  const aSharpStreak = ss.maxStreak >= 3 ? clamp((Math.pow(1.3, ss.maxStreak - 2) - 1) / 5, 0, 1) : 0;
+  const aSharpTotal = ss.streakHits >= 3 ? clamp((Math.pow(1.15, ss.streakHits - 2) - 1) / 8, 0, 1) : 0;
+  // 0.5.2 §1.1.4 / §1.2.4 — the two new pools. Read off the hands this side actually scored
+  // (`s`, i.e. after the evasion/exempt exclusions above), which is also the population the
+  // streak walks stamped, so the max is the longest run among the hands being reported on.
+  //
+  // `aGoodPool` ramps linearly from the 3rd consecutive good point (3 → 0.1, 12 → 1.0).
+  // `aLiveThree` is the exponential one, starting at the 2nd: a single 活三 defence played as the
+  // engine's first choice is ordinary, two in a row on a two-way choice is not.
+  //
+  // ⚠ Same formula-vs-gloss note as above: §1.2.4 prints 4 → 0.22 / 6 → 0.5 where the
+  // expression gives 0.30 / 0.68. The formula is implemented.
+  const goodPoolMax = s.reduce((m, x) => Math.max(m, x.goodPool || 0), 0);
+  const aGoodPool = goodPoolMax >= GOOD_POOL_MIN ? clamp((goodPoolMax - 2) / 10, 0, 1) : 0;
+  const liveThreeMax = s.reduce((m, x) => Math.max(m, x.liveThreePool || 0), 0);
+  const aLiveThree = liveThreeMax >= LIVE_POOL_MIN
+    ? clamp((Math.pow(1.3, liveThreeMax - 1) - 1) / 4, 0, 1)
+    : 0;
   // 0.3.3 C: the feature library's similarity match. Only present once 重新学习 has built a
   // library; it then claims `simWeight` of the score and the six base terms are scaled down
   // proportionally, so an unlearned run is bit-identical to 0.3.1. `aiSimilar` is set by
@@ -2463,7 +2634,8 @@ function sideAggregate(steps, side, hasTime, params, opts) {
                     + wEff.desperate * aDesperate + wEff.time * aTime + simW * aSim
                     + wEff.evasion * aEvasion + wEff.winBlunder * aWinBlunder
                     + wEff.uselessFour * aUselessFour
-                    + wEff.sharpStreak * aSharpStreak + wEff.sharpTotal * aSharpTotal), 0, 100);
+                    + wEff.sharpStreak * aSharpStreak + wEff.sharpTotal * aSharpTotal
+                    + wEff.goodPool * aGoodPool + wEff.liveThree * aLiveThree), 0, 100);
   const level = risk >= t.riskHigh ? '高风险' : (risk >= t.riskMid ? '可疑' : '低风险');
   return {
     side, n, top1, top3, top5, topProx, meanLoss, sharpHit, outTop5, desperateCount,
@@ -2480,6 +2652,10 @@ function sideAggregate(steps, side, hasTime, params, opts) {
     // detail table can say "唯一手最长连续命中 N 次 / 累计 M 次" without recomputing either.
     sharpStreakMax: ss.maxStreak,
     sharpStreakHits: ss.streakHits,
+    // 0.5.2 §1.1/§1.2. The two pool figures behind the terms above, reported so the detail table
+    // and the learner can read the run length without re-walking the sequence — the same reason
+    // sharpStreakMax/sharpStreakHits are carried.
+    goodPoolMax, liveThreeMax,
     contributions: {
       top1: wEff.top1 * aTop1 * 100, acpl: wEff.acpl * aAcpl * 100, sharp: wEff.sharp * aSharp * 100,
       out: wEff.out * aOut * 100, desperate: wEff.desperate * aDesperate * 100, time: wEff.time * aTime * 100,
@@ -2487,6 +2663,7 @@ function sideAggregate(steps, side, hasTime, params, opts) {
       evasion: wEff.evasion * aEvasion * 100, winBlunder: wEff.winBlunder * aWinBlunder * 100,
       uselessFour: wEff.uselessFour * aUselessFour * 100,
       sharpStreak: wEff.sharpStreak * aSharpStreak * 100, sharpTotal: wEff.sharpTotal * aSharpTotal * 100,
+      goodPool: wEff.goodPool * aGoodPool * 100, liveThree: wEff.liveThree * aLiveThree * 100,
     },
     risk, level,
   };
@@ -2763,6 +2940,10 @@ if (typeof module !== 'undefined' && module.exports) {
     // suite drives both directly — a test that re-implemented `classifyFour` to check it would
     // be testing its own copy of the rule, which is how this project has gone wrong before.
     fivePointsFor, classifyFour, fourIsSolid, isExemptUnique,
+    // 0.5.2 §1.1/§1.2: the two pool passes and their constants. Exported so the suite can drive
+    // each one directly on a hand-built step list — the same reason every line above exists.
+    markGoodPool, isGoodPoint, markLiveThreeFlags, markLiveThreePool, markPoolSignals,
+    isLiveThreeDefense, GOOD_PROX, GOOD_POOL_MIN, LIVE_POOL_MIN, LIVE_THREE_WR_GAP,
     // 0.3.3 risk-model plumbing, exported so the learner and the tests can reason about the
     // exact numbers the detector uses.
     riskParams, rampUp, rampDown, loadLearnedParams, BASE_WEIGHTS, BASE_THRESHOLDS,

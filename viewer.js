@@ -605,6 +605,12 @@
     // entry point refresh that registry from IndexedDB and repaint (see afterEngineChange).
     fillEngineForm();
     fillCustomPanel();
+    // 0.5.2 §5.1 / §4.1 — the two panels whose state does not live in `settings`: the background
+    // record is in IndexedDB and the question list is its own storage key. Both fill from their
+    // own loader rather than from `S`, which is what keeps this function from needing a second
+    // source of truth for them.
+    fillBgPanel();
+    fillCqPanel();
   }
 
   // ---- 0.4.7 §三.1: the theme dropdown ----
@@ -1175,6 +1181,397 @@
     if (el) el.textContent = text;
   }
 
+  // =====================================================================
+  // 0.5.2 §5.1 — 自定义背景
+  // =====================================================================
+  // Two independent slots (§5.1.5), one panel. `bgCur` is the record for the slot the panel is
+  // currently showing; `bgOff` is the drag state, kept OUT of the DOM on purpose — a
+  // `pointermove` fires dozens of times a second, and reading the offsets back off a
+  // `background-position` string would mean parsing percentages mid-drag. The live repaint is
+  // immediate and the WRITE is debounced, the same split `bindOpacityControls` uses for its
+  // slider and for the same reason: one storage round-trip per pixel of travel.
+  var BG_SAVE_DELAY = 250;
+  var bgCur = null;                    // { blob, opacity, blur, offsetX, offsetY, scale } | null
+  var bgOff = { x: 50, y: 50 };
+  var bgTimer = null;
+  var bgUrl = '';                      // object URL for the PREVIEW, revoked on replacement
+  var bgViewUrl = '';                  // object URL for the live page's own backdrop
+
+  function bgSlot() {
+    var sel = $('bgSlot');
+    return (sel && sel.value) || 'bg-viewer';
+  }
+
+  // The four custom properties are written in ONE place so the preview and the live page cannot
+  // disagree about what "80% / 5px / dragged a bit left" looks like.
+  //
+  // `--gm-bg-dim` is the SCRIM alpha, i.e. 1 − 透明度. A `background-image` carries no alpha of
+  // its own, so the only honest way to dim one is to paint something over it — which is what the
+  // `::before` layer in the CSS does (see viewer.html §5.1). Naming the variable after what it
+  // paints rather than after the slider is deliberate: the slider is 透明度 and this is its
+  // complement, and a variable called `--gm-bg-opacity` that has to be fed `1 − opacity` is how
+  // the two get crossed one day.
+  function bgVars(el, cfg, url) {
+    if (!el || !el.style) return;
+    el.style.setProperty('--gm-bg-image', url ? 'url("' + url + '")' : 'none');
+    el.style.setProperty('--gm-bg-pos', cfg.offsetX + '% ' + cfg.offsetY + '%');
+    el.style.setProperty('--gm-bg-dim', String(Math.max(0, Math.min(1, 1 - cfg.opacity / 100))));
+    el.style.setProperty('--gm-bg-blur', cfg.blur + 'px');
+  }
+
+  // Reads the two sliders and the drag state, and clamps the lot through the storage layer —
+  // the same `clampBgConfig` the write path uses, so a value the panel can display is a value
+  // the store will accept.
+  function bgCfg() {
+    var op = $('bgOpacity'), bl = $('bgBlur');
+    return G.clampBgConfig({
+      opacity: op ? parseInt(op.value, 10) : null,
+      blur: bl ? parseInt(bl.value, 10) : null,
+      offsetX: bgOff.x, offsetY: bgOff.y, scale: 100,
+    });
+  }
+
+  function setBgStatus(text) {
+    var el = $('bgStatus');
+    if (el) el.textContent = text;
+  }
+
+  // The settings page is the only writer of the background store, so it is also the only thing
+  // that can tell the open game tabs to re-read it: IndexedDB fires no `storage.onChanged`, and
+  // a content script cannot open this store at all (its `indexedDB` is the host page's). The
+  // worker relays this to every tab; content.js then does its own `gm-bg-get`.
+  //
+  // Only the 浮层 slot is announced. The viewer's own backdrop is applied locally by
+  // `applyViewerBg()`, and waking every game tab for it would be noise.
+  function notifyBgChanged(slot) {
+    if (slot !== 'bg-overlay') return;
+    try {
+      chrome.runtime.sendMessage({ type: 'gm-bg-changed', slot: slot }, function () {
+        void chrome.runtime.lastError;   // no listener is a normal state, not an error
+      });
+    } catch (e) { /* extension context gone */ }
+  }
+
+  function paintBgPanel() {
+    var cfg = G.clampBgConfig(bgCur || null);
+    var op = $('bgOpacity'), bl = $('bgBlur');
+    if (op) op.value = String(cfg.opacity);
+    if (bl) bl.value = String(cfg.blur);
+    setTxt('bgOpacityVal', cfg.opacity + '%');
+    setTxt('bgBlurVal', cfg.blur + 'px');
+    setTxt('bgPreviewEmpty', T('viewer|还没有背景图'));
+    var prev = $('bgPreview');
+    if (prev) {
+      prev.classList.toggle('has-bg', !!bgUrl);
+      bgVars(prev, cfg, bgUrl);
+    }
+    setBgStatus(bgCur
+      ? T('viewer|已设置（{kb} KB）', { kb: Math.max(1, Math.round(((bgCur.blob && bgCur.blob.size) || 0) / 1024)) })
+      : T('viewer|未设置背景图'));
+  }
+
+  // Loads the slot the dropdown names into the panel. Revokes the previous preview URL: a
+  // 4MB blob held by a live object URL is 4MB the page can never free, and re-importing is
+  // exactly the operation an operator repeats while hunting for a picture they like.
+  function loadBgSlot() {
+    var slot = bgSlot();
+    return G.loadBackground(slot).then(function (rec) {
+      bgCur = rec || null;
+      bgOff = { x: bgCur ? bgCur.offsetX : 50, y: bgCur ? bgCur.offsetY : 50 };
+      if (bgUrl) { try { URL.revokeObjectURL(bgUrl); } catch (e) {} bgUrl = ''; }
+      if (bgCur && bgCur.blob) {
+        try { bgUrl = URL.createObjectURL(bgCur.blob); } catch (e) { bgUrl = ''; }
+      }
+      paintBgPanel();
+      return bgCur;
+    });
+  }
+
+  // The live page reads the `bg-viewer` slot ONLY, whatever the panel is showing. An operator
+  // tuning the overlay's picture while the viewer's own backdrop changed underneath them would
+  // have no way to tell which of the two they were looking at.
+  function applyViewerBg() {
+    return G.loadBackground('bg-viewer').then(function (rec) {
+      var root = document.documentElement;
+      if (!rec || !rec.blob) {
+        root.classList.remove('has-bg');
+        root.style.setProperty('--gm-bg-image', 'none');
+        if (bgViewUrl) { try { URL.revokeObjectURL(bgViewUrl); } catch (e) {} bgViewUrl = ''; }
+        return false;
+      }
+      if (bgViewUrl) { try { URL.revokeObjectURL(bgViewUrl); } catch (e) {} bgViewUrl = ''; }
+      try { bgViewUrl = URL.createObjectURL(rec.blob); } catch (e) { bgViewUrl = ''; }
+      bgVars(root, G.clampBgConfig(rec), bgViewUrl);
+      root.classList.add('has-bg');
+      return true;
+    }, function () { return false; });
+  }
+
+  function pickBgFile() {
+    var input = $('bgFile');
+    var file = input && input.files && input.files[0];
+    if (!file) return;
+    if (input) input.value = '';   // the input is cleared in every branch, so re-picking the
+                                   // SAME file after a failure still fires `change`
+    if (!/^image\//.test(file.type || '')) {
+      setBgStatus(T('viewer|请选择图片文件。'));
+      return;
+    }
+    if (file.size > G.BG_MAX_BYTES) {
+      setBgStatus(T('viewer|图片过大，上限 {mb} MB。', { mb: Math.round(G.BG_MAX_BYTES / 1048576) }));
+      return;
+    }
+    // A NEW picture starts centred, whatever the previous one was dragged to. Carrying the old
+    // offsets over would show a corner of the new image and read as a broken import.
+    bgOff = { x: 50, y: 50 };
+    setBgStatus(T('viewer|正在保存…'));
+    var slot = bgSlot();
+    G.saveBackground(slot, file, bgCfg()).then(function () {
+      return loadBgSlot();
+    }).then(function () {
+      if (slot === 'bg-viewer') applyViewerBg();
+      notifyBgChanged(slot);
+      setBgStatus(T('viewer|已保存。'));
+    }, function (e) {
+      setBgStatus(TE(String((e && e.message) || e)) || T('viewer|保存失败。'));
+    });
+  }
+
+  function clearBg() {
+    var slot = bgSlot();
+    G.clearBackground(slot).then(function () {
+      return loadBgSlot();
+    }).then(function () {
+      if (slot === 'bg-viewer') applyViewerBg();
+      notifyBgChanged(slot);
+      setBgStatus(T('viewer|已清除，恢复默认。'));
+    }, function (e) {
+      setBgStatus(TE(String((e && e.message) || e)) || T('viewer|清除失败。'));
+    });
+  }
+
+  // Commits the sliders and the drag offsets. A no-op when the slot holds no picture: there is
+  // nothing to save and, more to the point, `saveBackgroundConfig` would return false anyway —
+  // but the panel must not report 「已保存」 for a write that never happened.
+  function commitBgCfg() {
+    if (bgTimer) { clearTimeout(bgTimer); bgTimer = null; }
+    var cfg = bgCfg();
+    setTxt('bgOpacityVal', cfg.opacity + '%');
+    setTxt('bgBlurVal', cfg.blur + 'px');
+    var prev = $('bgPreview');
+    if (prev) bgVars(prev, cfg, bgUrl);
+    if (!bgCur) return;
+    var slot = bgSlot();
+    G.saveBackgroundConfig(slot, cfg).then(function (ok) {
+      if (!ok) return;
+      if (slot === 'bg-viewer') applyViewerBg();
+      notifyBgChanged(slot);
+      setBgStatus(T('viewer|已保存。'));
+    }, function (e) {
+      setBgStatus(TE(String((e && e.message) || e)) || T('viewer|保存失败。'));
+    });
+  }
+
+  // §5.1.3 — 拖动图片调整位置. The pointer's delta maps to `background-position` percentages and
+  // the sign is INVERTED: dragging right has to carry the PICTURE right, and a larger
+  // `background-position-x` moves it LEFT (100% aligns the image's right edge with the box's).
+  // So the operator grabs the image, not the window onto it — which is what the preview's
+  // `cursor:grab` promises.
+  function bindBgDrag() {
+    var prev = $('bgPreview');
+    if (!prev) return;
+    var dragging = false, sx = 0, sy = 0, ox = 0, oy = 0;
+    prev.addEventListener('pointerdown', function (ev) {
+      if (!bgUrl) return;
+      dragging = true;
+      sx = ev.clientX; sy = ev.clientY; ox = bgOff.x; oy = bgOff.y;
+      prev.classList.add('dragging');
+      if (prev.setPointerCapture) { try { prev.setPointerCapture(ev.pointerId); } catch (e) {} }
+      ev.preventDefault();
+    });
+    prev.addEventListener('pointermove', function (ev) {
+      if (!dragging) return;
+      var r = prev.getBoundingClientRect();
+      var w = r.width || 1, h = r.height || 1;
+      bgOff.x = Math.max(0, Math.min(100, ox - (ev.clientX - sx) / w * 100));
+      bgOff.y = Math.max(0, Math.min(100, oy - (ev.clientY - sy) / h * 100));
+      bgVars(prev, bgCfg(), bgUrl);
+      if (bgTimer) clearTimeout(bgTimer);
+      bgTimer = setTimeout(commitBgCfg, BG_SAVE_DELAY);
+    });
+    function stop() {
+      if (!dragging) return;
+      dragging = false;
+      prev.classList.remove('dragging');
+      commitBgCfg();
+    }
+    prev.addEventListener('pointerup', stop);
+    prev.addEventListener('pointercancel', stop);
+  }
+
+  function fillBgPanel() {
+    // The slot dropdown's own options are static markup, so the implicit i18n pass handles
+    // their labels; the panel only has to put the SELECTION back, because a language switch
+    // rebuilds nothing here and a reload would otherwise drop it to 查看器.
+    return loadBgSlot();
+  }
+
+  // =====================================================================
+  // 0.5.2 §4.1 — 自定义问题（编辑）
+  // =====================================================================
+  // The editor is a form (原文 + 英文 + a translation list) plus the list of what is stored.
+  // `cqDraft` is the in-progress row: `{ id: null, translations: {…} }` — `id` is null for a
+  // row being created and the existing id when 编辑 re-opened one. Keeping the draft here
+  // rather than in the DOM is what lets 编辑 load a row's translations into a form that has
+  // one visible text box.
+  var cqDraft = { id: null, translations: {} };
+  var cqList = [];
+
+  function setCqStatus(text) {
+    var el = $('cqStatus');
+    if (el) el.textContent = text;
+  }
+
+  function fillCqLangSelect() {
+    var sel = $('cqLang');
+    if (!sel) return;
+    var cur = sel.value;
+    // English is excluded: it has its own required field, and offering it here as well would
+    // give the operator two boxes for one string — the classic way a required field ends up
+    // half-filled from one and half from the other.
+    var html = '';
+    GMI18n.LOCALES.forEach(function (code) {
+      if (code === 'en' || code === 'zh-CN') return;
+      html += '<option value="' + esc(code) + '">' + esc(GMI18n.langLabel(code)) + '</option>';
+    });
+    sel.innerHTML = html;
+    if (cur) sel.value = cur;
+  }
+
+  function renderCqTransList() {
+    var el = $('cqTransList');
+    if (!el) return;
+    var keys = Object.keys(cqDraft.translations).filter(function (k) { return k !== 'en'; });
+    if (!keys.length) { el.textContent = T('viewer|还没有添加其他语言的翻译。'); return; }
+    el.textContent = keys.map(function (k) {
+      return GMI18n.langLabel(k) + '：' + cqDraft.translations[k];
+    }).join('　·　');
+  }
+
+  function renderCqList() {
+    var host = $('cqList');
+    if (!host) return;
+    if (!cqList.length) {
+      host.innerHTML = '<div class="cq-empty">' + esc(T('viewer|还没有自定义问题。')) + '</div>';
+      return;
+    }
+    host.innerHTML = cqList.map(function (q) {
+      var trs = Object.keys(q.translations || {})
+        .filter(function (k) { return k !== 'en' && k !== 'zh-CN'; })
+        .map(function (k) { return GMI18n.langLabel(k) + '：' + q.translations[k]; });
+      return '<div class="cq-row" data-id="' + esc(q.id) + '">' +
+        '<div class="cq-main">' +
+          '<div class="cq-text">' + esc(q.text) + '</div>' +
+          '<div class="cq-tr">' + esc(T('viewer|英文') + '：' + (q.translations.en || '')) +
+            (trs.length ? esc('　·　' + trs.join('　·　')) : '') + '</div>' +
+        '</div>' +
+        '<div class="cq-act">' +
+          '<span class="lk" data-cq="edit">' + esc(T('viewer|编辑')) + '</span>' +
+          '<span class="lk" data-cq="remove">' + esc(T('viewer|删除')) + '</span>' +
+        '</div></div>';
+    }).join('');
+  }
+
+  function fillCqPanel() {
+    fillCqLangSelect();
+    setTxt('cqSave', T('viewer|保存'));
+    setTxt('cqReset', T('viewer|清空表单'));
+    setTxt('cqAddTrans', T('viewer|＋ 添加'));
+    renderCqTransList();
+    renderCqList();
+    return G.loadCustomQuestions().then(function (list) {
+      cqList = list;
+      renderCqList();
+      return list;
+    }, function () { return []; });
+  }
+
+  function cqResetForm() {
+    cqDraft = { id: null, translations: {} };
+    setField($('cqText'), '');
+    setField($('cqEn'), '');
+    setField($('cqTrans'), '');
+    renderCqTransList();
+    setCqStatus(T('viewer|已清空表单。'));
+  }
+
+  function cqAddTranslation() {
+    var sel = $('cqLang'), box = $('cqTrans');
+    if (!sel || !box) return;
+    var lang = sel.value;
+    var text = String(box.value || '').trim();
+    if (!lang || !text) return;
+    cqDraft.translations[lang] = text;
+    box.value = '';
+    renderCqTransList();
+  }
+
+  // §4.1.2 — English is mandatory, and the original text is too. The check lives here rather
+  // than only in storage.js so the operator gets told WHICH field is missing; the storage layer
+  // keeps its own copy because it is the thing that decides what a usable row is.
+  function cqFormToQuestion() {
+    var text = String(($('cqText') || {}).value || '').trim();
+    var en = String(($('cqEn') || {}).value || '').trim();
+    if (!text) { setCqStatus(T('viewer|请填写原文。')); return null; }
+    if (!en) { setCqStatus(T('viewer|请填写英文（英文是回退版本，必填）。')); return null; }
+    var tr = Object.assign({}, cqDraft.translations, { en: en });
+    return { text: text, translations: tr };
+  }
+
+  function cqSave() {
+    var q = cqFormToQuestion();
+    if (!q) return;
+    var id = cqDraft.id;
+    var op = id ? G.updateCustomQuestion(id, q) : G.addCustomQuestion(q);
+    op.then(function (res) {
+      if (!res || !res.ok) {
+        // §4.1.2 — the limit is a real state, not a failure: eight is what the ask menu can
+        // show without scrolling, and the message has to say so.
+        setCqStatus(res && res.error === 'limit'
+          ? T('viewer|最多 {n} 个自定义问题。', { n: G.MAX_CUSTOM_QUESTIONS })
+          : T('viewer|保存失败：内容不完整。'));
+        return;
+      }
+      cqList = res.list;
+      renderCqList();
+      cqResetForm();
+      setCqStatus(T('viewer|已保存。'));
+    }, function (e) {
+      setCqStatus(TE(String((e && e.message) || e)) || T('viewer|保存失败。'));
+    });
+  }
+
+  function cqEdit(id) {
+    var q = null;
+    for (var i = 0; i < cqList.length; i++) if (cqList[i].id === id) { q = cqList[i]; break; }
+    if (!q) return;
+    cqDraft = { id: q.id, translations: Object.assign({}, q.translations) };
+    setField($('cqText'), q.text);
+    setField($('cqEn'), (q.translations && q.translations.en) || '');
+    setField($('cqTrans'), '');
+    renderCqTransList();
+    setCqStatus(T('viewer|正在编辑已有问题，保存后覆盖。'));
+  }
+
+  function cqRemove(id) {
+    G.removeCustomQuestion(id).then(function (res) {
+      cqList = (res && res.list) || [];
+      renderCqList();
+      if (cqDraft.id === id) cqResetForm();
+      setCqStatus(T('viewer|已删除。'));
+    }, function () { setCqStatus(T('viewer|删除失败。')); });
+  }
+
   // §2.2.3 step 4. Goes through `gm-ai-think` rather than a dedicated "verify" message because
   // that is the SAME path a real analysis takes to reach the engine: an engine that answers here
   // is an engine that will answer in a game. nbest 1 and a short budget — this is a smoke test,
@@ -1402,9 +1799,42 @@
     el.innerHTML =
       '<span class="bt">' + esc(T('update.available', { v: updInfo.latestVersion })) + '</span>' +
       '<span class="sp"></span>' +
+      // 0.5.2 §2.1.3 — [一键更新] [查看详情] [暂不更新], same order as the on-page panel's
+      // banner. Routed through the worker rather than called here even though this page IS an
+      // extension page and could reach `chrome.downloads` directly: one implementation of the
+      // download, and the notification it raises is identical whichever surface started it.
+      '<span class="blk bnow" data-upd="now">' + esc(T('update.oneClick')) + '</span>' +
       '<span class="blk" data-upd="open">' + esc(T('update.view')) + '</span>' +
       '<span class="blk" data-upd="dismiss">' + esc(T('update.dismiss')) + '</span>';
     el.classList.remove('hidden');
+  }
+
+  var updNowBusy = false;
+  function setUpdNow(label, busy) {
+    var btn = $('updBan') && $('updBan').querySelector('[data-upd=now]');
+    if (!btn) return;
+    btn.textContent = label;
+    btn.classList.toggle('busy', !!busy);
+  }
+
+  function oneClickUpdate() {
+    if (updNowBusy) return;
+    updNowBusy = true;
+    setUpdNow(T('update.downloading'), true);
+    var done = function (resp) {
+      updNowBusy = false;
+      setUpdNow(T('update.oneClick'), false);
+      if (resp && resp.ok) alert(T('update.downloaded', { file: (resp && resp.filename) || 'baishen-update.zip' }));
+      // `update.dlFailed` — NOT `update.failed`, which means the CHECK could not reach the
+      // repository. Same distinction as the panel's banner makes.
+      else alert(T('update.dlFailed', { err: (resp && resp.error) || '?' }));
+    };
+    try {
+      chrome.runtime.sendMessage({ type: 'gm-download-update' }, function (resp) {
+        if (chrome.runtime.lastError) { done({ ok: false, error: chrome.runtime.lastError.message }); return; }
+        done(resp);
+      });
+    } catch (e) { done({ ok: false, error: String((e && e.message) || e) }); }
   }
 
   // The automatic path: honours the 7-day「暂不更新」. The manual button deliberately does
@@ -1433,7 +1863,8 @@
       var b = ev.target && ev.target.closest ? ev.target.closest('[data-upd]') : null;
       if (!b) return;
       var what = b.getAttribute('data-upd');
-      if (what === 'open') openUpdatePage();
+      if (what === 'now') oneClickUpdate();
+      else if (what === 'open') openUpdatePage();
       else if (what === 'dismiss') dismissUpdateBanner();
     });
   }
@@ -1647,6 +2078,59 @@
     };
   }
   if ($('cstAdd')) $('cstAdd').onclick = addCustomModel;
+
+  // §5.1 — 自定义背景. The slot dropdown is a READER, not a setting: it decides which of the two
+  // stored records the panel is editing, and nothing about it is persisted (the panel opens on
+  // 查看器, which is the one the operator sees while they are here).
+  if ($('bgSlot')) $('bgSlot').addEventListener('change', function () { loadBgSlot(); });
+  if ($('bgFile')) $('bgFile').addEventListener('change', pickBgFile);
+  if ($('bgClear')) $('bgClear').onclick = clearBg;
+  ['bgOpacity', 'bgBlur'].forEach(function (id) {
+    var el = $(id);
+    if (!el) return;
+    // `input` repaints at once so the operator SEES the value they are choosing; the write
+    // waits BG_SAVE_DELAY, because a range drag fires this event dozens of times.
+    el.addEventListener('input', function () {
+      var cfg = bgCfg();
+      setTxt(id === 'bgOpacity' ? 'bgOpacityVal' : 'bgBlurVal',
+             id === 'bgOpacity' ? cfg.opacity + '%' : cfg.blur + 'px');
+      var prev = $('bgPreview');
+      if (prev) bgVars(prev, cfg, bgUrl);
+      if (bgTimer) clearTimeout(bgTimer);
+      bgTimer = setTimeout(commitBgCfg, BG_SAVE_DELAY);
+    });
+    el.addEventListener('change', commitBgCfg);
+  });
+  bindBgDrag();
+
+  // §4.1 — 自定义问题. The list is delegated for the same reason as the custom-model list:
+  // `renderCqList` replaces its whole innerHTML on every repaint.
+  if ($('cqList')) {
+    $('cqList').onclick = function (ev) {
+      var el = ev.target && ev.target.closest ? ev.target.closest('[data-cq]') : null;
+      if (!el) return;
+      var row = el.closest ? el.closest('.cq-row') : null;
+      var id = row ? row.getAttribute('data-id') : '';
+      if (!id) return;
+      if (el.getAttribute('data-cq') === 'edit') cqEdit(id);
+      else cqRemove(id);
+    };
+  }
+  if ($('cqAddTrans')) $('cqAddTrans').onclick = cqAddTranslation;
+  if ($('cqSave')) $('cqSave').onclick = cqSave;
+  if ($('cqReset')) $('cqReset').onclick = cqResetForm;
+  // The 英文 field is filled from 原文 when the original IS English — the one case where asking
+  // for the same string twice is pure friction. It only ever ADDS a value: a field the operator
+  // has already typed into is never overwritten.
+  if ($('cqText') && $('cqEn')) {
+    $('cqText').addEventListener('input', function () {
+      var t = String($('cqText').value || '').trim();
+      var en = $('cqEn');
+      if (!en.value && t && !/[\u3400-\u4dbf\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]/.test(t)) {
+        en.value = t;
+      }
+    });
+  }
 
   // §十八 — the host permission is `optional_host_permissions`, so it must be requested from a
   // user gesture. This click is that gesture; without it the fetch fails as a bare network error
@@ -2982,6 +3466,14 @@
       // streak rows say so.
       '<tr><td>' + T('viewer|唯一手最长连续命中') + '</td><td>' + ssCell(rep.black, 'sharpStreakMax') + '</td><td>' + ssCell(rep.white, 'sharpStreakMax') + '</td></tr>' +
       '<tr><td>' + T('viewer|唯一手累计命中') + '</td><td>' + ssCell(rep.black, 'sharpStreakHits') + '</td><td>' + ssCell(rep.white, 'sharpStreakHits') + '</td></tr>' +
+      // 0.5.2 §1.1/§1.2 — the two pool rows. Same reason the two above sit here: they are RUN
+      // lengths, not rates, and each is a signal the rows above cannot express. 好点池 counts
+      // consecutive Top3-or-better hands (≥3 before it scores); 活三好手 counts consecutive 活三
+      // defences played as the engine's own first choice (≥2). They are deliberately INDEPENDENT
+      // pools — a good point between two 活三 defences extends the first without disturbing the
+      // second, so a side can show a long run in one and none in the other.
+      '<tr><td>' + T('viewer|好点池最长连击') + '</td><td>' + ssCell(rep.black, 'goodPoolMax') + '</td><td>' + ssCell(rep.white, 'goodPoolMax') + '</td></tr>' +
+      '<tr><td>' + T('viewer|活三好手最长连击') + '</td><td>' + ssCell(rep.black, 'liveThreeMax') + '</td><td>' + ssCell(rep.white, 'liveThreeMax') + '</td></tr>' +
       '<tr><td>' + T('viewer|Top5 之外') + '</td><td>' + (rep.black ? pct(rep.black.outTop5) : '—') + '</td><td>' + (rep.white ? pct(rep.white.outTop5) : '—') + '</td></tr>' +
       '<tr><td>' + T('viewer|将败冲四') + '</td><td>' + desCount(rep.black) + '</td><td>' + desCount(rep.white) + '</td></tr>' +
       '<tr><td>' + T('viewer|回避手') + '</td><td>' + evCount(rep.black) + '</td><td>' + evCount(rep.white) + '</td></tr>' +
@@ -3543,6 +4035,29 @@
     if (!incoming) { alert(T('viewer|文件里没有 archives 数组。')); return; }
     var res = await G.importArchives(incoming);
     await refreshArchives();
+    // 0.5.2 §三.1 — after an import, prove the board can actually be painted before the operator
+    // clicks into an archive and finds it blank.
+    //
+    // Two things happen here and they answer different halves of the same report:
+    //   · `sizeBoards()` — an imported archive is usually opened in a panel that was hidden while
+    //     the page loaded, and a canvas laid out at zero width paints nothing. Re-running it is
+    //     cheap and idempotent (see its note).
+    //   · the self-check — `archiveStones()` is exactly what `renderDetailBoard()` draws, so if it
+    //     yields no stones for a record that HAS moves, the fault is in the record (missing
+    //     `sources`, a `stones` array of the wrong length) and not in the board. That is worth a
+    //     console line rather than a silent empty board, because the archive list will happily
+    //     show the game's name and score.
+    sizeBoards();
+    if (res.added > 0) {
+      var first = archives[0];
+      var firstMoves = (first && first.record && first.record.moves) || [];
+      if (firstMoves.length) {
+        var probe = archiveStones(first, firstMoves.length);
+        if (!probe.length) {
+          console.warn('[import] 存档 ' + first.id + ' 的棋盘渲染为空，检查 record.moves / sources');
+        }
+      }
+    }
     alert(T('viewer|导入完成：新增 {n} 条', { n: res.added }) +
       (res.remapped ? T('viewer|（其中 {n} 条 id 与现有存档重复，已分配新 id）', { n: res.remapped }) : '') +
       (res.added < incoming.length ? '\n' + T('viewer|另有 {n} 条被跳过（缺少有效的 record.moves）。', { n: incoming.length - res.added }) : '') +
@@ -4026,6 +4541,28 @@
     return idx < 0 ? ordinal : idx;
   }
 
+  // 0.5.2 §三.1 — the slider's upper bound, and the ONLY definition of it.
+  //
+  // `dStep` used to be bounded by `report.steps.length` everywhere (openDetail, the slider's
+  // `max`, 下一步/末步, the jump box). An archive whose report carries NO steps — a 导入 archive
+  // built from a bare `record`, a game analysed to a shorter depth, an archive whose report was
+  // trimmed by 精简存档 — therefore had a bound of 0. `stonesShown()` returns 0 at `dStep <= 0`,
+  // so the board came up EMPTY and the slider could not move off 0: the operator's 「导入后棋盘
+  // 不显示棋子」.
+  //
+  // The bound is the step count when there is one and the MOVE count when there is not. Falling
+  // back to `record.moves.length` is what makes `stonesShown` paint the whole board: at
+  // `dStep >= steps.length` it already returns `total`, and with `steps.length === 0` every
+  // non-zero `dStep` satisfies that. So no change to `stonesShown` itself is needed — only the
+  // bound was wrong. Keeping this in one function is the point: five call sites used to spell the
+  // same `curArchive.report ? …steps.length : 0` out by hand, and fixing four of them would have
+  // left the fifth to re-break it.
+  function detailMax(a) {
+    var steps = (a && a.report && a.report.steps) || [];
+    var moves = (a && a.record && a.record.moves) || [];
+    return steps.length || moves.length;
+  }
+
   // How many stones of `record.moves` belong on the board at step `dStep` (0 = opening).
   // The end of the slider means the whole board, not "as many stones as there are steps".
   function stonesShown(a, dStep) {
@@ -4069,7 +4606,10 @@
     var a = archives.filter(function (x) { return x.id === id; })[0];
     if (!a) return;
     curArchive = a;
-    dStep = a.report ? (a.report.steps || []).length : 0;
+    // 0.5.2 §三.1 — open on the LAST position, and let detailMax() decide what "last" means for
+    // an archive with no steps (see its note). Was `a.report ? (a.report.steps || []).length : 0`,
+    // which is 0 for a stepless report and left the board blank.
+    dStep = detailMax(a);
     $('replayList').classList.add('hidden');
     $('replayDetail').classList.remove('hidden');
     renderDetail();
@@ -4320,7 +4860,10 @@
     }
 
     var steps = rep.steps || [];
-    $('dSlider').max = steps.length;
+    // 0.5.2 §三.1 — detailMax(), not steps.length: a stepless archive still has a draggable
+    // range (one notch per recorded move), and its 棋谱 line below already reads
+    // 「棋谱：N / total 子（拖滑块或点按钮逐步查看）」.
+    $('dSlider').max = detailMax(a);
     $('dSlider').value = dStep;
     $('dJump').value = dStep;
     // 0.4.3 §1.3/§1.5: the rail's index and the class row are both built here, before any row
@@ -4428,11 +4971,11 @@
 
   $('dSlider').oninput = function (e) { dStep = +e.target.value; renderDetailBoard(); };
   $('dPrev').onclick = function () { dStep = Math.max(0, dStep - 1); renderDetailBoard(); };
-  $('dNext').onclick = function () { dStep = Math.min((curArchive && curArchive.report ? curArchive.report.steps.length : 0), dStep + 1); renderDetailBoard(); };
+  $('dNext').onclick = function () { dStep = Math.min(detailMax(curArchive), dStep + 1); renderDetailBoard(); };
   $('dStart').onclick = function () { dStep = 0; renderDetailBoard(); };
-  $('dEnd').onclick = function () { dStep = (curArchive && curArchive.report ? curArchive.report.steps.length : 0); renderDetailBoard(); };
+  $('dEnd').onclick = function () { dStep = detailMax(curArchive); renderDetailBoard(); };
   $('dJump').onchange = function () {
-    var max = (curArchive && curArchive.report ? curArchive.report.steps.length : 0);
+    var max = detailMax(curArchive);
     dStep = clamp(parseInt($('dJump').value, 10) || 0, 0, max);
     renderDetailBoard();
   };
@@ -4854,7 +5397,9 @@
     var s = findSample(id);
     if (!s) return;
     curSample = s;
-    sStep = (s.report && s.report.steps ? s.report.steps.length : 0);
+    // 0.5.2 §三.1 — same bound as an archive's detail view: a sample whose report carries no
+    // steps must still open on its whole board. Samples go through the same stonesShown().
+    sStep = detailMax(s);
     $('sampleList').classList.add('hidden');
     $('sampleEditor').classList.add('hidden');
     $('sampleDetail').classList.remove('hidden');
@@ -5025,7 +5570,7 @@
     renderSampleMetrics(s);
 
     var steps = rep.steps || [];
-    $('sSlider').max = steps.length;
+    $('sSlider').max = detailMax(s);   // 0.5.2 §三.1 — see detailMax's note
     $('sSlider').value = sStep;
     $('sJump').value = sStep;
     // 0.4.3 §1.3/§1.5
@@ -5094,16 +5639,15 @@
   $('sSlider').oninput = function (e) { sStep = +e.target.value; renderSampleBoard(); };
   $('sPrev').onclick = function () { sStep = Math.max(0, sStep - 1); renderSampleBoard(); };
   $('sNext').onclick = function () {
-    var max = (curSample && curSample.report ? curSample.report.steps.length : 0);
-    sStep = Math.min(max, sStep + 1); renderSampleBoard();
+    sStep = Math.min(detailMax(curSample), sStep + 1); renderSampleBoard();
   };
   $('sStart').onclick = function () { sStep = 0; renderSampleBoard(); };
   $('sEnd').onclick = function () {
-    sStep = (curSample && curSample.report ? curSample.report.steps.length : 0);
+    sStep = detailMax(curSample);
     renderSampleBoard();
   };
   $('sJump').onchange = function () {
-    var max = (curSample && curSample.report ? curSample.report.steps.length : 0);
+    var max = detailMax(curSample);
     sStep = clamp(parseInt($('sJump').value, 10) || 0, 0, max);
     renderSampleBoard();
   };
@@ -6198,17 +6742,30 @@
   window.addEventListener('resize', syncHeaderHeight);
 
   var BOARD_SHRINK = 0.85;
-  (function sizeBoards() {
+  // 0.5.2 §三.1 — now a NAMED function rather than the IIFE it used to be, so the import path can
+  // re-run it. Why that matters: a canvas laid out while its panel was hidden can come back with
+  // a zero-width box, and `drawBoard` scales through `cv.width / rect.width` — a zero rect paints
+  // nothing. Re-running it after an import is the backstop.
+  //
+  // ⚠ It also had to be made IDEMPOTENT, which the old body was not: `cv.width * 1.2 *
+  // BOARD_SHRINK` reads the value it just wrote, so a second call would have walked
+  // 530 → 541 → 552 … and every board would creep larger on each import. The declared size in
+  // viewer.html (520) is the real base, so it is captured ONCE per canvas in a data attribute and
+  // every later call recomputes from that. `drawBoard` only ever READS `cv.width`, so nothing
+  // else can invalidate the captured base.
+  function sizeBoards() {
     // 0.3.3 adds the sample detail + sample editor canvases; sizing them here rather than
     // lazily on first render keeps every board on the page at one scale from the start.
     ['board', 'dBoard', 'sBoard', 'seBoard'].forEach(function (id) {
       var cv = $(id);
       if (!cv) return;
-      var px = Math.round(cv.width * 1.2 * BOARD_SHRINK);
+      if (!cv.dataset.gmBase) cv.dataset.gmBase = String(cv.width || 520);
+      var px = Math.round(+cv.dataset.gmBase * 1.2 * BOARD_SHRINK);
       cv.width = px; cv.height = px;
       cv.style.width = px + 'px'; cv.style.height = px + 'px';
     });
-  })();
+  }
+  sizeBoards();
 
   (async function boot() {
     S = await G.loadSettings();
@@ -6223,6 +6780,10 @@
     // nothing and doing them later would flash the wrong palette on load.
     applyTheme(S.theme);
     applyOpacity(S.opacity);
+    // 0.5.2 §5.1 — the operator's own backdrop, if they set one. Awaited so the picture is on
+    // screen with the first frame: `has-bg` swaps `body` from an opaque `--bg` to transparent,
+    // and a late arrival would show one frame of the default palette first.
+    await applyViewerBg();
     fillLangSelect();
     fillThreadSelect();
     fillThemeSelect();

@@ -97,6 +97,13 @@ GMI18n.register('zh-CN', {
   'verdict.followup': '追问中',
   // 0.5.0 §三 — a `weight: 0` question is a message, not a test.
   'verdict.none': '已发送',
+  // 0.5.2 §4.1.4 — the five levels the operator grades a custom question's answer with. Reached as
+  // `TO('customLevel', lv)`, so a missing row prints the raw code (`high`) on the button, which is
+  // also why the numeric delta is printed beside it: the words alone are not guessable arithmetic.
+  // `none` and `low` deliberately do NOT reuse `level.低风险` / `level.高风险` — those name a
+  // verdict the detector reached, these name what the operator just decided.
+  'customLevel.none': '无风险', 'customLevel.low': '低风险', 'customLevel.unclear': '难以判断',
+  'customLevel.risky': '有风险', 'customLevel.high': '高风险',
   'senderHow.socket': 'socket 事件', 'senderHow.dom': '页面 DOM',
   'senderHow.anchor-unresolved': '声明锚点（未定）', 'senderHow.unknown': '未确定',
   'llm.notConfigured': '未配置 LLM API', 'llm.quotaExceeded': '本月额度已用尽',
@@ -206,6 +213,11 @@ GMI18n.register('zh-CN', {
   // 0.4.8 §1.2 — the streak pair, also a surcharge.
   'learn.weight.sharpStreak': '唯一手连续',
   'learn.weight.sharpTotal': '唯一手累计',
+  // 0.5.2 §1.1.4 / §1.2.4 — the two new surcharges, and the last two rows this block will get
+  // before the base six are joined by a fifth and sixth surcharge (see app.js's WEIGHTS comment
+  // for why the six keep summing to 1.00 and every addition lands outside).
+  'learn.weight.goodPool': '好点池',
+  'learn.weight.liveThree': '活三好手',
 
   'learn.threshold.top1Lo': 'Top1 下界',
   'learn.threshold.top1Hi': 'Top1 上界',
@@ -266,5 +278,12 @@ GMI18n.register('zh-CN', {
   'update.found': '发现新版本 v{v}，可前往下载',
   'update.failed': '检测失败（网络不可用或仓库不可达）',
   'update.current': '当前版本 v{v}',
+  'update.oneClick': '一键更新',
+  'update.downloading': '正在下载更新包…',
+  'update.downloaded': '更新包已下载，可打开扩展页安装',
+  'update.dlFailed': '下载失败（网络不可用或被浏览器拒绝）',
+  'update.readyTitle': '更新包已下载',
+  'update.readyBody': '白身检测器更新包「{file}」已下载。点此打开扩展管理页，解压后重新加载即可完成更新。',
+  'update.openExtensions': '打开扩展管理页',
 
 });

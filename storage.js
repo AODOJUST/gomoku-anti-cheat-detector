@@ -126,6 +126,10 @@
     // before this file (manifest order), so the reference resolves. `{}` in a broken build is
     // deliberate: the panel then shows blanks instead of inventing values.
     llm: (g.GMLLM && g.GMLLM.DEFAULTS) ? Object.assign({}, g.GMLLM.DEFAULTS) : {},
+    // 0.5.2 §4.1 — the operator's own questions. See MAX_CUSTOM_QUESTIONS below for the shape
+    // and the mandatory-English rule. Empty by default, so an untouched profile has no custom
+    // menu at all and 0.5.1's question menu is exactly what it was.
+    customQuestions: [],
   };
 
   var MIN_MOVES_LO = 5;
@@ -274,6 +278,10 @@
     // Same reasoning as clampMinMoves above.
     out.theme = clampTheme(out.theme);
     out.opacity = normalizeOpacity(out.opacity);
+    // 0.5.2 §4.1 — clamped on the way IN as well as out, like every other setting: the profile
+    // is the one input the UI never validates, and a hand-edited list must not be able to put a
+    // non-array (or a 200-row list, or a row with no English) in front of the send path.
+    out.customQuestions = clampCustomQuestions(out.customQuestions);
     return out;
   }
 
@@ -287,6 +295,7 @@
       s.engineUrl = clampEngineUrl(s.engineUrl);
       s.theme = clampTheme(s.theme);
       s.opacity = normalizeOpacity(s.opacity);
+      s.customQuestions = clampCustomQuestions(s.customQuestions);
       var put = {}; put[SETTINGS_KEY] = s;
       try { await api().set(put); } catch (e) {}
       return s;
@@ -299,6 +308,255 @@
   }
 
   function defaults() { return Object.assign({}, DEFAULTS); }
+
+  // ---------- 0.5.2 §4.1 玩家自定义问题 ----------
+  // A list of questions the operator writes themselves, each with a mandatory English version.
+  // Stored under one settings key rather than in its own storage area: it is small (8 rows of
+  // text), it is edited on the settings page, and it has to travel with the rest of the profile.
+  //
+  // Why English is mandatory (§4.1.2): it is the FALLBACK. §4.1.3 sends the translation matching
+  // `questionLang` and, when there is none, sends the English version — deliberately NOT the
+  // original text, because an operator who picked 日本語 and got a Chinese sentence has sent
+  // their opponent something they cannot read. Requiring English is what makes that fallback
+  // always available; a list without it would have a hole exactly where the fallback is needed.
+  var MAX_CUSTOM_QUESTIONS = 8;
+  // Not in the spec. A guard against a hand-edited profile: the text is rendered into a menu and
+  // sent to a game server, and neither has any use for a 100KB string.
+  var MAX_QUESTION_LEN = 300;
+
+  function cleanQuestionText(v) {
+    if (typeof v !== 'string') return '';
+    var s = v.replace(/[\r\n\t]+/g, ' ').trim();
+    return s.length > MAX_QUESTION_LEN ? s.slice(0, MAX_QUESTION_LEN) : s;
+  }
+
+  // A question is only usable with BOTH the original text and English. Anything else is dropped
+  // rather than kept half-built: a row that cannot be sent is worse than no row, because the
+  // menu would offer it and the send would do nothing.
+  function normalizeQuestion(q, idx) {
+    if (!q || typeof q !== 'object') return null;
+    var text = cleanQuestionText(q.text);
+    var tr = (q.translations && typeof q.translations === 'object') ? q.translations : {};
+    var out = {};
+    for (var lang in tr) {
+      var v = cleanQuestionText(tr[lang]);
+      if (v) out[lang] = v;
+    }
+    if (!text || !out.en) return null;
+    return {
+      id: (typeof q.id === 'string' && q.id) ? q.id : ('cq-' + (idx + 1) + '-' + Date.now()),
+      text: text,
+      translations: out,
+      createdAt: isFinite(q.createdAt) ? q.createdAt : Date.now(),
+    };
+  }
+
+  function clampCustomQuestions(list) {
+    if (!Array.isArray(list)) return [];
+    var out = [];
+    for (var i = 0; i < list.length && out.length < MAX_CUSTOM_QUESTIONS; i++) {
+      var q = normalizeQuestion(list[i], i);
+      if (q) out.push(q);
+    }
+    return out;
+  }
+
+  function loadCustomQuestions() {
+    return loadSettings().then(function (s) { return clampCustomQuestions(s.customQuestions); });
+  }
+
+  function saveCustomQuestions(list) {
+    return saveSetting('customQuestions', clampCustomQuestions(list));
+  }
+
+  // `id` is generated here rather than by the caller so two questions added in the same
+  // millisecond cannot collide: the index is included, and the counter is checked.
+  function addCustomQuestion(q) {
+    return loadCustomQuestions().then(function (list) {
+      if (list.length >= MAX_CUSTOM_QUESTIONS) {
+        return { ok: false, error: 'limit', list: list };
+      }
+      var next = normalizeQuestion(q, list.length);
+      if (!next) return { ok: false, error: 'invalid', list: list };
+      var seen = {};
+      for (var i = 0; i < list.length; i++) seen[list[i].id] = 1;
+      while (seen[next.id]) next.id = next.id + '-x';
+      list.push(next);
+      return saveCustomQuestions(list).then(function (saved) {
+        return { ok: true, question: next, list: saved };
+      });
+    });
+  }
+
+  function updateCustomQuestion(id, patch) {
+    return loadCustomQuestions().then(function (list) {
+      var idx = -1;
+      for (var i = 0; i < list.length; i++) if (list[i].id === id) { idx = i; break; }
+      if (idx < 0) return { ok: false, error: 'not-found', list: list };
+      var merged = normalizeQuestion(Object.assign({}, list[idx], patch || {}, { id: id }), idx);
+      if (!merged) return { ok: false, error: 'invalid', list: list };
+      merged.createdAt = list[idx].createdAt;
+      list[idx] = merged;
+      return saveCustomQuestions(list).then(function (saved) {
+        return { ok: true, question: merged, list: saved };
+      });
+    });
+  }
+
+  function removeCustomQuestion(id) {
+    return loadCustomQuestions().then(function (list) {
+      var next = list.filter(function (q) { return q.id !== id; });
+      return saveCustomQuestions(next).then(function (saved) {
+        return { ok: next.length !== list.length, list: saved };
+      });
+    });
+  }
+
+  // 0.5.2 §4.1.3 — which text to actually send. Pure, so the suite can drive every branch
+  // without a browser. The order is: the requested language, then English, then the original —
+  // and the last step is unreachable for any question that got through clampCustomQuestions()
+  // (English is mandatory), which is the point of keeping it: it is the only safe answer if a
+  // future edit relaxes that requirement.
+  function pickCustomQuestionText(q, lang) {
+    if (!q) return '';
+    var tr = q.translations || {};
+    if (lang && tr[lang]) return tr[lang];
+    if (tr.en) return tr.en;
+    return q.text || '';
+  }
+
+  // ---------- 0.5.2 §5.1 自定义背景 ----------
+  // §5.1.2 stores the image in IndexedDB, and that is right for the size — a photo is orders of
+  // magnitude bigger than a settings blob, and chrome.storage.local's ~10MB is already shared
+  // with 200 archives.
+  //
+  // ⚠ But IndexedDB here belongs to the EXTENSION origin, and a content script's `indexedDB` is
+  // the HOST PAGE's (the same constraint custom-engine.js documents). So the 浮层 can never read
+  // this store itself — content.js gets its image as a DATA URL through a `gm-bg-get` message
+  // (see background.js). A data URL is used rather than a blob URL because the overlay's CSS is
+  // evaluated in the page's origin, where a `blob:chrome-extension://…` URL is cross-origin and
+  // subject to the page's own `img-src`.
+  //
+  // The two slots are independent (§5.1.5): different file, opacity, blur and offset.
+  var BG_DB_NAME = 'bai-shen-backgrounds';
+  var BG_DB_VERSION = 1;
+  var BG_STORE = 'backgrounds';
+  var BG_SLOTS = ['bg-overlay', 'bg-viewer'];
+  // 4MB. A background is decorative and the whole thing round-trips as base64 (≈+33%) to reach
+  // the overlay, so a larger file would cost more than it shows.
+  var BG_MAX_BYTES = 4 * 1024 * 1024;
+  var DEFAULT_BG = { opacity: 80, blur: 0, offsetX: 50, offsetY: 50, scale: 100 };
+
+  function clampBgConfig(c) {
+    var src = (c && typeof c === 'object') ? c : {};
+    var n = function (v, lo, hi, dflt) {
+      var x = Number(v);
+      return isFinite(x) ? Math.max(lo, Math.min(hi, x)) : dflt;
+    };
+    return {
+      opacity: Math.round(n(src.opacity, 0, 100, DEFAULT_BG.opacity)),
+      blur: Math.round(n(src.blur, 0, 20, DEFAULT_BG.blur)),
+      offsetX: Math.round(n(src.offsetX, 0, 100, DEFAULT_BG.offsetX)),
+      offsetY: Math.round(n(src.offsetY, 0, 100, DEFAULT_BG.offsetY)),
+      scale: Math.round(n(src.scale, 100, 400, DEFAULT_BG.scale)),
+    };
+  }
+
+  function bgDb() {
+    if (typeof indexedDB === 'undefined' || !indexedDB) {
+      return Promise.reject(new Error('indexedDB unavailable'));
+    }
+    return new Promise(function (resolve, reject) {
+      var req;
+      try { req = indexedDB.open(BG_DB_NAME, BG_DB_VERSION); }
+      catch (e) { reject(e); return; }
+      req.onupgradeneeded = function () {
+        var db = req.result;
+        if (!db.objectStoreNames.contains(BG_STORE)) {
+          db.createObjectStore(BG_STORE, { keyPath: 'key' });
+        }
+      };
+      req.onsuccess = function () { resolve(req.result); };
+      req.onerror = function () { reject(req.error || new Error('indexedDB open failed')); };
+      req.onblocked = function () { reject(new Error('indexedDB blocked by another context')); };
+    });
+  }
+
+  function bgTx(mode, fn) {
+    return bgDb().then(function (db) {
+      return new Promise(function (resolve, reject) {
+        var t;
+        try { t = db.transaction(BG_STORE, mode); } catch (e) { reject(e); return; }
+        var store = t.objectStore(BG_STORE);
+        var out;
+        try { out = fn(store); } catch (e) { reject(e); return; }
+        t.oncomplete = function () { resolve(out); };
+        t.onerror = function () { reject(t.error || new Error('indexedDB transaction failed')); };
+        t.onabort = function () { reject(t.error || new Error('indexedDB transaction aborted')); };
+      });
+    });
+  }
+
+  // Returns `{blob, ...config}` or null. A row with no blob is treated as absent: an image is
+  // the only reason the row exists, and a config with nothing to paint would be a slider panel
+  // that controls nothing.
+  function loadBackground(slot) {
+    if (BG_SLOTS.indexOf(slot) < 0) return Promise.resolve(null);
+    return bgDb().then(function (db) {
+      return new Promise(function (resolve) {
+        var t;
+        try { t = db.transaction(BG_STORE, 'readonly'); } catch (e) { resolve(null); return; }
+        var req = t.objectStore(BG_STORE).get(slot);
+        req.onsuccess = function () {
+          var row = req.result;
+          if (!row || !row.blob) { resolve(null); return; }
+          resolve(Object.assign({ blob: row.blob }, clampBgConfig(row)));
+        };
+        req.onerror = function () { resolve(null); };
+      });
+    }, function () { return null; });
+  }
+
+  function saveBackground(slot, blob, config) {
+    if (BG_SLOTS.indexOf(slot) < 0) return Promise.reject(new Error('unknown slot'));
+    var cfg = clampBgConfig(config);
+    if (blob && blob.size > BG_MAX_BYTES) {
+      return Promise.reject(new Error('too-large:' + blob.size));
+    }
+    return bgTx('readwrite', function (store) {
+      store.put(Object.assign({ key: slot, blob: blob, updatedAt: Date.now() }, cfg));
+      return true;
+    });
+  }
+
+  // The sliders move without a new file, so the blob is read back and written through. Returns
+  // false when there was nothing to update, which is what stops the panel from creating a
+  // config-only row.
+  function saveBackgroundConfig(slot, config) {
+    return loadBackground(slot).then(function (cur) {
+      if (!cur) return false;
+      return saveBackground(slot, cur.blob, Object.assign({}, cur, config)).then(function () { return true; });
+    });
+  }
+
+  function clearBackground(slot) {
+    if (BG_SLOTS.indexOf(slot) < 0) return Promise.resolve(false);
+    return bgTx('readwrite', function (store) { store.delete(slot); return true; });
+  }
+
+  // The blob → data URL conversion, in one place. Only the extension origin can call this
+  // usefully (FileReader is origin-independent, but the BLOB has to be readable first).
+  function blobToDataUrl(blob) {
+    return new Promise(function (resolve, reject) {
+      if (!blob) { resolve(''); return; }
+      try {
+        var fr = new FileReader();
+        fr.onload = function () { resolve(String(fr.result || '')); };
+        fr.onerror = function () { reject(fr.error || new Error('read failed')); };
+        fr.readAsDataURL(blob);
+      } catch (e) { reject(e); }
+    });
+  }
 
   // ---------- overlay (on-page panel) ----------
   // `height: 0` means auto — the panel grows with its content up to 86vh, which is how
@@ -1278,6 +1536,11 @@
     // written before this build simply runs without them.
     sharpStreak: 0.04,
     sharpTotal: 0.03,
+    // 0.5.2 §1.1.4/§1.2.4: the two pool surcharges. §1.1.4 asks for the table to be rescaled so
+    // it sums to 1.00 again; not adopted, for the reason the paragraph above gives — it would
+    // move every archived score. Same literal as app.js BASE_WEIGHTS and learn.js's copy.
+    goodPool: 0.03,
+    liveThree: 0.03,
   };
   var DEFAULT_THRESHOLDS = {
     // 0.4.3 §1.1: the ramp aTop1 reads now that it is fed a graded proximity instead of a
@@ -1699,6 +1962,14 @@
       // by sharpStreakStats() in app.js so the step table can print 「唯一手（连续 K）」 without
       // re-deriving the run — see that function for why the walk exists in exactly one place.
       sharpStreak: isFinite(s.sharpStreak) ? s.sharpStreak : 0,
+      // 0.5.2 §1.1/§1.2: the two pool figures for this hand, plus the three 活三 flags. Kept per
+      // step for the same reason `sharpStreak` above is: the step table prints the run length
+      // beside the hand that ended it, and re-deriving the run in the viewer would be a second
+      // copy of the walk. `liveThreeDefense` is kept because the badge has to survive a reload —
+      // it is the only place the operator can see that a hand was scored on a two-way defence.
+      goodPool: isFinite(s.goodPool) ? s.goodPool : 0,
+      liveThreePool: isFinite(s.liveThreePool) ? s.liveThreePool : 0,
+      liveThreeDefense: !!s.liveThreeDefense,
       // 0.4.7 §1.1: the four-run classification. Kept per step so the badge survives a reload,
       // and `prevBestWR` beside it because the archive's own reader may want to re-derive the
       // kind (the classification is a function of this one number plus the run's extent).
@@ -2180,6 +2451,30 @@
     loadSettings: loadSettings,
     saveSettings: saveSettings,
     saveSetting: saveSetting,
+    // 0.5.2 §4.1 — the custom-question store and its pure selector. Exported so the settings page,
+    // the on-page menu and the suite all go through ONE implementation of "which text do we
+    // send", rather than three copies of the fallback order.
+    MAX_CUSTOM_QUESTIONS: MAX_CUSTOM_QUESTIONS,
+    MAX_QUESTION_LEN: MAX_QUESTION_LEN,
+    clampCustomQuestions: clampCustomQuestions,
+    loadCustomQuestions: loadCustomQuestions,
+    saveCustomQuestions: saveCustomQuestions,
+    addCustomQuestion: addCustomQuestion,
+    updateCustomQuestion: updateCustomQuestion,
+    removeCustomQuestion: removeCustomQuestion,
+    pickCustomQuestionText: pickCustomQuestionText,
+    // 0.5.2 §5.1 — the background store. Only the EXTENSION origin can use these (see the note
+    // above BG_DB_NAME): the viewer calls them directly, and content.js reaches them through the
+    // worker's `gm-bg-get` message.
+    BG_SLOTS: BG_SLOTS,
+    BG_MAX_BYTES: BG_MAX_BYTES,
+    DEFAULT_BG: DEFAULT_BG,
+    clampBgConfig: clampBgConfig,
+    loadBackground: loadBackground,
+    saveBackground: saveBackground,
+    saveBackgroundConfig: saveBackgroundConfig,
+    clearBackground: clearBackground,
+    blobToDataUrl: blobToDataUrl,
     defaults: defaults,
     clampMinMoves: clampMinMoves,
     MIN_MOVES_LO: MIN_MOVES_LO,

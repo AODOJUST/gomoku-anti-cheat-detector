@@ -28,6 +28,13 @@ importScripts('i18n.js',
 // the same database the offscreen document and the viewer write.
 importScripts('custom-engine.js');
 
+// 0.5.2 §2.1 — 一键更新. Loaded here because `chrome.downloads` is not exposed to content
+// scripts at all, so the panel's button has to be answered from the worker. The viewer page
+// could call it directly (it is an extension page), but routing BOTH through the same message
+// keeps one implementation — the same reason the update CHECK is routed here (see the
+// gm-check-update handler below).
+importScripts('update.js');
+
 // 0.4.8 §2 — chrome.storage.session defaults to TRUSTED_CONTEXTS only, so a content script
 // cannot see it at all. Opening it to content scripts is what makes the §2 migration real;
 // without this call content.js's sessionArea() finds no `session` area and quietly falls back
@@ -393,8 +400,72 @@ chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
     return true;
   }
 
-  if (msg.type === 'gm-open-viewer') {
-    openViewer()
+  // 0.5.2 §2.1 — 「一键更新」. The download itself has to run here: `chrome.downloads` is not
+  // available in a content script, so the panel's button could not do this even in principle.
+  // Never rejects — a failed download must report an error and leave every other feature alone.
+  if (msg.type === 'gm-download-update') {
+    var reply = function (r) { sendResponse(r || { ok: false, error: 'no result' }); };
+    try {
+      if (typeof GMUpdate === 'undefined' || !GMUpdate || !GMUpdate.downloadUpdate) {
+        reply({ ok: false, error: 'update module unavailable' });
+      } else {
+        GMUpdate.downloadUpdate().then(reply, function (e) {
+          reply({ ok: false, error: String((e && e.message) || e) });
+        });
+      }
+    } catch (e) { reply({ ok: false, error: String((e && e.message) || e) }); }
+    return true;
+  }
+
+  // 0.5.2 §5.1 — the overlay's background image. A content script's `indexedDB` is the HOST
+  // PAGE's store, so the panel cannot read the extension's background table at all; this handler
+  // is the only route. It answers with a DATA URL rather than a blob URL because the overlay's
+  // CSS is evaluated in the page's origin, where `blob:chrome-extension://…` is cross-origin and
+  // subject to the page's own `img-src`.
+  //
+  // `{ ok: false }` for "no background set" is deliberate and not an error: the caller's job is
+  // then to remove the class, and a rejection would only add a failure path to a normal state.
+  if (msg.type === 'gm-bg-get') {
+    var slot = msg.slot || 'bg-overlay';
+    GMStorage.loadBackground(slot).then(function (bg) {
+      if (!bg) { sendResponse({ ok: true, set: false }); return; }
+      GMStorage.blobToDataUrl(bg.blob).then(function (url) {
+        sendResponse({
+          ok: true, set: !!url, dataUrl: url,
+          opacity: bg.opacity, blur: bg.blur,
+          offsetX: bg.offsetX, offsetY: bg.offsetY, scale: bg.scale,
+        });
+      }, function (e) { sendResponse({ ok: false, error: String((e && e.message) || e) }); });
+    }, function (e) { sendResponse({ ok: false, error: String((e && e.message) || e) }); });
+    return true;
+  }
+
+  // 0.5.2 §5.1 — the relay. The settings page is the only writer of the background store, and
+  // IndexedDB fires no `storage.onChanged` for anybody, so without this an open game tab would
+  // keep the old picture (or no picture at all) until it was reloaded.
+  //
+  // A per-tab failure is swallowed on purpose: a tab that cannot receive messages (a chrome://
+  // page, a discarded tab, a tab whose content script has not been injected) is an ordinary
+  // state, and one bad tab must not stop the rest from being told.
+  if (msg.type === 'gm-bg-changed') {
+    var bgSlot = msg.slot || 'bg-overlay';
+    try {
+      chrome.tabs.query({}, function (tabs) {
+        (tabs || []).forEach(function (t) {
+          if (!t || t.id == null) return;
+          try {
+            chrome.tabs.sendMessage(t.id, { type: 'gm-bg-changed', slot: bgSlot }, function () {
+              void chrome.runtime.lastError;
+            });
+          } catch (e) { /* nothing to do for this tab */ }
+        });
+        sendResponse({ ok: true });
+      });
+    } catch (e) { sendResponse({ ok: false, error: String((e && e.message) || e) }); }
+    return true;
+  }
+
+  if (msg.type === 'gm-open-viewer') {    openViewer()
       .then(function () { sendResponse({ ok: true }); })
       .catch(function (e) { sendResponse({ ok: false, error: String((e && e.message) || e) }); });
     return true;

@@ -505,6 +505,12 @@
   // ---------------------------------------------------------------- §13.3 protections
   var MAX_ADJUSTS = 3;
   var MAX_SWING = 20;
+  // 0.5.2 §4.1.5 — 「每局最多发出 3 次自定义提问」. A separate cap from MAX_ADJUSTS above even
+  // though both read 3: MAX_ADJUSTS is the §13.3 ceiling on how many answers may move the score
+  // AT ALL (presets included), while this one limits how many of the operator's own questions may
+  // go out. They are counted from different histories — `chat.history` vs `chat.customCount` —
+  // and a game can hit either one first.
+  var MAX_CUSTOM_ADJUSTS = 3;
 
   /**
    * §13.3. Returns `{ok, delta, reason}` — the delta may have been clipped by the ±20 budget,
@@ -524,6 +530,41 @@
     if (next < -MAX_SWING) want = -MAX_SWING - used;
     if (want === 0) return { ok: false, delta: 0, reason: 'budgetExhausted' };
     return { ok: true, delta: want, reason: want === delta ? 'ok' : 'clipped' };
+  }
+
+  // ---------------------------------------------------------------- 0.5.2 §4.1 自定义问题
+  /**
+   * The five risk levels a CUSTOM question is graded with, and the AI-rate delta each carries.
+   *
+   * §4.1.4's table verbatim. The order here is the order the buttons appear in, and it is
+   * deliberately the operator's reading order (worst-for-the-opponent last), not sorted by
+   * delta: the buttons are a judgement about the REPLY, and the two negative rows are the ones
+   * that clear a player.
+   *
+   * ⚠ Why a custom question is graded BY HAND while every preset one goes through `grade()`:
+   * a preset question ships with a grading tree that knows what its own answers mean
+   * (`classifyReply`). A question the operator wrote has no tree, and inventing one from
+   * keywords would be guessing at a language the extension does not know. §4.1.3 says the
+   * operator decides, and this table is the vocabulary for that decision.
+   *
+   * ⚠ The delta still goes through `applyBudget()` at the call site. §13.3's protections (±20
+   * swing, at most 3 adjustments) exist to stop a chat exchange from moving a risk score by an
+   * arbitrary amount, and a hand-graded question is exactly as capable of that as a preset one —
+   * more so, since +10 × 3 would be +30. Letting custom answers bypass the budget would leave a
+   * hole in the protection precisely where the largest single delta lives.
+   */
+  var CUSTOM_LEVELS = ['none', 'low', 'unclear', 'risky', 'high'];
+  var CUSTOM_Q_DELTA = {
+    none: -8,      // 无风险 — the reply reads like an ordinary player's
+    low: 0,        // 低风险 — no signal either way
+    unclear: 3,    // 难以判断
+    risky: 6,      // 风险
+    high: 10,      // 高风险
+  };
+
+  /** The delta for a level name, or null if the name is not one of the five. */
+  function customDelta(level) {
+    return Object.prototype.hasOwnProperty.call(CUSTOM_Q_DELTA, level) ? CUSTOM_Q_DELTA[level] : null;
   }
 
   // ---------------------------------------------------------------- §12 gating
@@ -578,6 +619,11 @@
     allOpeningNames: allOpeningNames,
     applyBudget: applyBudget,
     askBlocked: askBlocked,
+    // 0.5.2 §4.1 — the hand-grading vocabulary for operator-written questions.
+    CUSTOM_LEVELS: CUSTOM_LEVELS,
+    CUSTOM_Q_DELTA: CUSTOM_Q_DELTA,
+    customDelta: customDelta,
+    MAX_CUSTOM_ADJUSTS: MAX_CUSTOM_ADJUSTS,
     shouldPrompt: shouldPrompt,
     hitAny: hitAny,
   };
