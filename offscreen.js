@@ -14,7 +14,20 @@
 //   gm-step-report      -> full report for the live session
 //   gm-step-finish      -> close the live session, return the full report
 //   gm-abort            -> ask the running job to stop at the next move
+//   gm-ai-think         -> one analyzePosition, for the viewer's AI-思考 button (0.4.11 §一.2)
+//   gm-pause            -> pause a queued/running one-shot job (0.4.11 §一.2)
+//   gm-resume           -> resume it; calls the pauseCtrl's `_resume` for us
 // Broadcasts gm-progress { jobId, p, msg } while working.
+//
+// 0.4.11 §一.2 — THE VIEWER RUNS NO ENGINE OF ITS OWN.
+// Before this, viewer.html loaded app.js and viewer.js called its `getEngine()`, so the
+// extension page built a SECOND Rapfi: a second worker, a second 40MB data package, a second
+// pthread pool, and a second queue that content.js knew nothing about. Both instances then
+// resolved `settings.threadNum` independently and could oversubscribe the machine. Every
+// engine call the viewer makes now arrives here, where the one engine and the one FIFO queue
+// live. `pauseCtrl` is the reason gm-pause/gm-resume exist at all: it holds `_resume`, a
+// FUNCTION, which no message can carry — so the object stays in this document and is looked
+// up by jobId.
 //
 // 0.2.5 — CONCURRENCY MODEL
 // There is exactly ONE engine (one worker, one 40MB data package, one WASM instance), so
@@ -53,6 +66,12 @@
   var currentJobId = null;
   var sessions = {};     // jobId -> 实时逐步 session
   var aborted = {};
+  var pauseCtrls = {};   // 0.4.11 §一.2: jobId -> { paused, _resume } for the one-shot jobs
+
+  function pauseCtrlFor(jobId) {
+    if (!pauseCtrls[jobId]) pauseCtrls[jobId] = { paused: false, _resume: null };
+    return pauseCtrls[jobId];
+  }
 
   // 0.3.6 §1.8: this document has no UI, but it does produce strings that reach one — the
   // default archive name, the 排队中 note, every error code. It therefore has to know the
@@ -178,13 +197,31 @@
   async function runOneShot(msg, kind) {
     aborted[msg.jobId] = false;
     try {
-      var opts = Object.assign({}, msg.opts, { shouldAbort: function () { return !!aborted[msg.jobId]; } });
+      var opts = Object.assign({}, msg.opts, {
+        shouldAbort: function () { return !!aborted[msg.jobId]; },
+        // 0.4.11 §一.2 — the caller (a viewer page, a panel) cannot hold a reference to this
+        // object across a message boundary, so we own it here and drive it from gm-pause /
+        // gm-resume. Registering it at DISPATCH time, not here, is what lets a pause arrive
+        // while the job is still sitting in the queue.
+        pauseCtrl: pauseCtrlFor(msg.jobId),
+      });
       var fn = kind === 'global' ? analyzeGame : analyzeStepwise;
       var report = await fn(msg.record, opts, progressFn(msg.jobId));
       return { ok: true, report: trimReport(report), info: engineSnapshot() };
     } finally {
       delete aborted[msg.jobId];
+      delete pauseCtrls[msg.jobId];
     }
+  }
+
+  // 0.4.11 §一.2 — the viewer's AI-思考 button. Queued like everything else so its engine call
+  // cannot interleave with a running analysis: analyzePosition swaps `worker.onmessage`, and two
+  // overlapping calls would hand each other's output to the wrong resolver.
+  async function handleAiThink(msg) {
+    var eng = await getEngine();
+    eng.configure({ rule: msg.rule, thinkMs: msg.thinkMs, threadNum: msg.threadNum });
+    var res = await eng.analyzePosition(msg.prefix, msg.nbest);
+    return { ok: true, best: res.best, candidates: res.candidates, info: engineSnapshot() };
   }
 
   // ---- 实时逐步分析 ----
@@ -199,7 +236,7 @@
     if (!live) {
       return { ok: false, error: i18nErr('live.goneMaybe') };
     }
-    if (live.ended) return { ok: false, error: i18nErr('live.ended') };
+    if (live.ended) return { ok: false, ended: true, error: i18nErr('live.ended') };
 
     // One entry per PLAYED move. The collector can legitimately ask twice for the same
     // hand — a socket reconnect re-delivers it, or the board render confirms a stone we
@@ -214,13 +251,15 @@
     var eng = await getEngine();
     var allMoves = msg.prefix.concat([msg.actual]);
     var budget = stepBudget(msg.recorded, msg.opts).budget;
-    // 0.3.4: the live-four test needs the real colours of the prefix, which index parity
+    // 0.3.4: the live-four test needs the real colours of the board, which index parity
     // cannot give (a duplicated or dropped stone shifts every later slot). The collector
-    // sends them alongside `prefix`; when it does not, analyzeStep falls back to parity.
+    // sends the WHOLE board's colours (0.4.11 §一.1 renamed `prefixSides` → `boardSides`, since
+    // it describes every move, not the prefix); the length must equal `allMoves.length`.
+    // When it does not, analyzeStep falls back to parity.
     var board = null;
-    if (Array.isArray(msg.prefixSides) && msg.prefixSides.length === allMoves.length) {
+    if (Array.isArray(msg.boardSides) && msg.boardSides.length === allMoves.length) {
       board = allMoves.map(function (c, k) {
-        return { x: c[0], y: c[1], side: msg.prefixSides[k] };
+        return { x: c[0], y: c[1], side: msg.boardSides[k] };
       });
     }
     var step = await analyzeStep(eng, allMoves, msg.playerIdx, msg.actual, msg.opts, budget, msg.recorded, msg.side, board);
@@ -286,11 +325,31 @@
       case 'gm-warmup': work = handleWarmup(); break;
       case 'gm-engine-info': work = Promise.resolve(handleEngineInfo()); break;
       case 'gm-analyze':
+        pauseCtrlFor(msg.jobId);   // registered before the queue is reached, so gm-pause works queued
         work = runQueued(msg.jobId, function () { return runOneShot(msg, 'global'); });
         break;
       case 'gm-analyze-stepwise':
+        pauseCtrlFor(msg.jobId);
         work = runQueued(msg.jobId, function () { return runOneShot(msg, 'stepwise'); });
         break;
+      case 'gm-ai-think':
+        work = runQueued(msg.jobId, function () { return handleAiThink(msg); });
+        break;
+      case 'gm-pause': {
+        var pcp = pauseCtrls[msg.jobId];
+        if (pcp) pcp.paused = true;
+        work = Promise.resolve({ ok: true });
+        break;
+      }
+      case 'gm-resume': {
+        var pcr = pauseCtrls[msg.jobId];
+        if (pcr) {
+          pcr.paused = false;
+          if (pcr._resume) { var wake = pcr._resume; pcr._resume = null; wake(); }
+        }
+        work = Promise.resolve({ ok: true });
+        break;
+      }
       case 'gm-step':
         work = runQueued(msg.jobId, function () { return doStep(msg); });
         break;

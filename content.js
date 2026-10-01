@@ -993,15 +993,62 @@
     return best;
   }
 
+  // 0.4.11 §一.8 — shape validation for the MAIN world -> isolated world channel.
+  //
+  // This is NOT a security boundary. A MAIN-world script can read and write anything on the
+  // page; the real attack surface is between the page and the extension, and this wire is
+  // inside the page. What it stops is an ACCIDENT: a statistics script, an ad frame or a CDN
+  // shim that happens to dispatch a same-named CustomEvent would otherwise have its payload
+  // parsed and merged into the captured record as if the socket had sent it. "It cannot be
+  // forged on purpose" is not required; "it cannot collide by accident" is.
+  var GM_EVENT_KINDS = ['move', 'reset', 'seed', 'players', 'end', 'attached', 'error'];
+  var lastAcceptedCount = null;
+  var lastAcceptedDropped = 0;
+
+  function validateGmEvent(p) {
+    if (!p || typeof p !== 'object') return false;
+    if (GM_EVENT_KINDS.indexOf(p.kind) < 0) return false;
+    var d = p.data;
+    if (!d || typeof d !== 'object') return false;
+    if (d.source !== 'socket') return false;
+    if (!Array.isArray(d.moves)) return false;
+    // `count` is the recorder's own `rec.moves.length` — a snapshot where the two disagree was
+    // not assembled by the recorder.
+    if (d.count !== d.moves.length) return false;
+    // Within one game the board only grows, with one honest exception: hook.js PRUNES recorded
+    // stones the board no longer shows and counts them in `dropped` (absorbStones). So a LOWER
+    // count is legitimate exactly when that witness has grown, and `reset` — whose snapshot is
+    // legitimately empty — is exempt outright. A bare `count < lastCount` reject would drop a
+    // genuine resync frame, and a dropped frame is a silently wrong record: worse than the
+    // collision this check exists for.
+    if (p.kind !== 'reset' && lastAcceptedCount != null && d.count < lastAcceptedCount) {
+      if (!(Number(d.dropped) > lastAcceptedDropped)) return false;
+    }
+    // Both worlds belong to one document, so the offset between their clocks should be ~0.
+    // Five seconds is loose enough for a stalled frame and tight enough to catch a snapshot
+    // stamped with Date.now() by someone who confused it with performance.now().
+    if (d.clockNow != null && Math.abs(performance.now() - d.clockNow) > 5000) return false;
+    return true;
+  }
+
   window.addEventListener(EV_EVENT, function (e) {
     var p;
     try { p = JSON.parse(e.detail); } catch (err) { return; }
     // 0.4.4 §八 — chat rides on its own kind and carries no snapshot (see hook.js:emitChat).
+    // It is checked BEFORE the shape gate: a chat frame has no `data` at all by design.
     if (p && p.kind === 'chat' && p.chat) {
       onChatMessage(p.chat.text, p.chat.fromId, 'socket:' + (p.chat.evt || '?'));
       return;
     }
-    if (!p || !p.data || p.data.source !== 'socket') return;
+    if (!validateGmEvent(p)) {
+      // Dev-visible, user-invisible (§8.3). Worth a line in the console precisely because the
+      // alternative failure mode is a record that is quietly wrong rather than an error.
+      console.warn('[detector] 丢弃形状非法的 ' + EV_EVENT + ' 事件：kind=' +
+        (p && p.kind) + ' source=' + (p && p.data && p.data.source));
+      return;
+    }
+    lastAcceptedCount = p.data.count;
+    lastAcceptedDropped = Number(p.data.dropped) || 0;
 
     // 0.3.7 §一.1 — ORDER IS LOAD-BEARING for `reset`. It arrives together with a snapshot
     // that has ALREADY been cleared, so the previous game must be finalised while `socketRec`
@@ -1632,22 +1679,33 @@
       // returning early here would silently drop the opening rows from the report and shrink its
       // `totalMoves`, which §3.5.4 ("统计结果与修复前完全一致") forbids. The message costs a
       // postMessage; the row is what the operator reads.
+      // 0.4.11 §一.1 — the WHOLE board's colours, not the prefix's. offscreen compares the
+      // array's length against `prefix.concat([actual])`; sending `slice(0,-1)` made the two
+      // differ by one for ever, so `board` was always null and analyzeStep fell back to
+      // index parity — silently right until a stone was de-duplicated, marked prejoin, or an
+      // AI reference move was inserted, at which point EVERY later colour shifted by one and
+      // 0.4.8's shape-first forced defence never fired on the live path. Length must equal
+      // record.moves.length here.
+      //
+      // Hoisted into a local (rather than inlined in the message) because the SAME array has to
+      // answer `side` below: `boardSides[pos]` is the colour of the move that survived, which is
+      // the other half of the same fix. Two spellings of one array is how these two would drift.
+      var boardSides = record.stones.map(function (s) {
+        return s === 1 ? 'B' : (s === 2 ? 'W' : null);
+      });
       var resp = await askOffscreen({
         type: 'gm-step',
         jobId: liveJob.id,
         reset: !!liveJob._reset,
         prefix: record.moves.slice(0, -1),
-        // 0.3.4: the prefix's real colours, for the live-four shape test. Index parity would
-        // be wrong the moment a stone was duplicated, dropped or recovered from a render —
-        // exactly the same reason `side` below is sent rather than derived.
-        prefixSides: record.stones.slice(0, -1).map(function (s) {
-          return s === 1 ? 'B' : (s === 2 ? 'W' : null);
-        }),
+        boardSides: boardSides,
         actual: last,
         playerIdx: pos,
-        // The recorded colour, not the index: a duplicated or missing stone would shift
-        // every later move to the wrong side.
-        side: actualMove.stone ? (actualMove.stone === 1 ? 'B' : 'W') : null,
+        // The recorded colour, not the index — and specifically the colour of the move that
+        // SURVIVED de-duplication (`record.stones[pos]`), not the raw capture entry's own
+        // `stone` field. §一.1: after a drop the raw entry is the ORIGINAL one while `pos` indexes
+        // the kept one, so the two disagree about exactly the hands this fix is about.
+        side: boardSides[pos],
         recorded: record.times[pos],
         prejoinCount: countInferred(moves.slice(0, idx + 1)),
         opts: baseOpts(),
@@ -2075,6 +2133,13 @@
     '.ctx .it.dis{opacity:.45;cursor:default}',
     '.ctx .it.dis:hover{background:transparent}',
     '.ctx .it.wrap{white-space:normal;line-height:1.45;max-width:280px}',
+    // 0.4.11 §二.10 — a question row is TWO lines: the text that will be sent, and below it what
+    // that text means in the interface language the operator is reading. `.it` is a flex ROW, so
+    // the stacked layout has to be stated; specificity (two classes + the item class) beats it.
+    '.ctx .it.q-item{display:block;line-height:1.4}',
+    '.ctx .it.q-item .q-main{font-weight:500}',
+    '.ctx .it.q-item .hint{display:block;margin-top:3px;font-size:11px;line-height:1.35;',
+    'color:var(--gm-dim);white-space:normal}',
     // The picker's level header (which language, or which question) — inert, and set apart so a
     // click on it is never mistaken for a selection.
     '.ctx .cth{padding:4px 8px 6px;color:var(--gm-dim);font-size:11px;border-bottom:1px solid var(--gm-div);',
@@ -2326,12 +2391,33 @@
   function menuSlot(which) { return which === 'ask-q' ? 'askmenu' : which + 'menu'; }
   function menuBtn(which) { return which === 'ask-q' ? 'ask' : which; }
 
+  // 0.4.11 §二.10 — the question as the operator reads it here, plus what it says in the
+  // language they are READING.
+  // The picker may legitimately send a Japanese question while the panel is in Chinese (that is
+  // §2.3's whole point), and the operator is hand-picking it to say something. Without the note
+  // they have to take on trust that the line above means what they think it means — and the one
+  // place that trust is least warranted is exactly where the two languages differ.
+  function questionLabelHtml(q, questionLang, uiLang) {
+    var text = q.text || {};
+    var main = text[questionLang] || text.en || q.id;
+    var note = '';
+    if (questionLang !== uiLang) {
+      note = text[uiLang]
+        ? '<div class="hint">（' + esc(text[uiLang]) + '）</div>'
+        : '<div class="hint">' + esc(T('panel|（无 {lang} 翻译）', { lang: GMI18n.langLabel(uiLang) })) + '</div>';
+    }
+    return '<div class="q-main">' + esc(main) + '</div>' + note;
+  }
+
   function askMenuHtml() {
     var html = '';
     if (openMenu === 'ask') {
       var cur = askMenuLang();
       html += '<div class="cth">' + esc(T('panel|选择提问语言')) + '</div>';
-      GMI18n.LOCALES.forEach(function (code) {
+      // 0.4.11 §一.6 — the bank's OWN languages, not the extension's locale list (13). See
+      // questions.js: offering a locale the bank has no wording for is what made the picker
+      // promise a language it could not send.
+      GM_QUESTION_LANGS.forEach(function (code) {
         var on = code === cur;
         html += '<div class="it" data-act="pick-ask-lang" data-v="' + esc(code) + '"' +
           ' role="menuitemradio" aria-checked="' + on + '">' +
@@ -2355,11 +2441,10 @@
       // An unknown sender colour does not block the explicit button (see askableQuestions), so it
       // is not a reason to grey a question here either.
       var ok = why === null || why === 'senderUnknown';
-      var text = GMChat.textOf(q.text, lang);
-      html += '<div class="it wrap' + (ok ? '' : ' dis') + '"' +
+      html += '<div class="it wrap q-item' + (ok ? '' : ' dis') + '"' +
         (ok ? ' data-act="pick-ask-q" data-v="' + esc(q.id) + '" role="menuitem"'
             : ' title="' + esc(askBlockReason(why)) + '"') + '>' +
-        esc(text || q.id) + '</div>';
+        questionLabelHtml(q, lang, LANG) + '</div>';
     }
     return html;
   }
@@ -3045,7 +3130,9 @@
         T('panel|下次匹配到该玩家时会收到提醒。'));
     if (!confirm(msg)) return;
     var p = on ? GMStorage.removeFromBlacklist(opp.id)
-               : GMStorage.addToBlacklist(opp.id, opp.name, null);
+               // 0.4.11 §一.7 — this IS the overlay, so it says so; every other caller
+               // (the viewer's manual form, the importer) gets the 'manual' default.
+               : GMStorage.addToBlacklist(opp.id, opp.name, null, 'overlay');
     p.then(function () {
       if (on) {
         delete blacklistIds[blacklistKey(opp.id)];

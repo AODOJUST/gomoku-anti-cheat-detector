@@ -105,10 +105,37 @@
     },
   ];
 
+  // 0.4.11 §一.6 — the languages the BANK can actually send, COMPUTED from the data rather than
+  // typed out a second time.
+  //
+  // The 提问 picker used to list `GMI18n.LOCALES` (13). Choosing 越南语 or 阿拉伯语 made
+  // `GMChat.textOf()` fall back to English in silence — and the footer only apologised AFTER the
+  // question had already gone out, in a language the operator had not picked. That is precisely
+  // what §2.3 promises never happens. Restricting the picker to this list removes the path
+  // entirely, so the apology can no longer be printed at all.
+  //
+  // A hand-written copy would drift the first time a question gains a language, so the union is
+  // derived here, in each question's own key order.
+  var GM_QUESTION_LANGS = (function () {
+    var order = [], seen = {};
+    for (var i = 0; i < GM_QUESTIONS.length; i++) {
+      var t = GM_QUESTIONS[i].text || {};
+      for (var l in t) {
+        if (!Object.prototype.hasOwnProperty.call(t, l)) continue;
+        if (!t[l] || seen[l]) continue;
+        seen[l] = true;
+        order.push(l);
+      }
+    }
+    return order;
+  })();
+
   g.GM_QUESTIONS = GM_QUESTIONS;
+  g.GM_QUESTION_LANGS = GM_QUESTION_LANGS;
   g.GM_RATE_LINE = RATE_LINE;
   if (typeof module !== 'undefined' && module.exports) {
     module.exports = GM_QUESTIONS;
+    module.exports.QUESTION_LANGS = GM_QUESTION_LANGS;
     module.exports.RATE_LINE = RATE_LINE;
   }
 })(typeof globalThis !== 'undefined' ? globalThis : self);

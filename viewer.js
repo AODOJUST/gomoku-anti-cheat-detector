@@ -35,6 +35,55 @@
 
   var LANG = GMI18n.DEFAULT;
 
+  // ---- 0.4.11 §一.2: the viewer's engine bridge ----
+  // This page runs NO engine of its own. app.js is still loaded for its pure helpers
+  // (parseRecord, summaryTableHtml, the scoring ring…), but its engine entry points —
+  // getEngine / analyzeGame / analyzeStepwise / analyzeStep — are deliberately never called
+  // from here. Calling them built a SECOND Rapfi inside the extension page: a second worker, a
+  // second 40 MB data package, a second pthread pool, and a second queue content.js could not
+  // see, with each side resolving `settings.threadNum` on its own. Everything now goes to the
+  // offscreen document, which owns the one engine and serialises work through one FIFO.
+  var gmJobSeq = 0;
+  function gmJobId(kind) { return 'viewer-' + (kind || 'job') + '-' + (++gmJobSeq) + '-' + Date.now(); }
+
+  function ensureOffscreen() {
+    return new Promise(function (resolve) {
+      try { chrome.runtime.sendMessage({ type: 'gm-ensure-offscreen' }, function () { resolve(); }); }
+      catch (e) { resolve(); }
+    });
+  }
+
+  // Same shape as content.js:askOffscreen minus the retry loop: the viewer reports a failure in
+  // its own status line, and silently re-driving a multi-minute analysis would hide it.
+  function askOffscreen(message) {
+    return ensureOffscreen().then(function () {
+      return new Promise(function (resolve, reject) {
+        chrome.runtime.sendMessage(message, function (resp) {
+          if (chrome.runtime.lastError) return reject(new Error(chrome.runtime.lastError.message));
+          resolve(resp);
+        });
+      });
+    });
+  }
+
+  // gm-progress is BROADCAST, so every listener sees every job's progress — this page's, the
+  // panel's, another tab's. The sink table routes a job's own updates to the pane that started
+  // it, and drops the rest.
+  //
+  // Guarded, like every other module-scope chrome touch in this file: the storage and i18n layers
+  // are deliberately loadable without an extension context (that is how the unit suites drive
+  // them), and `verify-047` loads viewer.html straight off the filesystem to read the resolved
+  // cascade with no `chrome` at all. An unguarded `chrome.runtime.onMessage` at module scope threw
+  // there and killed boot() before the first paint — the page rendered, unstyled and empty.
+  var jobSinks = {};
+  if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.onMessage) {
+    chrome.runtime.onMessage.addListener(function (msg) {
+      if (!msg || msg.type !== 'gm-progress') return;
+      var sink = jobSinks[msg.jobId];
+      if (sink) sink(msg.p, msg.msg);
+    });
+  }
+
   // 黑 / 白 as a one-character side label, and 黑方 / 白方 as the two-character form used in
   // headings and detail rows. Both pairs recur a dozen times; one function each beats twelve
   // keys that could drift apart.
@@ -457,6 +506,11 @@
     GMI18n.apply(document);
     fillLangSelect();
     fillThreadSelect();
+    // 0.4.11 §一.3 — the 主题 options are JS-built labels, so they carry no `__gmKey` and the
+    // static pass above cannot reach them. Without this the dropdown kept the previous language
+    // until a reload, which is acceptance #2 of §一.3. `fillSettingsForm()` below restores the
+    // selection (rebuilding innerHTML drops it back to the first option).
+    fillThemeSelect();
     // §一.4: the banner and the settings page's status line are built in JS, so they carry no
     // `__gmKey` and the static pass above cannot reach them.
     fillVersionRow();
@@ -524,6 +578,14 @@
     setField($('setThread'), S.threadNum);
     setField($('setMinMoves'), S.minArchiveMoves);
     setField($('setLang'), S.lang || 'auto');
+    // 0.4.11 §一.3 (found by behave-051, not by the spec) — the 主题 dropdown has to restore its
+    // SELECTION here and not only its labels. `fillThemeSelect()` rebuilds the <select> by
+    // assigning innerHTML, and a rebuilt select falls back to its first option — `G.THEMES` is
+    // ['light','dark','auto'], so an operator on 深色 who switched the UI language watched the
+    // settings page snap to 浅色 while <html data-theme> stayed "dark". The dropdown was lying
+    // about the live theme, which is a smaller version of the same class of defect as the frozen
+    // label §一.3 is about: the control showing something other than the value in force.
+    setField($('setTheme'), S.theme);
     $('setAuto').checked = !!S.autoAnalyze;      // a checkbox has no half-edited state
     $('setChatAuto').checked = !!S.chatAuto;     // 0.4.4 §七/§八 master switch, default off
     // 0.4.10 §2.2 — the narrower switch, default ON (see storage.js DEFAULTS for why).
@@ -536,22 +598,31 @@
   // Built from GMStorage.THEMES, same reasoning as the language and thread lists: the option
   // set and the value clamp are two halves of one fact, and writing the options out in
   // viewer.html would be the second copy that drifts.
-  // The three labels are literal `T()` calls rather than a `code -> key` map read by `T(map[t])`.
-  // A runtime lookup is invisible to `_tools/keys.cjs` (it sees only the SHAPE), so those keys
-  // would have to be declared a second time in i18n-extra.js — and a key that exists in exactly
-  // one of the two places is how a language ends up printing a raw slug. As literals the
-  // extractor finds them, `gen-locale` emits them, and there is nothing left to keep in step.
-  var THEME_LABEL = {
-    light: T('viewer|浅色'),
-    dark: T('viewer|深色'),
-    auto: T('viewer|跟随系统'),
-  };
+  //
+  // 0.4.11 §一.3 — the labels are resolved by a FUNCTION, not baked into a module-level object.
+  // The old `THEME_LABEL` table ran its three T() calls while the module was being evaluated —
+  // i.e. BEFORE boot()'s applyLang() — so on an English UI the 主题 dropdown
+  // therefore stayed 「浅色 / 深色 / 跟随系统」 for the life of the page — precisely the rule
+  // i18n.js keeps repeating: any T() evaluated before applyLang() freezes on the default
+  // language. Reading the dictionary inside themeLabel() means the label follows whatever locale
+  // is live when the select is built, and `repaintForLang()` rebuilds it on a switch.
+  //
+  // The three keys stay LITERAL `T()` calls rather than `T('viewer|' + …)`. A concatenated key is
+  // invisible to `_tools/keys.cjs` (it sees only the SHAPE), so it would have to be declared a
+  // second time in i18n-extra.js — and a key that exists in exactly one of the two places is how
+  // a language ends up printing a raw slug. Switching on the code keeps every argument literal.
+  function themeLabel(t) {
+    if (t === 'light') return T('viewer|浅色');
+    if (t === 'dark') return T('viewer|深色');
+    if (t === 'auto') return T('viewer|跟随系统');
+    return t;
+  }
 
   function fillThemeSelect() {
     var sel = $('setTheme');
     if (!sel) return;
     sel.innerHTML = G.THEMES.map(function (t) {
-      return '<option value="' + esc(t) + '">' + esc(THEME_LABEL[t] || t) + '</option>';
+      return '<option value="' + esc(t) + '">' + esc(themeLabel(t)) + '</option>';
     }).join('');
     // These four nodes are built in viewer.html, so the static i18n pass would normally tag
     // them — but they are `id`-bearing labels the JS already knows by name, and tagging them
@@ -1175,9 +1246,16 @@
   // snapshot() below.
   var undoStack = [];
   var engineBusy = false;
-  var pauseCtrl = { paused: false, _resume: null };
+  // 0.4.11 §一.2 — `pauseCtrl._resume` still serves the LIVE 逐步检测 queue, which runs here (it
+  // just stops asking for the next step). `jobId` is the other half: a one-shot 全局分析 / AI
+  // 分析 runs INSIDE the offscreen document, and the only way to reach its pauseCtrl is
+  // gm-pause / gm-resume.
+  var pauseCtrl = { paused: false, _resume: null, jobId: null };
   var detectMode = 'global';
   var stepQueue = [];
+  // The offscreen live-session id for the current 逐步检测 run (0.4.11 §一.2). One session
+  // accumulates one step per played move and answers gm-step-finish with the full report.
+  var liveStepJobId = null;
   var stepwiseRunning = false;
   var lastMoveTime = 0;
   var aiThinkDirty = false;
@@ -1387,6 +1465,14 @@
 
   function resetReport() {
     report = null; stepQueue = []; lastDetectRecord = null;
+    // 0.4.11 §一.2 — a 逐步检测 run's engine-side session lives in the offscreen document, keyed
+    // by jobId, and it remembers every coordinate it has already scored. Dropping the local
+    // report without closing it would leave a session that answers a REPLAYED coordinate with
+    // the OLD verdict (doStep de-duplicates on x,y). Close it; the next move opens a fresh one.
+    if (liveStepJobId) {
+      askOffscreen({ type: 'gm-step-finish', jobId: liveStepJobId }).catch(function () {});
+      liveStepJobId = null;
+    }
     $('scores').innerHTML = '<div class="hint">' + T('viewer|分析后显示') + '</div>';
     $('contrib').innerHTML = '';
     $('summary').innerHTML = '—';
@@ -1411,7 +1497,14 @@
   $('pauseBtn').onclick = function () {
     if (!engineBusy && !stepwiseRunning) return;
     pauseCtrl.paused = !pauseCtrl.paused;
-    if (!pauseCtrl.paused && pauseCtrl._resume) { var r = pauseCtrl._resume; pauseCtrl._resume = null; r(); }
+    if (pauseCtrl.jobId) {
+      // 0.4.11 §一.2: the job is inside the offscreen document. `pauseCtrl` there holds the
+      // `_resume` function that no message can carry, so pausing is a request, not a flag flip.
+      askOffscreen({ type: pauseCtrl.paused ? 'gm-pause' : 'gm-resume', jobId: pauseCtrl.jobId })
+        .catch(function () {});
+    } else if (!pauseCtrl.paused && pauseCtrl._resume) {
+      var r = pauseCtrl._resume; pauseCtrl._resume = null; r();
+    }
     setPauseLabel();
   };
   $('jumpStep').onchange = function () {
@@ -1425,12 +1518,22 @@
     engineBusy = true; setPauseLabel();
     setStatus(T('viewer|AI 思考中...'));
     try {
-      var eng = await getEngine();
       var thinkMs = parseInt($('aiThinkMs').value, 10) || 2000;
-      eng.configure({ rule: parseInt($('rule').value, 10), thinkMs: thinkMs, threadNum: S.threadNum });
-      var prefix = draftMoves.map(function (m) { return m.c; });
       var nbest = clamp(parseInt($('aiNbest').value, 10) || 1, 1, 32);
-      var res = await eng.analyzePosition(prefix, nbest);
+      // 0.4.11 §一.2 — one analyzePosition on the SHARED engine. It is queued behind any running
+      // analysis, which is not a courtesy: analyzePosition swaps `worker.onmessage`, so two
+      // overlapping calls would hand each other's output to the wrong resolver.
+      var resp = await askOffscreen({
+        type: 'gm-ai-think',
+        jobId: gmJobId('think'),
+        prefix: draftMoves.map(function (m) { return m.c; }),
+        nbest: nbest,
+        thinkMs: thinkMs,
+        rule: parseInt($('rule').value, 10),
+        threadNum: S.threadNum,
+      });
+      if (!resp || !resp.ok) throw new Error((resp && resp.error) || T('viewer|offscreen 文档没有响应（检查扩展是否已重新加载）'));
+      var res = { best: resp.best, candidates: resp.candidates || [] };
       if (!draftOccupied(res.best[0], res.best[1])) {
         snapshot(T('viewer|AI 参考手'));
         draftMoves.push({ c: res.best.slice(), s: 'ai-suggest' });
@@ -1479,25 +1582,36 @@
     rec.stones = currentRecord().stones;
     if (rec.moves.length < 5) { alert(T('viewer|有效手数过少: {n}', { n: rec.moves.length })); return; }
     $('run').disabled = true; engineBusy = true; setPauseLabel();
+    var jid = gmJobId('global');
+    pauseCtrl.jobId = jid; pauseCtrl.paused = false;
+    jobSinks[jid] = setProgress;
     try {
-      report = await analyzeGame(rec, {
-        rule: parseInt($('rule').value, 10),
-        thinkMs: parseInt($('thinkMs').value, 10),
-        openingCutoff: parseInt($('openCut').value, 10),
-        suspect: $('suspect').value,
-        threadNum: S.threadNum,
-        pauseCtrl: pauseCtrl,
-        // 0.3.3 §3.5: hand the learned parameters in explicitly rather than letting
-        // analyzeGame re-read them, so the run and the incremental recompute above cannot
-        // drift apart mid-analysis.
-        learned: curLearned,
-      }, setProgress);
+      // 0.4.11 §一.2 — the analysis runs in the offscreen document, on the one engine. The
+      // learned parameters go with the request for the same reason as before: the run and the
+      // incremental recompute must not drift apart mid-analysis.
+      var resp = await askOffscreen({
+        type: 'gm-analyze',
+        jobId: jid,
+        record: rec,
+        opts: {
+          rule: parseInt($('rule').value, 10),
+          thinkMs: parseInt($('thinkMs').value, 10),
+          openingCutoff: parseInt($('openCut').value, 10),
+          suspect: $('suspect').value,
+          threadNum: S.threadNum,
+          learned: curLearned,
+        },
+      });
+      if (!resp || !resp.ok) throw new Error((resp && resp.error) || T('viewer|offscreen 文档没有响应（检查扩展是否已重新加载）'));
+      report = resp.report;
       renderReport();
       await archiveCurrent('global');
     } catch (e) {
       alert(T('viewer|分析出错: {err}', { err: TE(e.message) }));
       setStatus(T('viewer|引擎错误: {err}', { err: TE(e.message) }));
     } finally {
+      delete jobSinks[jid];
+      pauseCtrl.jobId = null;
       $('run').disabled = false; engineBusy = false; setPauseLabel();
     }
   };
@@ -1570,23 +1684,64 @@
 
   async function runStepQueue() {
     stepwiseRunning = true; setPauseLabel();
+    var started = false;
     try {
-      var eng = await getEngine();
-      eng.configure({ rule: parseInt($('rule').value, 10), threadNum: S.threadNum });
       while (stepQueue.length) {
+        // The live queue runs HERE, so its pause is simply "do not ask for the next step" — the
+        // shared engine is left free for everything else (0.4.11 §一.2).
         if (pauseCtrl.paused) await new Promise(function (r) { pauseCtrl._resume = r; });
         var task = stepQueue.shift();
-        eng.send('INFO TIMEOUT_TURN ' + task.thinkMs);
         setStatus(T('viewer|逐步检测中… 队列剩余 {n}（本手 {ms}ms）', { n: stepQueue.length + 1, ms: task.thinkMs }));
-        var step = await analyzeStep(eng, task.prefixMoves, task.playerIdx, task.actual, {
-          openingCutoff: parseInt($('openCut').value, 10),
-        }, task.thinkMs, null, null, task.board);
+        if (!liveStepJobId) liveStepJobId = gmJobId('step');
+        var boardSides = task.board.map(function (b) { return b.side; });
+        var resp = await askOffscreen({
+          type: 'gm-step',
+          jobId: liveStepJobId,
+          reset: !started,
+          prefix: task.prefixMoves.slice(0, -1),
+          // Whole-board colours (0.4.11 §一.1), so the shape test sees real sides instead of
+          // index parity — an AI reference stone occupies a slot without consuming a turn.
+          boardSides: boardSides,
+          actual: task.actual,
+          playerIdx: task.playerIdx,
+          side: boardSides[boardSides.length - 1],
+          // The draft carries NO timing data, so `recorded` stays null and the report keeps
+          // saying 固定预算. The per-hand budget rides in opts.thinkMs, which is exactly what
+          // stepBudget() falls back to when recordedMs is null — the minimum(interval, cap) the
+          // old local loop computed is therefore preserved without lying about having timings.
+          recorded: null,
+          prejoinCount: 0,
+          opts: {
+            rule: parseInt($('rule').value, 10),
+            thinkMs: task.thinkMs,
+            openingCutoff: parseInt($('openCut').value, 10),
+            threadNum: S.threadNum,
+            learned: curLearned,
+          },
+        });
+        started = true;
+        if (resp && !resp.ok && resp.ended) {
+          // 活四停止 reached the offscreen live session: the analysis is over, the game is not.
+          // Same terminal semantics as the panel — stop asking, keep what was scored.
+          stepQueue.length = 0;
+          break;
+        }
+        if (!resp || !resp.ok) throw new Error((resp && resp.error) || T('viewer|offscreen 文档没有响应（检查扩展是否已重新加载）'));
         if (!report) report = { steps: [], hasTime: false, suspect: $('suspect').value, totalMoves: 0, opts: {}, black: null, white: null, forcedCount: 0 };
-        report.steps.push(step);
+        report.steps.push(resp.step);
         report.totalMoves = report.steps.length;
         renderReportIncremental();
       }
-      if (report) await archiveCurrent('stepwise');
+      if (report && liveStepJobId) {
+        // The session — not this page — is the authority on the finished report: it has run
+        // markEvasion / markFourRuns / recordPrevBestWR over the whole step array, which the
+        // incremental renderer deliberately does not. Rendering that report also fixes the one
+        // place the two used to disagree (the rows above were scored without those passes).
+        var fin = await askOffscreen({ type: 'gm-step-finish', jobId: liveStepJobId });
+        liveStepJobId = null;
+        if (fin && fin.ok && fin.report) { report = fin.report; renderReport(); }
+        await archiveCurrent('stepwise');
+      }
     } catch (e) {
       setStatus(T('viewer|逐步检测错误: {err}', { err: TE(e.message) }));
     } finally {
@@ -2436,18 +2591,14 @@
   }
   function renderAllSteps() {
     renderScoreCards();
-    var sm = report.black, sw = report.white;
-    $('summary').innerHTML = '<table style="text-align:left">' +
-      '<tr><th>' + T('viewer|指标') + '</th><th>' + T('viewer|黑方') + '</th><th>' + T('viewer|白方') + '</th></tr>' +
-      '<tr><td>' + T('viewer|Top-1 吻合') + '</td><td>' + (sm ? pct(sm.top1) : '—') + '</td><td>' + (sw ? pct(sw.top1) : '—') + '</td></tr>' +
-      '<tr><td>' + T('viewer|Top-3') + '</td><td>' + (sm ? pct(sm.top3) : '—') + '</td><td>' + (sw ? pct(sw.top3) : '—') + '</td></tr>' +
-      '<tr><td>' + T('viewer|Top-5') + '</td><td>' + (sm ? pct(sm.top5) : '—') + '</td><td>' + (sw ? pct(sw.top5) : '—') + '</td></tr>' +
-      '<tr><td>' + T('viewer|ACPL') + '</td><td>' + (sm ? (sm.meanLoss * 100).toFixed(1) + '%' : '—') + '</td><td>' + (sw ? (sw.meanLoss * 100).toFixed(1) + '%' : '—') + '</td></tr>' +
-      '<tr><td>' + T('viewer|将败冲四') + '</td><td>' + desCount(sm) + '</td><td>' + desCount(sw) + '</td></tr>' +
-      '<tr><td>' + T('viewer|回避手') + '</td><td>' + evCount(sm) + '</td><td>' + evCount(sw) + '</td></tr>' +
-      '<tr><td>' + T('viewer|将胜乱下') + '</td><td>' + wbCount(sm) + '</td><td>' + wbCount(sw) + '</td></tr>' +
-      '<tr><td>' + T('viewer|被迫防守豁免') + '</td><td colspan="2">' + T('viewer|{n} 手', { n: report.forcedCount || 0 }) + '</td></tr>' +
-      '</table>';
+    // 0.4.11 §一.5 — this pane used to carry its OWN eight-row summary table, hand-written and
+    // never updated, while the replay detail rendered `summaryTableHtml(report, {})`. The rows
+    // 0.4.7 (冲四序列 / VCF / 防御性冲四 / 无用冲四) and 0.4.8 (唯一手最长连续命中 / 唯一手累计命中)
+    // added landed in the shared builder ONLY, so the same game showed two different sets of
+    // numbers depending on which pane you opened — which is the whole reason summaryTableHtml
+    // exists. `sim: true` matches the replay detail's call exactly (the AI-fingerprint row is
+    // meaningful here too: this is the run that produced those verdicts).
+    $('summary').innerHTML = summaryTableHtml(report, { sim: true });
     document.querySelector('#tbl tbody').innerHTML = '';
     // 0.4.3 §1.3: the segment index has to exist before the rows are built — every row asks it
     // for its rail colour and for its handles.
@@ -2648,11 +2799,26 @@
   // 「黑方 VS 白方」 states exactly as much as we know, and never less than the record holds.
   // The per-side halves fall back too, so a half-read pair prints 「Alice VS 白方」 rather than
   // 「Alice VS ?」 — the "?" told the operator nothing that the label does not say better.
+  // 0.4.11 §一.4 — is this archive's name the GENERATED default, or one the operator typed?
+  // The obvious test — `a.name === G.defaultArchiveName(a)` — compares a string built in the
+  // language the archive was CREATED in against one built in the language live NOW, and
+  // defaultArchiveName embeds T('archive|黑') / T('archive|手') / T('archive|和棋'). Switch the
+  // UI language and every old archive reads as hand-renamed: the card grows an 原命名 line and
+  // the detail title turns from 「A VS B」 into the whole 「A VS B 黑72/白85 全局 42手 …」 string.
+  // 0.4.11 records the answer instead — buildArchive marks a generated name `nameIsDefault:
+  // true`, a rename marks it `false` — and the string comparison survives only as the fallback
+  // for archives written by 0.4.10 or earlier, which have no flag.
+  function isDefaultName(a) {
+    if (a.nameIsDefault === true) return true;
+    if (a.nameIsDefault === false) return false;
+    return !a.name || a.name === G.defaultArchiveName(a);
+  }
+
   function displayName(a) {
     var p = a.players || {};
-    // `a.name &&` guards an archive whose name was never written: without it a missing name would
-    // compare unequal to the default and be returned as-is, i.e. a blank title.
-    if (a.name && a.name !== G.defaultArchiveName(a)) return a.name;
+    // `!isDefaultName(a)` subsumes the old `a.name && a.name !== default` guard: a blank name
+    // is the default (there is nothing to show as-is), so the VS title below still wins.
+    if (!isDefaultName(a)) return a.name;
     if (p.black || p.white) return (p.black || T('viewer|黑方')) + ' VS ' + (p.white || T('viewer|白方'));
     if (p.self || p.opponent) return (p.self || T('viewer|黑方')) + ' VS ' + (p.opponent || T('viewer|白方'));
     return T('viewer|黑方') + ' VS ' + T('viewer|白方');
@@ -2697,7 +2863,7 @@
     box.className = 'archive-grid' + (aBulkMode ? ' bulk' : '');
     box.innerHTML = pageList.map(function (a, i) {
       var no = start + i + 1;
-      var isDefault = a.name === G.defaultArchiveName(a);
+      var isDefault = isDefaultName(a);
       // 0.4.1 §三.4: a game whose move order is wrong used to look exactly like a clean one
       // until it was opened. The badge is the whole point of `quality` — it is the only place
       // the difference is visible across the library at a glance.
@@ -5113,15 +5279,28 @@
     $('seRun').disabled = true;
     setSeProgress(0, T('viewer|加载引擎中...'));
     setSeStatus(T('viewer|分析中...'));
+    // 0.4.11 §一.2 — the sample editor's 「AI 分析」 runs on the shared engine, through the
+    // stepwise path: one engine call per scored hand, in play order, which is the shape the
+    // 人工标注 table needs.
+    var jid = gmJobId('sample');
+    pauseCtrl.jobId = jid; pauseCtrl.paused = false;
+    jobSinks[jid] = setSeProgress;
     try {
-      seReport = await analyzeGame(rec, {
-        rule: parseInt($('seRule').value, 10),
-        thinkMs: parseInt($('seThinkMs').value, 10),
-        openingCutoff: parseInt($('seOpenCut').value, 10),
-        suspect: $('seSuspect').value,
-        threadNum: S.threadNum,
-        learned: curLearned,
-      }, setSeProgress);
+      var resp = await askOffscreen({
+        type: 'gm-analyze-stepwise',
+        jobId: jid,
+        record: rec,
+        opts: {
+          rule: parseInt($('seRule').value, 10),
+          thinkMs: parseInt($('seThinkMs').value, 10),
+          openingCutoff: parseInt($('seOpenCut').value, 10),
+          suspect: $('seSuspect').value,
+          threadNum: S.threadNum,
+          learned: curLearned,
+        },
+      });
+      if (!resp || !resp.ok) throw new Error((resp && resp.error) || T('viewer|offscreen 文档没有响应（检查扩展是否已重新加载）'));
+      seReport = resp.report;
       editing.report = seReport;
       editing.record = rec;
       editing.rule = RULE_NAME[parseInt($('seRule').value, 10)] || 'freestyle';
@@ -5152,6 +5331,8 @@
     } catch (e) {
       setSeStatus(T('viewer|分析出错：{err}', { err: TE(e.message) }));
     } finally {
+      delete jobSinks[jid];
+      pauseCtrl.jobId = null;
       seEngineBusy = false;
       updateSeInputInfo();
     }
@@ -5356,6 +5537,15 @@
     renderBlacklist();
   }
 
+  // 0.4.11 §一.7 — the row's provenance. Three literal keys rather than a `TO('blSource', v)`
+  // lookup: a runtime key would have to be declared a second time in i18n-extra.js, and a key
+  // that lives in exactly one of the two places is how a language ends up printing a slug.
+  function blSourceLabel(v) {
+    if (v === 'overlay') return T('viewer|来自浮层');
+    if (v === 'import') return T('viewer|导入');
+    return T('viewer|手动添加');
+  }
+
   function renderBlacklist() {
     var host = $('blRows');
     if (!host) return;
@@ -5375,6 +5565,7 @@
         '<span class="btm">' + esc(G.beijingTime(e.addedAt)) + '</span>' +
         '<span class="btm">' + esc(G.beijingTime(e.lastSeen)) + '</span>' +
         '<span class="bct">' + (Number(e.encounterCount) || 0) + '</span>' +
+        '<span class="bsrc">' + esc(blSourceLabel(e.source)) + '</span>' +
         '<span class="bop">' +
           '<button class="sec" data-bl="note" data-id="' + esc(e.id) + '">' + esc(T('viewer|编辑备注')) + '</button>' +
           '<button class="danger" data-bl="rm" data-id="' + esc(e.id) + '">' + esc(T('viewer|移除')) + '</button>' +

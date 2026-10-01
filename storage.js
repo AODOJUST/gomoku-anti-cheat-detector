@@ -470,7 +470,7 @@
       var list = await loadArchives();
       var hit = null;
       for (var i = 0; i < list.length; i++) {
-        if (list[i].id === id) { list[i].name = name; hit = list[i]; }
+        if (list[i].id === id) { list[i].name = name; list[i].nameIsDefault = false; hit = list[i]; }
       }
       if (hit) await writeArchives(list);
       return hit;
@@ -635,7 +635,7 @@
       var list = await loadArchives();
       var n = 0;
       for (var i = 0; i < list.length; i++) {
-        if (want[list[i].id]) { list[i].name = nm; n++; }
+        if (want[list[i].id]) { list[i].name = nm; list[i].nameIsDefault = false; n++; }
       }
       if (n) await writeArchives(list);
       return n;
@@ -704,7 +704,12 @@
     };
     // Derived fields are recomputed above, but the NAME is the operator's: only fill it in
     // when the file carried none, so an import never renames a curated archive.
+    var hadName = !!entry.name;
     if (!entry.name) entry.name = defaultArchiveName(entry);
+    // 0.4.11 §一.4 — carry the flag across an export/import. An entry exported by 0.4.11 says
+    // for itself whether its name was generated; one from an older build (or hand-written)
+    // does not, and the honest reading is "the file carried a name, so it is the operator's".
+    entry.nameIsDefault = (typeof raw.nameIsDefault === 'boolean') ? raw.nameIsDefault : !hadName;
     // 0.4.2 §4.1: the family, when the specific opening is not known. Derived from whatever
     // the entry or the record carries, so a pre-0.4.2 archive (code only) answers the 大类
     // filter too.
@@ -1341,10 +1346,10 @@
       addedAt: isFinite(added) && added > 0 ? added : now,
       lastSeen: isFinite(seen) && seen > 0 ? seen : (isFinite(added) && added > 0 ? added : now),
       encounterCount: isFinite(n) && n > 0 ? Math.floor(n) : 1,
-      // Anything that is not the overlay's own marker is treated as a manual entry: the field is
-      // a label, and an unknown value from an older/hand-edited profile must not become a third
-      // state the UI has no wording for.
-      source: raw.source === 'overlay' ? 'overlay' : 'manual',
+      // Anything that is not a value this build writes is treated as a manual entry: the field is
+      // a label, and an unknown value from an older/hand-edited profile must not become a state
+      // the UI has no wording for. 0.4.11 §一.7 adds the third value — see addToBlacklist.
+      source: BLACKLIST_SOURCES[raw.source] ? raw.source : 'manual',
     };
   }
 
@@ -1377,7 +1382,15 @@
   }
 
   /** Add (or refresh) an entry. §1.6's overlay button and §1.7's manual form both come here. */
-  function addToBlacklist(id, displayName, note) {
+  // 0.4.11 §一.7 — `source` is a PARAMETER, not a constant. It used to be hard-coded to
+  // 'overlay', so an id typed into the viewer's 黑名单 page — where there is no overlay and no
+  // game in progress — was filed as 「来自浮层」. The default is 'manual' rather than 'overlay'
+  // because the unsafe direction is the one that claims a provenance it cannot have: the
+  // caller that really is the overlay says so explicitly.
+  var BLACKLIST_SOURCES = { overlay: 1, manual: 1, import: 1 };
+
+  function addToBlacklist(id, displayName, note, source) {
+    source = BLACKLIST_SOURCES[source] ? source : 'manual';
     return enqueue(async function () {
       var got = null;
       try { got = await api().get(BLACKLIST_KEY); } catch (e) { got = null; }
@@ -1399,7 +1412,7 @@
           addedAt: now,
           lastSeen: now,
           encounterCount: 0,
-          source: 'overlay',
+          source: source,
         });
       }
       // Newest first, and capped. Trimming from the TAIL keeps the most recently added entries,
@@ -1496,6 +1509,10 @@
       for (var i = 0; i < list.length; i++) {
         var e = sanitizeBlacklistEntry(list[i]);
         if (!e) continue;
+        // 0.4.11 §一.7 — a row that arrived in a file is marked as such, whatever the file
+        // claimed: `source` describes how THIS copy got into the list. Re-importing an export
+        // therefore re-labels everything 导入, which is the honest description of what happened.
+        e.source = 'import';
         var at = blacklistIndexOf(bl.players, e.id);
         if (at >= 0) {
           var cur = bl.players[at];
@@ -1974,6 +1991,13 @@
       report: slimReport(rep),
     };
     entry.name = defaultArchiveName(entry);
+    // 0.4.11 §一.4 — remember that this name was GENERATED, not typed. The old test for
+    // "is this name still the default?" was a string comparison against a freshly generated
+    // name, and defaultArchiveName embeds T('archive|黑') / T('archive|手') / T('archive|和棋').
+    // Comparing a name built in the CREATION language against one built in the language live
+    // NOW never matches, so switching the UI language marked every old archive as hand-renamed.
+    // Records the fact instead of re-deriving it.
+    entry.nameIsDefault = true;
     // 0.4.2 §4.1: see openingFamilyOf. A family-only capture has `opening: null` (the code IS
     // the name of a specific opening, and there is not one) but a known family, so the list
     // badge can say 直止/斜止 and the 大类 filter can find it.

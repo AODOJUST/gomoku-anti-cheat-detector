@@ -231,7 +231,13 @@ function openViewer() {
 }
 
 async function hasOffscreen() {
-  // Chrome/Edge 116+. Older builds fall through to the create-and-swallow path.
+  // Chrome/Edge 116+. Below that there is no way to ASK, so this returns false and
+  // ensureOffscreen() falls through to the create-and-swallow path below: the document already
+  // exists, createDocument rejects with "Only a single offscreen document may be created", and
+  // the regex there ignores exactly that message. That is the documented fallback for
+  // 109–115 — which is why manifest.json declares `minimum_chrome_version: "109"` (0.4.11
+  // §一.9): below 109 `chrome.offscreen` does not exist at all and every engine call would
+  // fail with a raw English `chrome.runtime.lastError`.
   if (!chrome.runtime.getContexts) return false;
   try {
     var contexts = await chrome.runtime.getContexts({ contextTypes: ['OFFSCREEN_DOCUMENT'] });
