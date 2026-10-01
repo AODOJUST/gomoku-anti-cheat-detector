@@ -151,16 +151,215 @@ function evalNum(e) {
 }
 
 // ---------- engine wrapper ----------
-// Build preference order. The multi-threaded builds are tried first: they are the same
-// engine, just with a pthread pool, and on a 32-core box they measure ~7x the nodes/sec of
-// the single-threaded build (multi @1 thread: 218K nps, @8 threads: 1662K nps). The single
-// builds remain as fallbacks for browsers where SharedArrayBuffer is unavailable.
-const ENGINE_BUILDS = [
-  'engine/rapfi-multi-simd128.js',
-  'engine/rapfi-multi.js',
-  'engine/rapfi-single-simd128.js',
-  'engine/rapfi-single.js',
-];
+// 0.5.1 §2.1.2 — the build list, the engine ids and the protocol names live in engines.js now, so
+// that describing a second engine does not mean a second copy of Rapfi's details. They are NOT
+// repeated here: a fallback literal would be the fourth time this project shipped two spellings
+// of one answer, and the copy that is never run is always the one that rots. When the registry is
+// absent — a bare unit test that required this file alone — the list comes back empty and
+// `init()` says so by name, instead of failing somewhere less obvious.
+//
+// Build preference order, unchanged: the multi-threaded builds first (same engine, plus a pthread
+// pool, ~7x the nodes/sec of the single build on a 32-core box — multi @1 thread: 218K nps,
+// @8 threads: 1662K nps), with the single builds as the fallback for browsers where
+// SharedArrayBuffer is unavailable.
+function engineRegistry() {
+  return (typeof GMEngines !== 'undefined' && GMEngines) ? GMEngines : null;
+}
+function rapfiBuilds() {
+  const reg = engineRegistry();
+  const list = reg && reg.RAPFI_BUILDS;
+  return (list && list.length) ? list.slice() : [];
+}
+
+// GTP/SGF column letters — 'I' is skipped. The constant is the full 19-letter GTP alphabet
+// (A..T, no I); a 15x15 board only ever uses its first fifteen, A..P, and the range checks below
+// are what enforce that. Rapfi's `COL` above is the share-string alphabet (lowercase, no skip) and
+// is NOT interchangeable with this one: using it would shift every column past H by one and
+// produce coordinates that are wrong rather than absent. Both directions are total: an
+// out-of-range or unparsable token returns null, and the caller decides whether that is fatal.
+const GTP_COL = 'ABCDEFGHJKLMNOPQRST';
+function toGtpCoord(p) {
+  if (!p || !isFinite(p[0]) || !isFinite(p[1])) return null;
+  const x = p[0], y = p[1];
+  if (x < 0 || x >= SIZE || y < 0 || y >= SIZE) return null;
+  return GTP_COL.charAt(x) + (SIZE - y);
+}
+function fromGtpCoord(s) {
+  const t = String(s == null ? '' : s).trim().toUpperCase();
+  if (!t || t === 'PASS') return null;
+  const x = GTP_COL.indexOf(t.charAt(0));
+  // `x >= SIZE` as well as `x < 0`: the alphabet runs to T, so 'Q1'..'T1' index 15..18 and used to
+  // come back as a legal-looking [15,14]. A row check alone cannot catch it — the y it produces is
+  // on the board — so a server answering a 19x19 board (or a typo) handed this file a coordinate
+  // outside its own grid, and every board lookup after it read an unrelated cell. `toGtpCoord`
+  // already refused the same values, which is what made this a broken mirror rather than a bug.
+  if (x < 0 || x >= SIZE) return null;
+  // Digits only. `parseInt` stops at the first non-digit, so 'H8x' parsed as row 8 and 'H8 ' (or
+  // 'H8abc') was accepted as a coordinate — the "unparsable token returns null" promise above
+  // needs the whole token, not its prefix.
+  if (!/^\d+$/.test(t.slice(1))) return null;
+  const row = parseInt(t.slice(1), 10);
+  if (!isFinite(row)) return null;
+  const y = SIZE - row;
+  if (y < 0 || y >= SIZE) return null;
+  return [x, y];
+}
+
+// 0/1/2 is the numeric rule the whole pipeline carries (`ruleCode()` in content.js). KataGomo's
+// `kata-set-rule` names the same three, so the only thing that has to stay in step is this table.
+const KATAGO_RULES = { 0: 'freestyle', 1: 'standard', 2: 'renju' };
+function katagoRuleName(rule) {
+  return KATAGO_RULES[rule] || 'freestyle';
+}
+
+// Request ids only have to be unique enough for a server that correlates them. `Date.now()` alone
+// collides for every request inside the same millisecond, and a server that de-duplicates by id
+// would then answer the second position with the first one's verdict — silently, and about a
+// board that was never analysed.
+let _katagoSeq = 0;
+
+// ---------- the KataGo analysis-JSON wire format (0.5.1 §2.1.3) ----------
+//
+// This is the request the KataGo analysis engine itself parses (`katago analysis`, one JSON
+// object per line on stdin), so an operator can put KataGomo behind any wrapper that forwards
+// the body — including the REST server that already exists for KataGo and passes every analysis
+// option through. Colours are paired with coordinates rather than implied by position: the native
+// format allows `initialStones` and handicaps, and guessing the colour of move i from its index
+// is a rule this codebase already has too many copies of.
+//
+// The response renames nothing that matters: `moveInfos[].move` is the native field and
+// `moveCoord` is what one popular wrapper calls it, so both are accepted. `winrate`/`scoreLead`
+// are from the side to move's perspective in both engines, so neither is flipped.
+function buildKatagoRequest(prefixMoves, opts) {
+  const o = opts || {};
+  const moves = [];
+  for (let i = 0; i < prefixMoves.length; i++) {
+    const c = toGtpCoord(prefixMoves[i]);
+    // Loud on purpose. Dropping a coordinate would silently replay a different game, and every
+    // verdict after it would be about a position that was never played.
+    if (!c) throw new Error(i18nErr('engine.badCoord', { i: i + 1 }));
+    moves.push([i % 2 === 0 ? 'B' : 'W', c]);
+  }
+  const q = {
+    id: 'bs-' + Date.now() + '-' + (++_katagoSeq),
+    moves,
+    rules: katagoRuleName(o.rule),
+    komi: 0,
+    boardXSize: SIZE,
+    boardYSize: SIZE,
+    includePolicy: false,
+    includeOwnership: false,
+  };
+  // A visit count cannot be derived from a millisecond budget without knowing the machine; the
+  // server does know it, and `maxTime` is a field it already honours. The liveness probe asks
+  // for one visit instead, because it is asking "does this answer at all", not "how strong is it".
+  if (o.maxVisits) q.maxVisits = o.maxVisits;
+  else q.maxTime = Math.max(1, Math.min(600, Math.round((o.thinkMs || 2000) / 1000)));
+  return q;
+}
+
+function parseKatagoResponse(text) {
+  let data = text;
+  if (typeof data === 'string') {
+    try { data = JSON.parse(data); } catch (e) { return null; }
+  }
+  if (!data || typeof data !== 'object') return null;
+  const infos = Array.isArray(data.moveInfos) ? data.moveInfos : [];
+  const cands = [];
+  infos.forEach((mi) => {
+    if (!mi) return;
+    const move = fromGtpCoord(mi.moveCoord != null ? mi.moveCoord : mi.move);
+    if (!move) return;
+    const winrate = parseFloat(mi.winrate);
+    const lead = parseFloat(mi.scoreLead);
+    const pv = Array.isArray(mi.pv) ? mi.pv.map(fromGtpCoord).filter(Boolean) : [];
+    cands.push({
+      move,
+      winrate: isFinite(winrate) ? winrate : null,
+      // `eval` keeps the codebase's unit-free string convention (evalNum() parses it). scoreLead
+      // is KataGo's nearest equivalent to Rapfi's EVAL, and falling back to the win rate keeps
+      // the ordering meaningful for a server that reports only win rates.
+      eval: isFinite(lead) ? String(lead) : (isFinite(winrate) ? String(winrate) : '0'),
+      // Rapfi's convention, which the rest of the file relies on: bestline[0] IS this candidate's
+      // own move. A server that omits `pv` still gets a one-move line rather than an empty one,
+      // because `_searchRapfi` filters out candidates whose bestline is empty.
+      bestline: pv.length && eqCoord(pv[0], move) ? pv : [move].concat(pv),
+    });
+  });
+  if (!cands.length) return null;
+  // Same order the Rapfi path produces (scoreStep reads cands[0] as the best candidate), and the
+  // same truncation to at most NBEST_EXTENDED — done here rather than by asking the server,
+  // because a request field the server might not know is a worse bet than discarding work we
+  // already paid for.
+  cands.sort((a, b) => evalNum(b.eval) - evalNum(a.eval));
+  return { best: cands[0].move, candidates: cands.slice(0, NBEST_EXTENDED) };
+}
+
+// ---------- GTP transcript (0.5.1 §2.1.3) ----------
+// Built for a local GTP WASM engine. Nothing registers one today (see engines.js), and the suite
+// drives these two through a stub worker so the transcript and the parser are covered anyway —
+// an untested branch is how a "two spellings" defect survives a release.
+//
+// `info` lines are the LeelaZero/KataGo analysis format. Each analysis group is introduced by the
+// `info` keyword, and one line can carry several: `info move H8 visits 9 … info move J8 visits 4 …`.
+// Splitting on `info` is safe because no GTP coordinate can begin with 'I' — the alphabet skips it
+// — so the token can never be a value we care about. Splitting on the `move` keyword instead is
+// what a first pass did, and it glued the NEXT group's `info` onto this group's `pv`.
+function parseGtpInfoLine(line) {
+  const s = String(line == null ? '' : line).trim();
+  if (!s || !/^info\b/.test(s)) return [];
+  const out = [];
+  s.split(/\binfo\b/).forEach((raw) => {
+    const part = raw.trim().replace(/^move\s+/, '');
+    if (!part) return;
+    const toks = part.split(/\s+/);
+    const rec = { move: toks[0], winrate: null, scoreMean: null, pv: [] };
+    let inPv = false;
+    for (let i = 1; i < toks.length; i++) {
+      const k = toks[i];
+      if (k === 'pv') { inPv = true; continue; }
+      if (inPv) { rec.pv.push(k); continue; }
+      const v = toks[i + 1];
+      if (v === undefined) break;
+      if (k === 'winrate') rec.winrate = parseFloat(v);
+      else if (k === 'scoreMean') rec.scoreMean = parseFloat(v);
+      i++;                       // consumed the value
+    }
+    out.push(rec);
+  });
+  return out;
+}
+
+// A record's optional numeric field, read as a NUMBER or NaN. `isFinite(null)` is TRUE in
+// JavaScript — `Number(null)` is 0 — so the obvious `isFinite(r.scoreMean) ? … : …` took the
+// "present" branch for a field that `parseGtpInfoLine` had left as null, and produced
+// `eval: 'null'`. Every candidate then carried the string 'null' as its evaluation, so the sort
+// had nothing to sort by and the "best" move was whichever one the server happened to list first.
+// (`parseKatagoResponse` is safe by accident, not by design: it feeds `parseFloat` results, which
+// give NaN rather than null. This normalises the two paths onto the same answer.)
+function gtpNum(v) {
+  if (v == null || v === '') return NaN;
+  return parseFloat(v);
+}
+
+function gtpCandidates(recs, board) {
+  const cands = [];
+  recs.forEach((r) => {
+    const move = fromGtpCoord(r.move);
+    if (!move) return;
+    const pv = r.pv.map(fromGtpCoord).filter(Boolean);
+    const wr = gtpNum(r.winrate), sm = gtpNum(r.scoreMean);
+    cands.push({
+      move,
+      winrate: isFinite(wr) ? wr : null,
+      eval: isFinite(sm) ? String(sm) : (isFinite(wr) ? String(wr) : '0'),
+      bestline: pv.length && eqCoord(pv[0], move) ? pv : [move].concat(pv),
+    });
+  });
+  if (!cands.length) return null;
+  cands.sort((a, b) => evalNum(b.eval) - evalNum(a.eval));
+  return { best: cands[0].move, candidates: cands.slice(0, NBEST_EXTENDED) };
+}
 
 // Ceiling for the manual override and for the automatic default (0.3.7 §二.1). The default is
 // half the cores — a 32-core machine gets 16 — because the engine is only one of the things
@@ -181,22 +380,76 @@ const MAX_THREADS = 16;
 // for what happens when it never does.
 const SILENCE_FLOOR = 12000;      // ms of total silence that can never be legitimate
 const HARD_TIMEOUT = 60000;       // absolute cap, unchanged from before
+// 0.5.1 §2.1.4 — how long the HTTP liveness probe may take. Short on purpose: it is the gate the
+// fallback chain has to get through, and a chain that waits a minute per dead candidate is worse
+// than the failure it is covering.
+const HTTP_PROBE_MS = 8000;
 
 class Engine {
-  constructor() {
+  // 0.5.1 §2.1.2 — an engine is now identified, not assumed. `engineId` is resolved against the
+  // registry once, here, so `protocol` is a property of the instance and the dispatch below is a
+  // plain switch rather than a string comparison repeated at every call site.
+  constructor(engineId) {
+    const reg = engineRegistry();
+    this.engineId = engineId || (reg && reg.DEFAULT_ID) || 'rapfi';
+    this.config = (reg && reg.get ? reg.get(this.engineId) : null)
+      || { id: this.engineId, name: this.engineId, kind: 'wasm', protocol: 'yxboard' };
+    this.protocol = this.config.protocol;
+    this.kind = this.config.kind;
     this.worker = null;
     this.ready = false;
     this.threads = false;        // the build that won is a pthread build
-    this.build = null;           // which file won
+    this.build = null;           // which file won, or the server address for an http engine
     this.threadNum = 1;          // the number actually handed to the engine
     this.thinkMs = 2000;         // last TIMEOUT_TURN, used to scale the silence watchdog
     this.noThreads = false;      // the environment refused a shared WebAssembly.Memory
     this.fallbackReason = '';
+    // 0.5.1 §2.2 — for a custom weight package: the blob URL worker.js answers `locateFile`
+    // with. Created in init() (an extension-page job — IndexedDB is not reachable from a content
+    // script) and owned here, because only this object knows when its worker is replaced.
+    this.dataURL = '';
+    // 0.5.1 §2.2.5 — the fallback this instance was created by, if any. It lives ON THE ENGINE
+    // rather than in a module-level variable, which is the 0.4.9 lesson reapplied: a module
+    // variable and the engine it describes have different lifetimes. As a module variable it was
+    // never cleared, so ONE failed custom-model verification (whose chain steps down to Rapfi)
+    // made every later analysis in that session report 「已回退」 even after the operator fixed
+    // the model and a fresh engine loaded cleanly.
+    this.fallback = null;
   }
   onStatus = () => {};
 
   async init() {
-    for (const url of ENGINE_BUILDS) {
+    if (this.kind === 'http') return this._initHttp();
+    return this._initWasm();
+  }
+
+  _revokeData() {
+    if (!this.dataURL) return;
+    if (typeof URL !== 'undefined' && URL.revokeObjectURL) {
+      try { URL.revokeObjectURL(this.dataURL); } catch (e) { /* already gone */ }
+    }
+    this.dataURL = '';
+  }
+
+  async _initWasm() {
+    const builds = (this.config.builds && this.config.builds.length) ? this.config.builds : rapfiBuilds();
+    if (!builds.length) throw new Error(i18nErr('engine.noBuilds'));
+    // A custom engine is a WEIGHT PACKAGE on top of the packaged build: the JS still comes from
+    // the extension, only the `.data` request is answered differently. Resolving the blob here
+    // rather than inside the worker is what keeps the CSP question out of the engine — the worker
+    // never imports anything but `engine/rapfi-….js`, which `'self'` already allows.
+    if (this.config.custom && this.config.dataId && typeof GMCustomEngines !== 'undefined' && GMCustomEngines) {
+      try {
+        this.dataURL = await GMCustomEngines.blobUrl(this.config.dataId);
+      } catch (e) { this.dataURL = ''; }
+      if (!this.dataURL) {
+        const err = new Error(i18nErr('custom.missing'));
+        err.reason = 'custom-missing';
+        this.onStatus('custom weight package unavailable: ' + this.config.dataId);
+        throw err;
+      }
+    }
+    for (const url of builds) {
       // Once the environment has said no to SharedArrayBuffer there is no point burning a
       // 40MB data-package load on the other multi build — go straight to single-threaded.
       if (this.noThreads && /-multi/.test(url)) continue;
@@ -216,7 +469,23 @@ class Engine {
         try { this.worker.terminate(); } catch (e) {}
       }
     }
+    this._revokeData();
     throw new Error('All engine builds failed to load.');
+  }
+
+  // §2.1.4's fallback chain has to be able to tell "unreachable server" from "slow server", and
+  // the only honest probe is the one §2.2.3 uses one level down: ask it for a position. A GET on
+  // a health path would be cheaper, but the operator's wrapper may not have one, and a missing
+  // path would then read as a dead engine.
+  async _initHttp() {
+    if (!this.config.url) throw new Error(i18nErr('engine.noUrl'));
+    const res = await this._searchHttp([], 1, HTTP_PROBE_MS, { maxVisits: 1 });
+    if (!res || !res.candidates || !res.candidates.length) throw new Error(i18nErr('engine.noAnswer'));
+    this.ready = true;
+    this.build = this.config.url;
+    this.threads = false;        // no build, no pthread pool — the panel says so rather than lying
+    this.threadNum = 0;
+    return this.config.url;
   }
 
   _load(url) {
@@ -234,7 +503,10 @@ class Engine {
         } else if (m.type === 'stderr') console.warn('[engine stderr]', m.data);
       };
       w.onerror = (e) => { clearTimeout(timer); reject(new Error(e.message || 'worker error')); };
-      w.postMessage({ type: 'engineScriptURL', data: { engineURL: url } });
+      // `dataURL` is empty for a packaged engine, in which case worker.js answers `locateFile`
+      // with the file the build ships. It is one string either way, so the message shape does
+      // not branch on whether the engine is custom.
+      w.postMessage({ type: 'engineScriptURL', data: { engineURL: url, dataURL: this.dataURL || '' } });
     });
   }
 
@@ -244,7 +516,8 @@ class Engine {
   // build has proved it cannot search here. Kept on the instance so `info()` (and therefore
   // the panel, the report and the archive) tells the truth about what produced the verdicts.
   async downgrade(why) {
-    const singles = ENGINE_BUILDS.filter((u) => !/-multi/.test(u));
+    const singles = rapfiBuilds().filter((u) => !/-multi/.test(u));
+    if (!singles.length) throw new Error(i18nErr('engine.noBuilds'));
     try { if (this.worker) this.worker.terminate(); } catch (e) {}
     this.ready = false;
     this.threads = false;
@@ -274,10 +547,23 @@ class Engine {
   configure(args = {}) {
     const { rule = 0, thinkMs = 2000, threadNum = 0 } = args;
     this._lastArgs = args;           // replayed verbatim if the build is swapped mid-run
+    this.thinkMs = thinkMs;          // the silence watchdog is scaled from this
+    if (this.kind === 'http') {
+      // Nothing to send. The wire format carries the budget on every request (see _searchHttp),
+      // and a thread count would be a claim about somebody else's machine — so the panel is told
+      // 0 and renders no thread line rather than an invented one.
+      this.threadNum = 0;
+      return;
+    }
     // A single-threaded build ignores INFO THREAD_NUM, and reporting a thread count the
     // engine is not using would be a lie in the panel.
     this.threadNum = this.threads ? resolveThreadNum(threadNum) : 1;
-    this.thinkMs = thinkMs;          // the silence watchdog is scaled from this
+    if (this.protocol === 'gtp') { this._configureGTP({ rule }); return; }
+    this._configureRapfi({ rule, thinkMs });
+  }
+
+  _configureRapfi(args) {
+    const { rule = 0, thinkMs = 2000 } = args;
     this.send('START ' + SIZE);
     this.send('INFO RULE ' + rule);
     this.send('INFO THREAD_NUM ' + this.threadNum);
@@ -288,13 +574,39 @@ class Engine {
     this.send('INFO TIME_LEFT 99999999');
   }
 
+  // KataGomo is a KataGo fork, so the command set is KataGo's plus the gomoku extensions —
+  // `kata-set-rule` is the one our own rule setting has to be translated into (0/1/2 →
+  // freestyle / standard / renju). `komi 0` because gomoku is win-or-lose: a komi the other
+  // engine does not use would make the two evaluations incomparable, and this file's flags
+  // compare win rates across engines when the operator switches one mid-archive.
+  _configureGTP(args) {
+    const { rule = 0 } = args;
+    this.send('boardsize ' + SIZE);
+    this.send('kata-set-board-size ' + SIZE);
+    this.send('clear_board');
+    this.send('komi 0');
+    this.send('kata-set-rule ' + katagoRuleName(rule));
+  }
+
   info() {
+    const cfg = this.config || {};
     return {
+      id: this.engineId,
+      name: cfg.name || this.engineId,
+      kind: this.kind,
+      // Which server produced these verdicts. Stored in the archive alongside the build name:
+      // a report analysed against a different model is not comparable with this machine's, and
+      // the operator has no other way to tell the two apart six months later.
+      url: this.kind === 'http' ? (this.build || cfg.url || '') : '',
+      custom: !!cfg.custom,
       build: this.build,
       threads: this.threads,
       threadNum: this.threadNum,
-      degraded: !this.threads,
+      degraded: !this.threads && this.kind !== 'http',
       reason: this.fallbackReason,
+      // Travels with the engine, so "did we have to step down to get here" cannot outlive the
+      // engine it is about (see the constructor).
+      fallback: this.fallback,
     };
   }
 
@@ -306,9 +618,15 @@ class Engine {
   }
 
   // Analyse position after `prefix` moves. Returns {best, candidates:[{move,eval,winrate,bestline}]}
-  async analyzePosition(prefixMoves, nbest = 5, timeoutMs) {
+  //
+  // 0.5.1 §2.1.3 — dispatch by protocol. Only the Rapfi branch has the pthread downgrade: that
+  // recovery exists because a `shared: true` pool can fail to start, which is a property of the
+  // WASM bridge and means nothing to an HTTP server or to a GTP build.
+  async analyzePosition(prefixMoves, nbest = 5, timeoutMs, opts) {
+    if (this.kind === 'http') return this._searchHttp(prefixMoves, nbest, timeoutMs, opts);
+    if (this.protocol === 'gtp') return this._searchGTP(prefixMoves, nbest, timeoutMs);
     try {
-      return await this._search(prefixMoves, nbest, timeoutMs);
+      return await this._searchRapfi(prefixMoves, nbest, timeoutMs);
     } catch (e) {
       // Never seeing the search progress means the pthread pool never started — there is
       // nothing to salvage on this build. Swap in the single-threaded one and redo the same
@@ -316,13 +634,13 @@ class Engine {
       // what the panel's "引擎降级为单线程模式" line exists for.
       if (e && e.noProgress && this.threads) {
         await this.downgrade(e.message);
-        return await this._search(prefixMoves, nbest, timeoutMs);
+        return await this._searchRapfi(prefixMoves, nbest, timeoutMs);
       }
       throw e;
     }
   }
 
-  _search(prefixMoves, nbest, timeoutMs) {
+  _searchRapfi(prefixMoves, nbest, timeoutMs) {
     return new Promise((resolve, reject) => {
       let boardCmd = 'YXBOARD';
       let side = 1;
@@ -412,6 +730,146 @@ class Engine {
       this.send('YXNBEST ' + nbest);
     });
   }
+
+  // GTP over the worker's stdin/stdout. Nothing registers a GTP engine today (see engines.js for
+  // why KataGomo cannot be one), but the transcript is a pure function of the position and the
+  // response format is a documented one, so both halves get covered by the suite against a stub
+  // worker — an untested branch is precisely how a "two spellings of one answer" defect survives
+  // a release, and this file has shipped three of those.
+  //
+  // Replay mirrors `_searchRapfi`'s watchdog: any byte re-arms the silence timer, but only an
+  // analysis or result line counts as progress, because the engine's startup chatter arrives
+  // either way and would otherwise mask a dead process.
+  _searchGTP(prefixMoves, nbest, timeoutMs) {
+    return new Promise((resolve, reject) => {
+      const worker = this.worker;
+      let recs = [];
+      let done = false;
+      let sawProgress = false;
+      let silenceTimer = null;
+
+      const fail = (msg) => {
+        if (done) return;
+        done = true;
+        clearTimeout(hardTimer);
+        clearTimeout(silenceTimer);
+        worker.onmessage = null;
+        reject(new Error(msg));
+      };
+      const armSilence = () => {
+        clearTimeout(silenceTimer);
+        silenceTimer = setTimeout(() => fail(i18nErr('engine.poolDown',
+          { sec: Math.round(this.silenceLimit() / 1000) })), this.silenceLimit());
+      };
+      const finish = (body) => {
+        if (done) return;
+        done = true;
+        clearTimeout(hardTimer);
+        clearTimeout(silenceTimer);
+        worker.onmessage = null;
+        const pm = /^play\s+(\S+)/i.exec(body);
+        const last = fromGtpCoord(pm ? pm[1] : body);
+        const res = gtpCandidates(recs, null);
+        if (res) {
+          if (last) res.best = last;
+          resolve(res);
+          return;
+        }
+        // A server (or build) that answers with the move but prints no `info` lines still told
+        // us something useful. Inventing a candidate list instead would be worse than one entry.
+        if (!last) { reject(new Error(i18nErr('engine.badResponse'))); return; }
+        resolve({ best: last, candidates: [{ move: last, winrate: null, eval: '0', bestline: [last] }] });
+      };
+
+      const hardTimer = setTimeout(() => fail('analysis timeout'), timeoutMs || HARD_TIMEOUT);
+      armSilence();
+
+      worker.onmessage = (e) => {
+        const m = e.data;
+        if (m.type !== 'stdout') return;
+        armSilence();
+        const out = String(m.data == null ? '' : m.data);
+        if (!out) return;
+        // GTP is line- and prefix-oriented: '=' success, '?' failure, and a bare '=' ends a
+        // multi-line response.
+        if (out.charAt(0) === '?') { fail(out.slice(1).trim() || i18nErr('engine.gtpFailed')); return; }
+        if (/^info\b/.test(out)) {
+          sawProgress = true;
+          recs = recs.concat(parseGtpInfoLine(out));
+          return;
+        }
+        const body = (out.charAt(0) === '=' ? out.slice(1) : out).trim();
+        if (!body) { if (/^info\b/.test(out)) sawProgress = true; return; }
+        sawProgress = true;
+        finish(body);
+      };
+
+      for (let i = 0; i < prefixMoves.length; i++) {
+        const c = toGtpCoord(prefixMoves[i]);
+        if (!c) { fail(i18nErr('engine.badCoord', { i: i + 1 })); return; }
+        this.send('play ' + (i % 2 === 0 ? 'B' : 'W') + ' ' + c);
+      }
+      const side = prefixMoves.length % 2 === 0 ? 'B' : 'W';
+      // Interval in centiseconds: the same wall-clock budget the Rapfi path spends, so the two
+      // engines produce comparable verdicts for the same `thinkMs`.
+      const interval = Math.max(1, Math.round((this.thinkMs || 2000) / 10));
+      this.send('kata-genmove_analyze ' + side + ' ' + interval);
+    });
+  }
+
+  // HTTP, forwarded through the service worker (the extension's only network exit — a content
+  // script's `fetch` is bound to the PAGE's origin and would be a cross-origin request the
+  // operator's server answers without CORS headers). The body and the parser are the module-level
+  // pure functions above, so the suite can check the wire format without a network.
+  _searchHttp(prefixMoves, nbest, timeoutMs, opts) {
+    const o = opts || {};
+    if (!this.config.url) return Promise.reject(new Error(i18nErr('engine.noUrl')));
+    let body;
+    try {
+      body = buildKatagoRequest(prefixMoves, {
+        rule: this._lastArgs ? this._lastArgs.rule : 0,
+        thinkMs: this.thinkMs,
+        maxVisits: o.maxVisits,
+      });
+    } catch (e) { return Promise.reject(e); }
+    return sendEngineHttp(this.config.url, body, timeoutMs || HARD_TIMEOUT).then((text) => {
+      const res = parseKatagoResponse(text);
+      if (!res) throw new Error(i18nErr('engine.badResponse'));
+      return res;
+    });
+  }
+}
+
+// The one place this file talks to the network, and it does not do the talking itself: the
+// service worker owns the request implementation (same arrangement as GMLLM.call). A rejection
+// carries the server's own message when there is one, because that is what §2.2.3's "验证失败时
+// 显示明确错误" has to show the operator.
+function sendEngineHttp(url, body, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    if (typeof chrome === 'undefined' || !chrome.runtime || !chrome.runtime.sendMessage) {
+      reject(new Error(i18nErr('engine.noBridge')));
+      return;
+    }
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      reject(new Error(i18nErr('engine.httpTimeout', { sec: Math.round((timeoutMs || 0) / 1000) })));
+    }, (timeoutMs || HARD_TIMEOUT) + 1000);
+    chrome.runtime.sendMessage(
+      { type: 'gm-engine-http', url, body, timeoutMs },
+      (resp) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        const err = chrome.runtime.lastError;
+        if (err) { reject(new Error(err.message || String(err))); return; }
+        if (!resp) { reject(new Error(i18nErr('engine.noAnswer'))); return; }
+        if (!resp.ok) { reject(new Error(resp.error || i18nErr('engine.httpFailed'))); return; }
+        resolve(resp.text);
+      }
+    );
+  });
 }
 
 // ---------- per-step scoring (shared by analyzeGame and analyzeStepwise) ----------
@@ -1261,7 +1719,7 @@ async function analyzeStep(eng, allMoves, playerIdx, actual, opts, budgetMs, rec
 // 逐步分析: one engine call per move, in play order, at the per-step time budget.
 async function analyzeStepwise(record, opts, onProgress, onStep) {
   onProgress && onProgress(0, i18nErr('progress.loading'));
-  const eng = await getEngine();
+  const eng = await getEngine(opts.engineId);
   // 0.3.3 §3.5: same rule as analyzeGame — read learnedParams once per run unless the caller
   // pinned them (opts.learned === null forces defaults).
   const learned = (opts.learned !== undefined) ? opts.learned : await loadLearnedParams();
@@ -1540,13 +1998,75 @@ function pearson(xs, ys) {
 }
 
 // ---------- main analysis ----------
-// Persistent engine singleton (shared between analyzeGame and on-demand AI think overlay).
+// Persistent engine singleton (shared between analyzeGame, the per-step path and the viewer's
+// AI-think button).
+//
+// 0.5.1 §2.1.4 — the engine is now chosen, so the singleton remembers WHICH one it holds. Asking
+// for a different model rebuilds the engine, because a verdict produced by a model other than the
+// one on the label is the exact class of silent substitution this project keeps finding. The old
+// instance is disposed rather than dropped: a Rapfi build is a 40MB data package and a pthread
+// pool, and leaving one running behind every model switch would cost real memory on a real game.
 let _sharedEng = null;
-async function getEngine() {
-  if (_sharedEng && _sharedEng.ready) return _sharedEng;
-  _sharedEng = new Engine();
-  await _sharedEng.init();
-  return _sharedEng;
+// The last recovery the chain had to make lives on the ENGINE instance (see its constructor), so
+// that it cannot outlive the engine it describes. Every surface reads it through `engineInfo()`.
+function disposeEngine(eng) {
+  if (!eng) return;
+  try { if (eng.worker) eng.worker.terminate(); } catch (e) { /* already gone */ }
+  if (typeof eng._revokeData === 'function') eng._revokeData();
+}
+
+// Deduplicated, and pruned of candidates that cannot answer at all — an http engine with no
+// address, a custom model whose package was deleted — so the operator is told the real failure
+// rather than a made-up one. The preferred id is always kept: if the operator picked something
+// broken, they should get that error, not a silent substitution.
+//
+// 0.5.1 — ONE DELIBERATE DEVIATION from the 定稿's `[id, 'katagomo', 'rapfi']`. Rapfi is added as
+// the floor, but katagomo is NOT appended to a chain the operator did not ask for it in. Falling
+// back from a local engine to a remote one is not a downgrade: it ships the operator's game to a
+// server they did not select, over a network, possibly in another country. A recovery may cost
+// more time (a weaker build, a shorter search); it may not cost more of the operator's data. So an
+// http engine is only ever used when it is the chosen one — and if it fails, Rapfi answers.
+function engineFallbackChain(preferredId) {
+  const reg = engineRegistry();
+  const want = preferredId || (reg && reg.DEFAULT_ID) || 'rapfi';
+  const order = [want, 'rapfi'].filter((id, i, a) => id && a.indexOf(id) === i);
+  const ok = order.filter((id) => !reg || !reg.usable || reg.usable(id));
+  return ok.length ? ok : [want];
+}
+
+async function getEngine(preferredId) {
+  // The early return is why the fallback record had to move onto the instance: this path hands
+  // back an engine that was created by an earlier call, and whatever fallback occurred then is
+  // still the truth about it. A module-level record would have been stale here (and wrong).
+  if (_sharedEng && _sharedEng.ready && (!preferredId || _sharedEng.engineId === preferredId)) {
+    return _sharedEng;
+  }
+  const chain = engineFallbackChain(preferredId);
+  const wanted = chain[0];
+  let lastErr = null;
+  for (const id of chain) {
+    try {
+      const eng = new Engine(id);
+      await eng.init();
+      if (id !== wanted) {
+        eng.fallback = {
+          from: wanted,
+          to: id,
+          name: eng.config ? eng.config.name : id,
+          error: lastErr ? String(lastErr.message || lastErr) : '',
+        };
+      }
+      if (_sharedEng && _sharedEng !== eng) disposeEngine(_sharedEng);
+      _sharedEng = eng;
+      return eng;
+    } catch (e) {
+      lastErr = e;
+      console.warn('[engine] ' + id + ' 加载失败：', e);
+    }
+  }
+  const err = new Error(i18nErr('engine.allFailed'));
+  err.lastError = lastErr;
+  throw err;
 }
 
 // Same resolution the old script had, kept as the meaning of threadNum === 0 ("自动"):
@@ -1568,25 +2088,33 @@ function resolveThreadNum(setting) {
   return clamp(n, 1, MAX_THREADS);
 }
 
-// Engine status for the panel: which build loaded and whether multi-threading is live.
+// Engine status for the panel: which engine and build loaded, whether multi-threading is live,
+// and — 0.5.1 §2.1.4/§2.2.5 — whether the fallback chain had to step down to get here.
+//
+// It carries the report's engine id as well as the build file, because §2.1.5 #4 asks the report
+// to record which model produced the verdicts and the archive keeps this object verbatim.
 function engineInfo() {
   if (!_sharedEng || !_sharedEng.ready) {
-    return { build: null, threads: false, threadNum: 0, degraded: false, reason: '', loaded: false };
+    return {
+      id: null, name: null, kind: null, url: '', custom: false, build: null,
+      threads: false, threadNum: 0, degraded: false, reason: '', loaded: false,
+      fallback: null,
+    };
   }
   const info = _sharedEng.info();
   info.loaded = true;
   return info;
 }
 
-async function warmEngine() {
-  const eng = await getEngine();
+async function warmEngine(preferredId) {
+  const eng = await getEngine(preferredId);
   return eng.info();
 }
 
 async function analyzeGame(record, opts, onProgress) {
   const suspect = opts.suspect || 'both'; // 'both' | 'B' | 'W'
   onProgress && onProgress(0, i18nErr('progress.loading'));
-  const eng = await getEngine();
+  const eng = await getEngine(opts.engineId);
   eng.configure({
     rule: opts.rule,
     thinkMs: opts.thinkMs,
@@ -2152,7 +2680,16 @@ function buildReport(steps, record, opts) {
   return {
     createdAt: new Date().toISOString(),
     opts, hasTime, suspect,
-    engine: { build: eng.build, threads: eng.threads, threadNum: eng.threadNum, degraded: eng.degraded },
+    engine: {
+      // 0.5.1 §2.1.5 #4 — which model produced these verdicts, not just which build file. The
+      // numeric flags below are engine-dependent (a Top-5 hit rate from Rapfi and one from
+      // KataGomo are two different measurements), so the archive has to say which is which.
+      id: eng.id, name: eng.name, kind: eng.kind, url: eng.url, custom: eng.custom,
+      build: eng.build, threads: eng.threads, threadNum: eng.threadNum, degraded: eng.degraded,
+      // The recovery, when there was one — stored so a report analysed on a fallback engine is
+      // still identifiable as such after the session is gone.
+      fallback: eng.fallback || null,
+    },
     // totalMoves is the real move count, including the pre-join stones: the board is
     // complete. scoredCount is how many of them actually carry a verdict. When detection
     // stopped on a live four, totalMoves is only the hands we actually scored — the board
@@ -2229,6 +2766,16 @@ if (typeof module !== 'undefined' && module.exports) {
     // 0.3.3 risk-model plumbing, exported so the learner and the tests can reason about the
     // exact numbers the detector uses.
     riskParams, rampUp, rampDown, loadLearnedParams, BASE_WEIGHTS, BASE_THRESHOLDS,
-    ENGINE_BUILDS, MAX_THREADS,
+    MAX_THREADS,
+    // 0.5.1 §2.1.2/§2.1.3/§2.2 — the engine layer. `Engine`, the fallback chain, the two
+    // coordinate alphabets and the wire-format functions are all exported so the suite can drive
+    // them directly: a test that re-implemented the request body or the GTP transcript in order
+    // to check it would be testing its own copy, which is how this project has gone wrong three
+    // times. `ENGINE_BUILDS` stays as the registry's list for anything that still reads it.
+    Engine, getEngine, engineFallbackChain, engineInfo, warmEngine,
+    rapfiBuilds, engineRegistry,
+    buildKatagoRequest, parseKatagoResponse, parseGtpInfoLine, gtpCandidates, gtpNum,
+    toGtpCoord, fromGtpCoord, GTP_COL, KATAGO_RULES, katagoRuleName,
+    HTTP_PROBE_MS, ENGINE_BUILDS: rapfiBuilds(),
   };
 }

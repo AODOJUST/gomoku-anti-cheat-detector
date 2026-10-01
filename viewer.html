@@ -434,6 +434,19 @@
   .stat-card .big{font-size:22px;font-weight:600;color:var(--txt);font-variant-numeric:tabular-nums}
   .stat-card .big.sm{font-size:var(--ui-detail-font);font-weight:500;font-variant-numeric:normal}
   .stat-card .k{font-size:var(--ui-detail-small);color:var(--mut);margin-top:3px}
+  /* ---- 0.5.1 §2.2 — the 自定义检测模型 list ----
+     A row rather than a card: each entry carries up to three actions, and a centred 160px box
+     would wrap the buttons under the name at every window size. Colours are theme tokens, not
+     literals — the 0.4.8 lesson (「改成变量」必须一次改到底) applies to any new surface. */
+  .cst-list{display:flex;flex-direction:column;gap:8px}
+  .cst-card{display:flex;align-items:center;gap:12px;flex-wrap:wrap;
+            background:var(--inset);border:1px solid var(--line);
+            border-radius:var(--ui-detail-radius);padding:10px 12px}
+  .cst-main{flex:1 1 220px;min-width:0}
+  .cst-name{color:var(--txt);font-weight:600;overflow-wrap:anywhere}
+  .cst-tag{display:inline-block;margin-inline-start:6px;padding:1px 6px;border-radius:6px;
+           background:var(--info-bg);color:var(--info-fg);font-size:var(--ui-detail-small);font-weight:500}
+  .cst-acts{display:flex;gap:8px;flex-wrap:wrap}
   /* ---- 0.4.0 §一.4: the viewer's update banner ----
      §一.4 puts it「导航栏下方、.wrap 之上」and requires a FLOW layout — it pushes the page
      down instead of covering it, so nothing underneath becomes unclickable. */
@@ -776,6 +789,12 @@
               </select></label>
               <label>检测思考ms<input type="number" id="thinkMs" value="2000" style="width:70px"></label>
               <label>开局排除<input type="number" id="openCut" value="8" style="width:50px"></label>
+              <!-- 0.5.1 §2.1.4 — the same setting as the settings page's field; three entry
+                   points, one key, so a change here is visible there on the next repaint.
+                   The text lives in its own <span>: the label is filled from JS and the select
+                   is its sibling, not its child — `setTxt` writes `textContent`, which would
+                   have deleted the dropdown along with the dash. -->
+              <label><span id="engineSelLabel">检测模型</span><select id="engineSel"></select></label>
               <button class="sec" id="applySettings">用当前设置</button>
             </div>
             <div class="btn-row" style="margin-top:8px">
@@ -980,6 +999,7 @@
       <div class="panel">
         <div class="btn-row" style="margin-bottom:10px">
           <button class="sec" id="backToList">◀ 返回列表</button>
+          <label style="margin-left:10px"><span id="engineSelDLabel">检测模型</span><select id="engineSelD"></select></label>
           <span class="sp" style="flex:1"></span>
           <button class="sec" id="dExpJson">导出JSON</button>
           <button class="sec" id="dExpCsv">导出CSV</button>
@@ -1474,6 +1494,29 @@
           <label>引擎线程数（自动 = 半核且不超过 16；多线程构建不可用时固定为 1）</label>
           <div class="fx"><select id="setThread"></select></div>
         </div>
+        <!-- 0.5.1 §2.1.4/§2.1.1. Labels carry ids and are filled from JS rather than written
+             here: a static text node becomes an `html|…` dictionary key that then needs twelve
+             translations, so the strings live in one place (viewer.js) instead of two. -->
+        <div class="set-item">
+          <label id="setEngineLabel">—</label>
+          <div class="fx">
+            <select id="setEngine"></select>
+            <span class="hint" id="setEngineHint">—</span>
+          </div>
+        </div>
+        <div class="set-item" id="setEngineUrlItem">
+          <label id="setEngineUrlLabel">—</label>
+          <div class="fx">
+            <input type="text" id="setEngineUrl" spellcheck="false" autocomplete="off"
+                   placeholder="http://127.0.0.1:2718">
+            <button class="sec" id="setEnginePerm">…</button>
+            <span class="hint" id="setEngineUrlHint">—</span>
+          </div>
+        </div>
+        <div class="set-item">
+          <label id="setEngineStatusLabel">—</label>
+          <div class="fx"><span class="hint" id="setEngineStatus">—</span></div>
+        </div>
         <div class="set-item">
           <label>最小存档手数（5–30）</label>
           <div class="fx">
@@ -1537,6 +1580,31 @@
       <div class="btn-row" style="margin-top:10px">
         <span class="hint">也可以在浏览器工具栏图标上点右键，从「语言」菜单里切换 —— 两条入口写的是同一份设置，改一处两处都会跟着变。</span>
       </div>
+    </div>
+
+    <!-- 0.5.1 §2.2 — 自定义检测模型. Deliberately ABOVE the LLM API panel, which is where §2.2.2
+         puts it: both are "point the tool at something of your own", and the model is the one
+         that changes every number on every other page. -->
+    <div class="panel set-panel">
+      <h2 id="cstTitle">—</h2>
+      <div class="set-grid">
+        <div class="set-item">
+          <label id="cstPickLabel">—</label>
+          <div class="fx">
+            <input type="file" id="cstFile">
+            <span class="hint" id="cstHint">—</span>
+          </div>
+        </div>
+        <div class="set-item">
+          <label id="cstLimitLabel">—</label>
+          <div class="fx"><span class="hint" id="cstLimit">—</span></div>
+        </div>
+      </div>
+      <div class="btn-row" style="margin-top:10px">
+        <button class="sec p" id="cstAdd">…</button>
+        <span class="hint" id="cstStatus">—</span>
+      </div>
+      <div id="cstList" class="cst-list" style="margin-top:10px"></div>
     </div>
 
     <!-- 0.4.4 §十六 — LLM API. The defaults are NOT written into the inputs here: they come from
@@ -1666,6 +1734,12 @@
 <script src="openings.js"></script>
 <script src="questions.js"></script>
 <script src="chat.js"></script>
+<!-- 0.5.1 §2.1.2/§2.2 — registry before app.js; custom-engine.js for the settings panel's
+     upload / verify / naming flow. The viewer runs no engine of its own (0.4.11 §一.2), so the
+     blob URL a custom weight package needs is created in the offscreen document, by the context
+     that will actually hand it to worker.js. The two contexts share one IndexedDB. -->
+<script src="engines.js"></script>
+<script src="custom-engine.js"></script>
 <script src="app.js"></script>
 <script src="learn.js"></script>
 <script src="viewer.js"></script>

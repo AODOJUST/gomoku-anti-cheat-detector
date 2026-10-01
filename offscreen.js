@@ -19,6 +19,13 @@
 //   gm-resume           -> resume it; calls the pauseCtrl's `_resume` for us
 // Broadcasts gm-progress { jobId, p, msg } while working.
 //
+// 0.5.1 §2.1.4 — every gm-* job now carries the operator's engine choice: `msg.opts.engineId`
+// for the two analysis jobs, `msg.engineId` for gm-warmup and gm-ai-think. It travels as an
+// ordinary option rather than through a side channel because `getEngine` has to be handed the
+// same id on EVERY call — the per-step path calls it once per move, and a step that silently
+// used a different model than the previous one would produce a report whose flags are half one
+// engine and half another.
+//
 // 0.4.11 §一.2 — THE VIEWER RUNS NO ENGINE OF ITS OWN.
 // Before this, viewer.html loaded app.js and viewer.js called its `getEngine()`, so the
 // extension page built a SECOND Rapfi: a second worker, a second 40MB data package, a second
@@ -81,13 +88,43 @@
     if (typeof GMI18n === 'undefined' || !GMI18n) return;
     GMI18n.setLocale(GMI18n.resolveLang(setting));
   }
+
+  // 0.5.1 §2.1.1/§2.2 — the registry `getEngine` reads has to be kept current, because the
+  // operator can move their server or delete a model while a game is in progress. An Engine
+  // object that had captured the old address would keep talking to a server they just left.
+  function applyEngineSettings(s) {
+    if (typeof GMEngines !== 'undefined' && GMEngines) GMEngines.setHttpBase(s && s.engineUrl);
+  }
+  function syncCustomEngines() {
+    if (typeof GMCustomEngines === 'undefined' || !GMCustomEngines || !GMCustomEngines.available()) {
+      return Promise.resolve();
+    }
+    return GMCustomEngines.list().then(function (rows) {
+      if (typeof GMEngines === 'undefined' || !GMEngines) return;
+      GMEngines.sync(rows.map(function (r) {
+        return { id: r.id, name: r.name, dataId: r.id, fileName: r.fileName, size: r.size, addedAt: r.addedAt };
+      }));
+    }, function () { /* no list is the same as no custom models */ });
+  }
+
+  function applySettings(s) {
+    applyLang(s && s.lang);
+    applyEngineSettings(s);
+  }
+
   try {
-    GMStorage.loadSettings().then(function (s) { applyLang(s && s.lang); }, function () {});
-  } catch (e) { /* storage unavailable — the zh-CN default stands */ }
+    GMStorage.loadSettings().then(function (s) { applySettings(s); }, function () {});
+    syncCustomEngines();
+  } catch (e) { /* storage unavailable — the zh-CN default and the packaged engine stand */ }
   try {
     chrome.storage.onChanged.addListener(function (changes, area) {
       if (area !== 'local' || !changes || !changes.settings) return;
-      applyLang(changes.settings.newValue && changes.settings.newValue.lang);
+      var next = changes.settings.newValue || {};
+      applySettings(next);
+      // Cheap and idempotent: the list is at most five rows, and re-syncing after any settings
+      // write is how a model uploaded in the viewer becomes selectable in the panel without a
+      // reload.
+      syncCustomEngines();
     });
   } catch (e) { /* no storage API in this context — nothing to track */ }
 
@@ -185,8 +222,8 @@
     return rep;
   }
 
-  async function handleWarmup() {
-    await getEngine();
+  async function handleWarmup(msg) {
+    await getEngine(msg && msg.engineId);
     return { ok: true, engine: 'ready', info: engineSnapshot() };
   }
 
@@ -218,7 +255,7 @@
   // cannot interleave with a running analysis: analyzePosition swaps `worker.onmessage`, and two
   // overlapping calls would hand each other's output to the wrong resolver.
   async function handleAiThink(msg) {
-    var eng = await getEngine();
+    var eng = await getEngine(msg.engineId);
     eng.configure({ rule: msg.rule, thinkMs: msg.thinkMs, threadNum: msg.threadNum });
     var res = await eng.analyzePosition(msg.prefix, msg.nbest);
     return { ok: true, best: res.best, candidates: res.candidates, info: engineSnapshot() };
@@ -248,7 +285,7 @@
                summary: withPrejoin(summarizeSteps(live.steps, live.times, live.opts), live.prejoinCount) };
     }
 
-    var eng = await getEngine();
+    var eng = await getEngine(msg.opts && msg.opts.engineId);
     var allMoves = msg.prefix.concat([msg.actual]);
     var budget = stepBudget(msg.recorded, msg.opts).budget;
     // 0.3.4: the live-four test needs the real colours of the board, which index parity
@@ -322,7 +359,7 @@
 
     var work;
     switch (msg.type) {
-      case 'gm-warmup': work = handleWarmup(); break;
+      case 'gm-warmup': work = handleWarmup(msg); break;
       case 'gm-engine-info': work = Promise.resolve(handleEngineInfo()); break;
       case 'gm-analyze':
         pauseCtrlFor(msg.jobId);   // registered before the queue is reached, so gm-pause works queued

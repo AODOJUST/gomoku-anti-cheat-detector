@@ -81,6 +81,17 @@
     // played there could never be analysed under 禁手.
     rule: null,
     threadNum: 0,           // 引擎线程数；0 = 自动（clamp(floor(hardwareConcurrency/2), 1, 16)）
+    // 0.5.1 §2.1.4 — which detection engine to use. 'rapfi' is the shipped WASM build;
+    // 'katagomo' is an http server the operator runs (its address is `engineUrl` below);
+    // 'custom-N' is a weight package uploaded through the settings page. Both directions are
+    // validated against the registry, so a model deleted from IndexedDB falls back to Rapfi
+    // instead of to an id nothing answers to.
+    engineId: 'rapfi',
+    // 0.5.1 §2.1.1 — the base address of the operator's KataGomo server. Empty means "not
+    // configured", which is what greys KataGomo out in both pickers rather than letting the
+    // operator select something that cannot possibly answer. A bare host gets the analysis path
+    // appended; anything with a path is used verbatim (GMEngines.analysisEndpoint).
+    engineUrl: '',
     autoAnalyze: true,      // 对局结束自动分析
     minArchiveMoves: 14,    // 少于这么多手不写存档（5–30）
     // 0.3.6 §1.3 — 'auto' means "follow the browser UI language". It is a setting value, not
@@ -143,6 +154,34 @@
     var n = parseInt(v, 10);
     if (!isFinite(n) || n <= 0) return 0;
     return n > THREADS_HI ? THREADS_HI : n;
+  }
+
+  // 0.5.1 §2.1.4. The validation is against the REGISTRY, not a literal list, because the
+  // interesting case is a custom model: the operator picks 「自定义模型 2」, then deletes it. The
+  // stored id still looks well-formed and the settings page would happily keep showing it,
+  // while the offscreen document has nothing to load. A bare unit test has no registry, and is
+  // handed the value unchanged — "unknown" and "not checked" are different answers, and only the
+  // registry can tell them apart.
+  function clampEngineId(v) {
+    var id = String(v == null ? '' : v).trim();
+    if (!id) return DEFAULTS.engineId;
+    var reg = g.GMEngines;
+    if (!reg || !reg.get) return id;
+    // A custom slot may not be registered yet in THIS context (storage.js is loaded before the
+    // list is read from IndexedDB), so its shape is all that can be checked here. `getEngine`
+    // still degrades to Rapfi at load time if the record is gone.
+    if (/^custom-\d+$/.test(id)) return id;
+    return reg.get(id) ? id : DEFAULTS.engineId;
+  }
+
+  // An address that is not http(s) is not a server we can reach, and keeping it would make the
+  // picker offer KataGomo as available and then fail on the first search. The length cap is a
+  // guard against a paste accident, not a legal limit.
+  function clampEngineUrl(v) {
+    var s = String(v == null ? '' : v).trim();
+    if (!s) return '';
+    if (!/^https?:\/\//i.test(s)) return '';
+    return s.slice(0, 300);
   }
 
   // Out-of-range input (typing, an old stored value) is pulled back to a usable number
@@ -226,6 +265,8 @@
     for (var k in DEFAULTS) out[k] = (k in raw) ? raw[k] : DEFAULTS[k];
     out.minArchiveMoves = clampMinMoves(out.minArchiveMoves);
     out.threadNum = clampThreadNum(out.threadNum);
+    out.engineId = clampEngineId(out.engineId);
+    out.engineUrl = clampEngineUrl(out.engineUrl);
     // 0.4.7 §三. Both new settings are clamped on the way IN as well as on the way out: a
     // hand-edited profile is the one input the UI never validates, and `theme` reaching the
     // DOM as an arbitrary string would match no `[data-theme=…]` rule — i.e. the page would
@@ -242,6 +283,8 @@
       if (patch) for (var k in patch) if (k in DEFAULTS) s[k] = patch[k];
       s.minArchiveMoves = clampMinMoves(s.minArchiveMoves);
       s.threadNum = clampThreadNum(s.threadNum);
+      s.engineId = clampEngineId(s.engineId);
+      s.engineUrl = clampEngineUrl(s.engineUrl);
       s.theme = clampTheme(s.theme);
       s.opacity = normalizeOpacity(s.opacity);
       var put = {}; put[SETTINGS_KEY] = s;
@@ -2149,6 +2192,10 @@
     // "which strings are allowed".
     THEMES: THEMES,
     clampTheme: clampTheme,
+    // 0.5.1 §2.1.4 — exported so the suite drives the real clamp rather than describing it, the
+    // same reason every other clamp above is on this list.
+    clampEngineId: clampEngineId,
+    clampEngineUrl: clampEngineUrl,
     normalizeOpacity: normalizeOpacity,
     DEFAULT_OVERLAY: DEFAULT_OVERLAY,
     loadOverlay: loadOverlay,

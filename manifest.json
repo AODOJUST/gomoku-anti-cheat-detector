@@ -1,9 +1,9 @@
 {
   "manifest_version": 3,
   "name": "白身 (Baishen)",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "minimum_chrome_version": "109",
-  "description": "白身 (Baishen): records and archives gomoku.com / papergames.io games, detects AI-assisted play with Rapfi, 13 languages.",
+  "description": "白身 (Baishen): archives gomoku.com / papergames.io games, detects AI play with Rapfi, KataGomo or your own weights, 13 languages.",
   "permissions": [
     "storage",
     "offscreen",
@@ -17,7 +17,8 @@
     "https://raw.githubusercontent.com/*"
   ],
   "optional_host_permissions": [
-    "https://*/*"
+    "https://*/*",
+    "http://*/*"
   ],
   "content_security_policy": {
     "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'"
@@ -71,6 +72,7 @@
         "openings.js",
         "questions.js",
         "chat.js",
+        "engines.js",
         "content.js"
       ],
       "run_at": "document_idle"

@@ -106,6 +106,23 @@ GMI18n.register('zh-CN', {
   'sendWhy.noInput': '找不到聊天输入框', 'sendWhy.stuck': '聊天输入框未被清空',
   'sendWhy.throw': '发送脚本报错',
 
+  // ---- 0.5.1 §2.1/§2.2: the engine and the custom weight-package store (see i18n-extra.js —
+  // the same codes have to live in both places, or zh-CN resolves them and nothing else does).
+  'engine.badCoord': '坐标无法转换（第 {i} 手）',
+  'engine.noBuilds': '没有可用的引擎构建',
+  'engine.noUrl': '未配置服务地址',
+  'engine.noAnswer': '引擎没有给出任何着法',
+  'engine.badResponse': '引擎返回了无法解析的应答',
+  'engine.gtpFailed': 'GTP 引擎拒绝了该指令',
+  'engine.httpTimeout': 'HTTP 引擎请求超时（{sec} 秒）',
+  'engine.httpFailed': 'HTTP 引擎返回错误',
+  'engine.noBridge': '无法与后台引擎通信',
+  'engine.allFailed': '所有候选引擎均加载失败',
+  'custom.missing': '自定义模型的权重包不存在',
+  'custom.noFile': '未选择任何文件',
+  'custom.tooBig': '单个权重包不能超过 {mb} MB',
+  'custom.tooMany': '最多只能保存 {max} 个自定义模型',
+
   // ---- 开局筛选树。大类（直止 / 斜止）不翻译，见 §1.9 验收 4。
   'open.allDirect': '全部直止',
   'open.allIndirect': '全部斜止',

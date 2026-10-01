@@ -477,7 +477,7 @@
   // =====================================================================
   // nav
   // =====================================================================
-  function showView(name) {
+  function showView(name, opts) {
     var btns = document.querySelectorAll('.navbtn');
     for (var i = 0; i < btns.length; i++) btns[i].classList.toggle('active', btns[i].dataset.view === name);
     document.querySelectorAll('.view').forEach(function (v) { v.classList.remove('active'); });
@@ -492,7 +492,12 @@
     // panel's 🚫 button can have added a player since this page was opened, and a stale list
     // here would show 「不在黑名单」 for someone the operator just blocked.
     if (name === 'blacklist') refreshBlacklist();
-    if (name === 'settings') renderSettings();
+    // 0.5.1 — `opts.repaint` is the language switch re-entering this function with the view it is
+    // already on. The three readers above are pure reads and should re-run; the settings pane's
+    // engine-status query is NOT, because `askOffscreen()` calls `ensureOffscreen()` first, which
+    // CREATES the offscreen document and loads a 40 MB engine. A repaint re-paints from the answer
+    // already in hand instead of asking again.
+    if (name === 'settings') renderSettings(opts && opts.repaint);
   }
   document.querySelectorAll('.navbtn').forEach(function (b) {
     b.onclick = function () { showView(b.dataset.view); };
@@ -533,7 +538,10 @@
     // not cost the operator the analysis they were reading.
     if (report) renderReport(); else resetReport();
     var active = document.querySelector('.navbtn.active');
-    showView(active ? active.dataset.view : 'detect');
+    // `{ repaint: true }` — the settings pane must re-paint its engine status from the answer it
+    // already has, not ask the offscreen document again (§2.1.4: a language switch must not be
+    // what loads a 40 MB engine).
+    showView(active ? active.dataset.view : 'detect', { repaint: true });
     // 0.4.2 §2.5: the two detail panes are built entirely in JS — 指标汇总's rows, the step
     // table's <tbody>, the contribution list — so `apply(document)` above cannot reach them,
     // and `showView` only refreshes the LIST (`refreshArchives()`). The result was a
@@ -592,6 +600,11 @@
     $('setAutoAnnounce').checked = !!S.autoSendAnnouncement;
     fillOpacityForm();
     fillLlmForm();
+    // 0.5.1 §2.1.4/§2.2 — labels, dropdown contents, the address field and the status line. The
+    // custom-model LIST is filled from whatever the registry holds right now; boot() and every
+    // entry point refresh that registry from IndexedDB and repaint (see afterEngineChange).
+    fillEngineForm();
+    fillCustomPanel();
   }
 
   // ---- 0.4.7 §三.1: the theme dropdown ----
@@ -911,6 +924,377 @@
     sel.innerHTML = html;
   }
 
+  // =====================================================================
+  // 0.5.1 §2.1.4 / §2.2 — 检测模型 pickers and the 自定义检测模型 panel
+  // =====================================================================
+  //
+  // Three dropdowns (设置 / 检测 / 回放详情) plus the panel in the page all read and write the
+  // SAME `settings.engineId`, and the option set has to equal what app.js resolves an id
+  // against. One list builder serves them all: a second copy of "which engines exist" is the
+  // failure this project has already paid for four times.
+  var engineReg = function () { return (typeof GMEngines !== 'undefined') ? GMEngines : null; };
+
+  // The registry is an in-memory map, so every context that wants to NAME a custom model has to
+  // fill it. An extension page can read IndexedDB directly — this page loads custom-engine.js for
+  // exactly that reason. (A content script cannot: its `indexedDB` is the HOST PAGE's, which is
+  // why content.js learns the list over a message instead.)
+  function refreshCustomRegistry() {
+    var reg = engineReg();
+    var C = (typeof GMCustomEngines !== 'undefined') ? GMCustomEngines : null;
+    if (!reg || !C || !C.available || !C.available()) return Promise.resolve([]);
+    return C.list().then(function (rows) {
+      reg.sync(rows.map(function (r) {
+        return { id: r.id, name: r.name, dataId: r.id, fileName: r.fileName, size: r.size, addedAt: r.addedAt };
+      }));
+      return rows;
+    }, function () { return []; });
+  }
+
+  function currentEngineId() {
+    var reg = engineReg();
+    return S.engineId || (reg ? reg.DEFAULT_ID : 'rapfi');
+  }
+
+  // A disabled option is the same structural device the panel's engine menu uses (the greyed row
+  // carries no `data-v`): an http engine with no address cannot answer, and offering it would
+  // produce a failure the operator has no way to explain.
+  function engineOptionsHtml() {
+    var reg = engineReg();
+    var cur = currentEngineId();
+    if (!reg) return '<option value="' + esc(cur) + '">' + esc(cur) + '</option>';
+    return reg.list().map(function (e) {
+      if (!e.id) return '';
+      var ok = reg.usable(e.id);
+      // The suffix is appended only when it says something the name does not: an http engine with
+      // no address cannot answer, and a custom model is not from the package. One dictionary text
+      // each, shared with the settings list below, so the picker and the list agree on the words.
+      var label = e.name || e.id;
+      if (!ok) label += ' · ' + T('viewer|未配置服务地址');
+      else if (e.custom) label += ' · ' + T('viewer|自定义');
+      return '<option value="' + esc(e.id) + '"' + (e.id === cur ? ' selected' : '') +
+        (ok ? '' : ' disabled') + '>' + esc(label) + '</option>';
+    }).join('');
+  }
+
+  // Rebuilding a <select>'s innerHTML DROPS its selection, so every rebuild puts the stored id
+  // back before returning. Without that line, switching the UI language silently moved the
+  // operator's engine back to Rapfi while `settings.engineId` still said otherwise — the same
+  // defect 0.4.11 §一.3 found in the 主题 dropdown.
+  function fillEngineSelects() {
+    var cur = currentEngineId();
+    ['setEngine', 'engineSel', 'engineSelD'].forEach(function (id) {
+      var sel = $(id);
+      if (!sel) return;
+      sel.innerHTML = engineOptionsHtml();
+      if (sel.value !== cur) sel.value = cur;
+    });
+    setTxt('engineSelLabel', T('viewer|检测模型'));
+    setTxt('engineSelDLabel', T('viewer|检测模型'));
+  }
+
+  // The status line, kept as the last ANSWER rather than as rendered text: a language switch has
+  // to repaint it, and re-asking the offscreen document on every repaint would spawn it (and its
+  // 40 MB engine) just because the operator changed the UI language.
+  var lastEngineInfo;              // undefined = never asked; null = asked, nothing loaded
+
+  // The one place that turns an engine record into a sentence. Both the settings status line and
+  // the report's 分析引擎 row read it, so a KataGomo run cannot be described as 「多线程 16 线程」
+  // on one page and 「服务端 · http://…」 on the other.
+  //
+  // It also has to survive a 0.5.0 archive, whose `engine` object has no `id` / `name` / `kind`:
+  // the name is simply omitted rather than leaving a dangling separator.
+  function engineSummary(info) {
+    if (!info) return '';
+    var name = info.name || info.id || '';
+    if (info.custom && name) name += ' · ' + T('viewer|自定义');
+    // A recovery outranks everything else here: if a different engine answered, every number the
+    // operator is about to read belongs to a program they did not pick. Stored in the report too,
+    // because the archive is where that claim has to survive.
+    if (info.fallback && info.fallback.to && info.fallback.from !== info.fallback.to) {
+      return T('viewer|{from} 不可用，已回退到 {to}',
+        { from: info.fallback.from, to: info.fallback.name || info.fallback.to });
+    }
+    var parts = [];
+    if (name) parts.push(name);
+    // An http engine has no build file and no thread count OF OURS to report — the threads belong
+    // to somebody else's machine, so naming the server is the honest substitute (and the only way
+    // to notice a game was analysed by the wrong server).
+    if (info.kind === 'http') parts.push(info.url || T('viewer|未配置服务地址'));
+    else if (info.degraded) {
+      parts.push(T('viewer|单线程（降级：{reason}）',
+        { reason: TE(info.reason) || T('viewer|环境不支持多线程') }));
+    } else parts.push(T('viewer|多线程 {n} 线程', { n: info.threadNum || 1 }));
+    return parts.join(' · ');
+  }
+
+  function engineStatusText(info) {
+    if (!info) return T('viewer|未记录');
+    // `=== false` rather than falsy: a stored report's engine object carries no `loaded` field at
+    // all, and treating that as "not loaded" would label every archive 「引擎尚未加载」.
+    if (info.loaded === false) return T('viewer|引擎尚未加载（首次分析或切换模型后生效）');
+    return engineSummary(info);
+  }
+
+  function paintEngineStatus() {
+    var el = $('setEngineStatus');
+    if (!el) return;
+    el.textContent = (lastEngineInfo === undefined) ? '—' : engineStatusText(lastEngineInfo);
+  }
+
+  // Asked of the OFFSCREEN document, never of app.js in this page: the viewer holds no engine
+  // (0.4.11 §一.2), so the only true answer is the one from the context that does.
+  function refreshEngineStatus() {
+    var el = $('setEngineStatus');
+    if (!el) return;
+    if (typeof chrome === 'undefined' || !chrome.runtime || !chrome.runtime.sendMessage) {
+      el.textContent = '—';
+      return;
+    }
+    el.textContent = T('viewer|查询中…');
+    askOffscreen({ type: 'gm-engine-info' }).then(function (resp) {
+      lastEngineInfo = (resp && resp.info) || null;
+      paintEngineStatus();
+    }, function () {
+      lastEngineInfo = null;
+      paintEngineStatus();
+    });
+  }
+
+  function afterEngineChange() {
+    fillEngineSelects();
+    renderCustomList();
+    refreshEngineStatus();
+  }
+
+  function fillEngineForm() {
+    setTxt('setEngineLabel', T('viewer|检测模型'));
+    setTxt('setEngineHint', T('viewer|分析当前对局与逐步检测所用引擎；此处、检测页、回放详情与页面浮层共用同一项设置。'));
+    setTxt('setEngineUrlLabel', T('viewer|KataGomo 服务地址'));
+    setTxt('setEngineUrlHint',
+      T('viewer|填服务器根地址即可（自动补 /api/v1/analysis），也可直接填完整端点。首次使用需点右侧按钮授权访问。'));
+    setTxt('setEnginePerm', T('viewer|授权访问'));
+    setTxt('setEngineStatusLabel', T('viewer|引擎状态'));
+    fillEngineSelects();
+    setField($('setEngineUrl'), S.engineUrl || '');
+    paintEngineStatus();
+  }
+
+  // The address is committed on blur / Enter like every other field, but it also has to reach the
+  // registry in THIS context: the pickers above decide "usable" from it, so a stale address would
+  // leave KataGomo greyed out after the operator had just typed one in.
+  function commitEngineUrl() {
+    var v = String($('setEngineUrl').value || '').trim();
+    lastSelfWrite = Date.now();
+    G.saveSetting('engineUrl', v).then(function (s) {
+      S = s;
+      var reg = engineReg();
+      if (reg) reg.setHttpBase(S.engineUrl);
+      afterEngineChange();
+      flashSaved();
+    });
+  }
+
+  // ---- §2.2: 自定义检测模型 ----
+  //
+  // §2.2.3's steps, in the order the operator experiences them:
+  //   1. pick a file                     (cstFile)
+  //   2. size / count check              (GMCustomEngines.add — everything knowable from the file)
+  //   3. store the package               (IndexedDB; extension origin only, never uploaded)
+  //   4. run ONE real search on it       (through the offscreen document — the only honest test)
+  //   5. failure → a message that names the cause, and the model is dropped again
+  //   6. success → §2.2.4's naming prompt, then §2.2.5's 「设为首选」
+  //
+  // Step 4 has no cheaper equivalent: a Rapfi `.data` package is emscripten's file table plus NNUE
+  // weights, so nothing short of loading it distinguishes a good package from a stray zip. That is
+  // also why the file is called a 权重包 everywhere — what is stored is a weight package for the
+  // packaged build, not a new engine (see custom-engine.js for why that narrowing is forced).
+  var VERIFY_THINK_MS = 1200;
+  var lastCustomError = '';
+
+  function modelCard(id, name, meta, preferred, editable) {
+    return '<div class="cst-card" data-id="' + esc(id) + '">' +
+      '<div class="cst-main"><div class="cst-name">' + esc(name) +
+        (preferred ? '<span class="cst-tag">' + esc(T('viewer|首选')) + '</span>' : '') +
+      '</div><div class="hint">' + esc(meta) + '</div></div>' +
+      '<div class="cst-acts">' +
+        (editable
+          ? (preferred ? '' : '<button class="sec" data-cst="prefer">' + esc(T('viewer|设为首选')) + '</button>') +
+            '<button class="sec" data-cst="rename">' + esc(T('viewer|重命名')) + '</button>' +
+            '<button class="sec" data-cst="remove">' + esc(T('viewer|删除')) + '</button>'
+          : '<span class="hint">' + esc(T('viewer|内置')) + '</span>') +
+      '</div></div>';
+  }
+
+  function fmtBytes(bytes) {
+    var n = Number(bytes) || 0;
+    if (n >= 1048576) return (n / 1048576).toFixed(1) + ' MB';
+    if (n >= 1024) return Math.round(n / 1024) + ' KB';
+    return n + ' B';
+  }
+
+  // 官方模型与自定义模型分开存放 (§2.2.6 #6). The official ones are files inside the package and
+  // are listed read-only; only a custom model has a stored package to rename or delete.
+  function renderCustomList() {
+    var host = $('cstList');
+    if (!host) return;
+    var reg = engineReg();
+    var cur = currentEngineId();
+    if (!reg) { host.innerHTML = ''; return; }
+    var html = reg.list().filter(function (e) { return !e.custom; }).map(function (e) {
+      var meta = (e.kind === 'http')
+        ? T('viewer|服务端 · {url}', { url: reg.httpUrl() || T('viewer|未配置服务地址') })
+        : (e.builds || []).join('');
+      return modelCard(e.id, e.name, meta, e.id === cur, false);
+    }).join('');
+    var mine = reg.list().filter(function (e) { return e.custom; });
+    html += mine.map(function (e) {
+      return modelCard(e.id, e.name, fmtBytes(e.size), e.id === cur, true);
+    }).join('');
+    if (!mine.length) {
+      html += '<div class="hint">' + esc(T('viewer|还没有自定义模型。')) + '</div>';
+    }
+    host.innerHTML = html;
+  }
+
+  function fillCustomPanel() {
+    var C = (typeof GMCustomEngines !== 'undefined') ? GMCustomEngines : null;
+    setTxt('cstTitle', T('viewer|自定义检测模型'));
+    setTxt('cstPickLabel', T('viewer|选择权重包文件'));
+    setTxt('cstHint', T('viewer|支持 Rapfi 的 .data 权重包；文件名只作提示，命名在验证通过后进行。'));
+    setTxt('cstLimitLabel', T('viewer|限制'));
+    setTxt('cstLimit', C
+      ? T('viewer|单个不超过 {mb} MB，最多 {n} 个；只保存在本机浏览器内，不会上传。',
+          { mb: Math.round(C.MAX_BYTES / 1048576), n: C.MAX_COUNT })
+      : T('viewer|此环境不支持自定义模型（IndexedDB 不可用）。'));
+    setTxt('cstAdd', T('viewer|验证并添加'));
+    renderCustomList();
+  }
+
+  function setCstStatus(text) {
+    var el = $('cstStatus');
+    if (el) el.textContent = text;
+  }
+
+  // §2.2.3 step 4. Goes through `gm-ai-think` rather than a dedicated "verify" message because
+  // that is the SAME path a real analysis takes to reach the engine: an engine that answers here
+  // is an engine that will answer in a game. nbest 1 and a short budget — this is a smoke test,
+  // not a measurement.
+  async function verifyCustomModel(id) {
+    lastCustomError = '';
+    try {
+      var resp = await askOffscreen({
+        type: 'gm-ai-think',
+        jobId: gmJobId('verify'),
+        engineId: id,
+        prefix: [],
+        nbest: 1,
+        thinkMs: VERIFY_THINK_MS,
+        rule: 0,
+        threadNum: 0,
+      });
+      if (!resp || !resp.ok) { lastCustomError = (resp && resp.error) || ''; return false; }
+      return true;
+    } catch (e) {
+      lastCustomError = String((e && e.message) || e);
+      return false;
+    }
+  }
+
+  async function addCustomModel() {
+    var C = (typeof GMCustomEngines !== 'undefined') ? GMCustomEngines : null;
+    var btn = $('cstAdd');
+    var input = $('cstFile');
+    var file = input && input.files && input.files[0];
+    if (!C) { setCstStatus(T('viewer|此环境不支持自定义模型（IndexedDB 不可用）。')); return; }
+    if (!file) { setCstStatus(T('viewer|请先选择文件。')); return; }
+    if (btn) btn.disabled = true;
+    var rec = null;
+    try {
+      setCstStatus(T('viewer|正在保存权重包…'));
+      rec = await C.add(file);
+      var reg = engineReg();
+      if (reg) {
+        reg.register({ id: rec.id, name: rec.name, dataId: rec.id, fileName: rec.fileName, size: rec.size, addedAt: rec.addedAt });
+      }
+      renderCustomList();
+      setCstStatus(T('viewer|正在验证（用该权重包跑一次搜索）…'));
+      if (!(await verifyCustomModel(rec.id))) {
+        await C.remove(rec.id);
+        if (reg) reg.unregister(rec.id);
+        renderCustomList();
+        // §2.2.3 step 5 — the message has to say what failed. `TE` resolves an `__i18n:` code and
+        // passes a plain engine message through, so an emscripten abort is shown as it arrived.
+        setCstStatus(T('viewer|验证失败，已丢弃该权重包：{err}',
+          { err: TE(lastCustomError) || T('viewer|引擎无法加载该权重包') }));
+        return;
+      }
+      // §2.2.4 — verified, so now it may be named. Cancel keeps whatever default the label had.
+      var typed = prompt(T('viewer|验证通过。给这个模型起个名字（留空 = 用默认名）：'), rec.fileName || '');
+      if (typed != null && String(typed).trim()) await C.rename(rec.id, String(typed).trim());
+      await refreshCustomRegistry();
+      await afterEngineChange();
+      setCstStatus(T('viewer|验证通过，已添加。'));
+    } catch (e) {
+      // `C.add` rejects with `__i18n:custom.tooBig` / `tooMany` / `noFile`; a half-added record is
+      // the one outcome that must not survive, so it is rolled back here.
+      if (rec) {
+        try { await C.remove(rec.id); } catch (e2) { /* nothing to roll back */ }
+        var reg2 = engineReg();
+        if (reg2) reg2.unregister(rec.id);
+        renderCustomList();
+      }
+      setCstStatus(TE(e && e.message) || String(e));
+    } finally {
+      if (btn) btn.disabled = false;
+      if (input) input.value = '';
+    }
+  }
+
+  async function renameCustomModel(id) {
+    var C = (typeof GMCustomEngines !== 'undefined') ? GMCustomEngines : null;
+    if (!C) return;
+    var reg = engineReg();
+    var cfg = reg ? reg.get(id) : null;
+    if (!cfg) return;
+    var v = prompt(T('viewer|新名称（只改显示名，不改 id）'), cfg.name || '');
+    if (v == null) return;
+    await C.rename(id, String(v).trim());
+    await refreshCustomRegistry();
+    // The name is what the three dropdowns print, so a rename travels the same road as every other
+    // engine change. `renderCustomList()` alone rebuilt this panel and left all three <select>s
+    // showing the PREVIOUS name until the page was left and re-entered — the operator renames a
+    // model, then picks it from a dropdown still labelled with the name they just replaced.
+    afterEngineChange();
+  }
+
+  async function removeCustomModel(id) {
+    var C = (typeof GMCustomEngines !== 'undefined') ? GMCustomEngines : null;
+    if (!C) return;
+    var reg = engineReg();
+    var cfg = reg ? reg.get(id) : null;
+    if (!cfg) return;
+    if (!confirm(T('viewer|删除自定义模型「{name}」？其权重包会一并删除。', { name: cfg.name }))) return;
+    await C.remove(id);
+    if (reg) reg.unregister(id);
+    // Deleting the model that is currently selected has to move the selection too, otherwise the
+    // settings page would name an engine that no longer exists.
+    if (currentEngineId() === id) await G.saveSetting('engineId', (engineReg() ? engineReg().DEFAULT_ID : 'rapfi'));
+    await refreshCustomRegistry();
+    await afterEngineChange();
+    setCstStatus(T('viewer|已删除。'));
+  }
+
+  // §2.2.5 — 首选 is not a second setting: it IS `settings.engineId`, so the panel, the three
+  // dropdowns and the report all follow from it with no extra sync.
+  function setPreferredEngine(id) {
+    G.saveSetting('engineId', id).then(function (s) {
+      S = s;
+      afterEngineChange();
+      flashSaved();
+      setCstStatus(T('viewer|已设为首选。'));
+    });
+  }
+
   function syncDetectControls() {
     setField($('suspect'), S.suspect);
     setField($('thinkMs'), S.thinkMs);
@@ -926,9 +1310,23 @@
       esc(String(big)) + '</div><div class="k">' + esc(label) + '</div></div>';
   }
 
-  async function renderSettings() {
+  async function renderSettings(repaint) {
     fillSettingsForm();
     fillVersionRow();
+    // 0.5.1 §2.1.4 — the engine's live status is asked for on ENTERING the settings page, not from
+    // fillSettingsForm(): that runs on every language switch too, and spawning the offscreen
+    // document (and with it a 40 MB engine) because someone changed the UI language would be a
+    // side effect nobody asked for. The custom-model list is re-read here for the same reason the
+    // blacklist is (§一.7): the panel in the page can have added one since this page was opened.
+    //
+    // Two corrections to the first cut of this, both found by `behave-052`:
+    //   · `afterEngineChange()` re-asks the offscreen document, and this function asks on the very
+    //     next line — so ONE entry to 设置 asked TWICE. Only the two list refills belong here.
+    //   · `repaintForLang()` reaches this function through `showView()`, so the language switch the
+    //     paragraph above promises not to query for was querying anyway. A repaint now re-paints the
+    //     answer already in hand (`lastEngineInfo`) instead of asking for it again.
+    refreshCustomRegistry().then(function () { fillEngineSelects(); renderCustomList(); });
+    if (repaint) paintEngineStatus(); else refreshEngineStatus();
     var list = await G.loadArchives();
     var bytes = 0;
     try { bytes = JSON.stringify(list).length; } catch (e) {}
@@ -1068,7 +1466,12 @@
   // 改动即写: a `change` event only fires on blur/Enter, so a user who types a number
   // and closes the tab would lose it. Commit on `input` too, debounced, and dedupe so a
   // trailing `change` does not write the same value twice.
-  function bindSetting(el, key, read) {
+  //
+  // `after` is for the bindings whose value is READ by another control on this page: the engine
+  // pickers exist four times (three dropdowns + the panel in the page), and the one that was just
+  // changed has to push the new value into the other three.
+  function bindSetting(el, key, read, after) {
+    if (!el) return;
     var timer = null, last = null;
 
     function commit() {
@@ -1080,6 +1483,7 @@
       G.saveSetting(key, v).then(function (s) {
         S = s;
         syncDetectControls();
+        if (after) after(s);
         flashSaved();
       });
     }
@@ -1183,6 +1587,66 @@
   bindLlmFields();
   // 0.4.8 §3 — the searchable model drawer rides on top of the plain Model field.
   bindModelPicker();
+  // 0.5.1 §2.1.4 — the engine, from all three dropdowns. They write one key; `afterEngineChange`
+  // is what keeps the other two (`fillEngineSelects`), the custom list's 首选 tag and the status
+  // line in step with the change, without a reload and without a second source of truth.
+  bindSetting($('setEngine'), 'engineId', function (e) { return e.value; }, afterEngineChange);
+  bindSetting($('engineSel'), 'engineId', function (e) { return e.value; }, afterEngineChange);
+  bindSetting($('engineSelD'), 'engineId', function (e) { return e.value; }, afterEngineChange);
+
+  // The address is a plain text field, so it commits on the same schedule as the others — but it
+  // also feeds the registry, which is what decides whether KataGomo is selectable at all.
+  if ($('setEngineUrl')) {
+    var urlTimer = null;
+    var commitUrl = function () {
+      if (urlTimer) { clearTimeout(urlTimer); urlTimer = null; }
+      commitEngineUrl();
+    };
+    $('setEngineUrl').addEventListener('input', function () {
+      if (urlTimer) clearTimeout(urlTimer);
+      urlTimer = setTimeout(commitUrl, 400);
+    });
+    $('setEngineUrl').addEventListener('change', commitUrl);
+    $('setEngineUrl').addEventListener('blur', commitUrl);
+  }
+  // §2.1.3 — an optional host permission can only be requested from a user gesture. Without this
+  // the fetch fails as a bare network error, with nothing in the UI to explain why. Same shape as
+  // the LLM panel's 测试 button below.
+  if ($('setEnginePerm')) {
+    $('setEnginePerm').onclick = async function () {
+      var btn = $('setEnginePerm');
+      var url = String($('setEngineUrl').value || '').trim();
+      if (!url) { alert(T('viewer|请先填写服务地址。')); return; }
+      btn.disabled = true;
+      try {
+        var granted = await GMLLM.hasHostPermission(url);
+        if (!granted) granted = await GMLLM.requestHostPermission(url);
+        if (!granted) { alert(T('viewer|未授予访问该地址的权限，无法调用。')); return; }
+        await commitEngineUrl();
+        await refreshEngineStatus();
+      } catch (e) {
+        alert(T('viewer|授权失败：{t}', { t: TE(String((e && e.message) || e)) }));
+      } finally {
+        btn.disabled = false;
+      }
+    };
+  }
+  // §2.2 — 自定义检测模型. The list is delegated: `renderCustomList` replaces its whole innerHTML
+  // on every repaint, so per-row handlers would be attached to nodes that no longer exist.
+  if ($('cstList')) {
+    $('cstList').onclick = function (ev) {
+      var b = ev.target && ev.target.closest ? ev.target.closest('button[data-cst]') : null;
+      if (!b) return;
+      var card = b.closest ? b.closest('.cst-card') : null;
+      var id = card ? card.getAttribute('data-id') : '';
+      if (!id) return;
+      var what = b.getAttribute('data-cst');
+      if (what === 'prefer') setPreferredEngine(id);
+      else if (what === 'rename') renameCustomModel(id);
+      else if (what === 'remove') removeCustomModel(id);
+    };
+  }
+  if ($('cstAdd')) $('cstAdd').onclick = addCustomModel;
 
   // §十八 — the host permission is `optional_host_permissions`, so it must be requested from a
   // user gesture. This click is that gesture; without it the fetch fails as a bare network error
@@ -1526,6 +1990,8 @@
       var resp = await askOffscreen({
         type: 'gm-ai-think',
         jobId: gmJobId('think'),
+        // 0.5.1 §2.1.4 — the operator's model, the same key the panel and the analysis jobs read.
+        engineId: S.engineId,
         prefix: draftMoves.map(function (m) { return m.c; }),
         nbest: nbest,
         thinkMs: thinkMs,
@@ -1600,6 +2066,10 @@
           suspect: $('suspect').value,
           threadNum: S.threadNum,
           learned: curLearned,
+          // 0.5.1 §2.1.4 — the model the operator picked. The offscreen document owns the engine,
+          // so the choice has to travel with the job; it also means switching models mid-session
+          // rebuilds the engine exactly once, on the next job.
+          engineId: S.engineId,
         },
       });
       if (!resp || !resp.ok) throw new Error((resp && resp.error) || T('viewer|offscreen 文档没有响应（检查扩展是否已重新加载）'));
@@ -1717,6 +2187,7 @@
             openingCutoff: parseInt($('openCut').value, 10),
             threadNum: S.threadNum,
             learned: curLearned,
+            engineId: S.engineId,
           },
         });
         started = true;
@@ -3780,11 +4251,11 @@
       // Which engine produced these verdicts. A run on the single-threaded fallback thinks
       // to a shallower depth in the same budget, so a cross-thread comparison of two
       // archives is only meaningful when this row matches.
-      [T('viewer|分析引擎'), rep.engine
-        ? (rep.engine.degraded
-            ? T('viewer|单线程（降级：{reason}）', { reason: rep.engine.reason || T('viewer|环境不支持多线程') })
-            : T('viewer|多线程 {n} 线程', { n: rep.engine.threadNum || '?' }))
-        : T('viewer|未记录')],
+      //
+      // 0.5.1 §2.1.5 #4 — the MODEL as well as the build. Two archives analysed by different
+      // models are not comparable either, and now that a custom weight package is a supported
+      // choice, 「多线程 16 线程」 no longer identifies which one answered.
+      [T('viewer|分析引擎'), rep.engine ? engineSummary(rep.engine) : T('viewer|未记录')],
       // 0.3.3 §3.5: which parameter set produced the risk numbers above. A learned run and a
       // default run give different scores for the same game, so without this row two
       // archives cannot be compared at all.
@@ -5311,6 +5782,7 @@
           suspect: $('seSuspect').value,
           threadNum: S.threadNum,
           learned: curLearned,
+          engineId: S.engineId,
         },
       });
       if (!resp || !resp.ok) throw new Error((resp && resp.error) || T('viewer|offscreen 文档没有响应（检查扩展是否已重新加载）'));
@@ -5754,6 +6226,10 @@
     fillLangSelect();
     fillThreadSelect();
     fillThemeSelect();
+    // 0.5.1 §2.1.4 — the custom models live in IndexedDB, so the registry has to be filled before
+    // the three dropdowns can name them. Reads only; the engine status line is deliberately NOT
+    // asked for here (see renderSettings).
+    await refreshCustomRegistry();
     // 0.3.5 §3.2: build the per-column ▼ glyphs first (they are static markup-level), then
     // apply the stored fold state so the first paint already has the right columns hidden —
     // applying it after a render would flash the full fifteen-column table on every load.

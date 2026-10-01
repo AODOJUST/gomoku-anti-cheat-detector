@@ -22,6 +22,12 @@ importScripts('i18n.js',
   'llm.js',
   'storage.js');
 
+// 0.5.1 §2.2 — custom-engine.js is here so this worker can answer "which custom models exist?"
+// for the on-page panel. The panel cannot read it itself: a content script's `indexedDB` is the
+// HOST PAGE's storage, not the extension's. The worker runs on the extension origin, so it sees
+// the same database the offscreen document and the viewer write.
+importScripts('custom-engine.js');
+
 // 0.4.8 §2 — chrome.storage.session defaults to TRUSTED_CONTEXTS only, so a content script
 // cannot see it at all. Opening it to content scripts is what makes the §2 migration real;
 // without this call content.js's sessionArea() finds no `session` area and quietly falls back
@@ -130,6 +136,52 @@ var UPDATE_DELAY_MS = 5000;   // §一.3 — let the engine load and the panel p
 // leaves `fetch` pending indefinitely — and on the manual path that pins the button at
 // 「检测中…」 forever, which is the opposite of silent. So every request gets a deadline.
 var UPDATE_TIMEOUT_MS = 8000;
+
+// 0.5.1 §2.1.3 — the KataGomo HTTP call, relayed for the same reason as gm-llm above: the
+// request has to originate from the extension origin. The body is already the exact JSON the
+// KataGo analysis engine parses (app.js `buildKatagoRequest`), so this forwards it untouched —
+// a second place that shaped the request would be a second answer to what the wire format is.
+//
+// The caller enforces its own deadline; the one here is a backstop for a server that accepts the
+// connection and then says nothing, which would otherwise hold the service worker open for as
+// long as the socket lives.
+function engineHttp(msg) {
+  var ctl = (typeof AbortController === 'function') ? new AbortController() : null;
+  var budget = Math.max(1000, Math.min(600000, parseInt(msg.timeoutMs, 10) || 60000));
+  var timer = setTimeout(function () { if (ctl) ctl.abort(); }, budget + 2000);
+  var opts = {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(msg.body),
+  };
+  if (ctl) opts.signal = ctl.signal;
+  return fetch(msg.url, opts).then(function (res) {
+    return res.text().then(function (text) {
+      clearTimeout(timer);
+      // A non-2xx is still worth showing. Both the analysis engine and the REST servers in front
+      // of it answer with a body naming the field that was wrong, and that text is what
+      // §2.2.3's 「验证失败时显示明确错误」 has to put on screen — "HTTP 400" alone would send the
+      // operator looking in the wrong place.
+      if (!res.ok) {
+        return {
+          ok: false, status: res.status,
+          error: 'HTTP ' + res.status + (text ? ': ' + String(text).slice(0, 300) : ''),
+        };
+      }
+      return { ok: true, status: res.status, text: text };
+    });
+  }, function (e) {
+    clearTimeout(timer);
+    // A missing host permission lands here as an opaque network error, and it is by far the most
+    // likely failure on first use — the operator typed an address and granted nothing. Say what
+    // it actually is, because "Failed to fetch" points at the wrong thing entirely.
+    var m = String((e && e.message) || e);
+    if (/Failed to fetch|NetworkError|load failed/i.test(m)) {
+      m = 'fetch failed — is the server running, and did you grant access to ' + msg.url + '?';
+    }
+    throw new Error(m);
+  });
+}
 
 function fetchJson(url) {
   // `cache: 'no-store'` plus a cache-busting query: raw.githubusercontent.com is served
@@ -315,6 +367,28 @@ chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
   if (msg.type === 'gm-llm') {
     GMLLM.fetchDirect(msg.prompt, msg.opts || {})
       .then(function (text) { sendResponse({ ok: true, text: text }); })
+      .catch(function (e) { sendResponse({ ok: false, error: String((e && e.message) || e) }); });
+    return true;
+  }
+
+  // 0.5.1 §2.2 — the panel's model picker. Answered from here rather than from the offscreen
+  // document so it works before any engine has been warmed up (which is exactly when the
+  // operator is most likely to be choosing one).
+  if (msg.type === 'gm-engine-list') {
+    var send = function (models, error) { sendResponse({ ok: !error, models: models || [], error: error || '' }); };
+    try {
+      GMCustomEngines.list().then(function (rows) { send(rows); },
+        function (e) { send([], String((e && e.message) || e)); });
+    } catch (e) { send([], String((e && e.message) || e)); }
+    return true;
+  }
+
+  // 0.5.1 §2.1.3 — the KataGomo HTTP call. Relayed for the same reason as the LLM call above,
+  // and it is the same single-exit rule: the body is already the exact JSON the analysis engine
+  // parses, so this handler forwards it untouched.
+  if (msg.type === 'gm-engine-http') {
+    engineHttp(msg)
+      .then(function (r) { sendResponse(r); })
       .catch(function (e) { sendResponse({ ok: false, error: String((e && e.message) || e) }); });
     return true;
   }

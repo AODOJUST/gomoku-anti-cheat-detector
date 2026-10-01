@@ -123,6 +123,10 @@
   // a pthread build. Shown as a note only when something is worth saying (degraded to
   // single-thread, or an explicit thread count on a multi build).
   var engineNote = '';
+  // 0.5.1 §2.1.4/§2.2.5 — the note above is a colour question, not just a text one: "降到单线程"
+  // is a footnote, "你选的模型没能用上，换成了另一个" is a warning. Two flags rather than one
+  // string, because the render site must not have to parse the prose to decide.
+  var engineWarn = false;
 
   // =====================================================================================
   // 0.4.8 §2 — MV3: the run's transient state lives in chrome.storage.session.
@@ -496,6 +500,10 @@
       // 0 = auto (half the cores, max 4). app.js resolves it, and forces 1 when the
       // single-threaded fallback build is what actually loaded.
       threadNum: S.threadNum,
+      // 0.5.1 §2.1.4 — which model to run. It travels with every job because the per-step path
+      // asks the offscreen document for an engine once per move: an id that changed mid-game
+      // would otherwise produce a report whose flags are half one engine and half another.
+      engineId: S.engineId,
     };
   }
 
@@ -1483,6 +1491,23 @@
   // different depth in the same budget, and the operator has no way to know otherwise.
   function noteEngine(info) {
     if (!info) return;
+    // 0.5.1 §2.1.4/§2.2.5 — a recovery is the one thing here that MUST be loud. The operator
+    // picked a model; if a different one answered, every number on the panel is about a program
+    // they did not choose, and the only honest place to say so is next to those numbers.
+    if (info.fallback && info.fallback.to && info.fallback.from !== info.fallback.to) {
+      engineWarn = true;
+      engineNote = T('panel|检测模型 {from} 不可用，已回退到 {to}。',
+        { from: info.fallback.from, to: info.fallback.name || info.fallback.to });
+      return;
+    }
+    engineWarn = false;
+    // An http engine has no build file and no thread count of OURS to report — the threads belong
+    // to somebody else's machine. Saying which server answered is the honest substitute, and it
+    // is also the only way to notice that a game was analysed by the wrong server.
+    if (info.kind === 'http') {
+      engineNote = T('panel|引擎：{name}（{url}）。', { name: info.name || info.id || '', url: info.url || '' });
+      return;
+    }
     if (info.degraded) {
       engineNote = T('panel|引擎降级为单线程模式：{reason}（分析仍可进行，同等预算下思考深度略低）。',
         { reason: TE(info.reason) || T('panel|多线程 WASM 在此环境不可用') });
@@ -1499,7 +1524,7 @@
   // later — long enough for the operator to conclude that multi-threading was never on.
   function warmup() {
     return ensureOffscreen()
-      .then(function () { return send({ type: 'gm-warmup' }); })
+      .then(function () { return send({ type: 'gm-warmup', engineId: S.engineId }); })
       .then(function (resp) {
         if (resp && resp.info) { noteEngine(resp.info); paintStatus(); }
       })
@@ -1963,6 +1988,11 @@
     // (and the .t-run badge), `--gm-div` the in-panel divider.
     '--gm-hov:#243040;--gm-btn-hov:#33404f;--gm-pri-hov:#4a6cf0;--gm-div:#1b2530;',
     '--gm-info-bg:#16233d;--gm-info-line:#2f4b8f;--gm-info-fg:#cfe0ff;',
+    // 0.5.1 §2.2.5 — the engine-fallback warning. Named and given a value in both palettes for
+    // the 0.4.8 reason: a rule colour written inline is a colour that does not change with the
+    // theme. The wash is an alpha of the same amber in both, because an amber tint reads as a
+    // warning on white and on near-black alike; only the border needs to be darker on white.
+    '--gm-warn:#f1c40f;--gm-warn-bg:rgba(241,196,15,.16);',
     // 0.4.10 §一.3 — the state GLOW, as a variable rather than a `box-shadow` written by the
     // state rules. Two releases learned this the hard way: 0.4.9's state rules SET `box-shadow`
     // outright, which REPLACES the panel's own drop shadow rather than adding to it, so every
@@ -1977,12 +2007,14 @@
     '--gm-line-soft:#e0e0e0;--gm-txt:#1a1a1a;--gm-txt-2:#333333;--gm-mut:#555555;--gm-dim:#6b6b6b;',
     '--gm-off:#aaaaaa;--gm-lk:#2a4bd7;--gm-in:#f0f0f0;--gm-bar:#e2e2e2;',
     '--gm-hov:#ececec;--gm-btn-hov:#d8d8d8;--gm-pri-hov:#3d5fd8;--gm-div:#e0e0e0;',
-    '--gm-info-bg:#e8f0fe;--gm-info-line:#a8c4f0;--gm-info-fg:#1f3f7a}',
+    '--gm-info-bg:#e8f0fe;--gm-info-line:#a8c4f0;--gm-info-fg:#1f3f7a;',
+    '--gm-warn:#b8860b;--gm-warn-bg:rgba(184,134,11,.14)}',
     '@media (prefers-color-scheme: light){:host([data-theme="auto"]){--gm-bg:#ffffff;--gm-panel:#f5f5f5;',
     '--gm-head:#ececec;--gm-line:#d0d0d0;--gm-line-soft:#e0e0e0;--gm-txt:#1a1a1a;--gm-txt-2:#333333;',
     '--gm-mut:#555555;--gm-dim:#6b6b6b;--gm-off:#aaaaaa;--gm-lk:#2a4bd7;--gm-in:#f0f0f0;--gm-bar:#e2e2e2;',
     '--gm-hov:#ececec;--gm-btn-hov:#d8d8d8;--gm-pri-hov:#3d5fd8;--gm-div:#e0e0e0;',
-    '--gm-info-bg:#e8f0fe;--gm-info-line:#a8c4f0;--gm-info-fg:#1f3f7a}}',
+    '--gm-info-bg:#e8f0fe;--gm-info-line:#a8c4f0;--gm-info-fg:#1f3f7a;',
+    '--gm-warn:#b8860b;--gm-warn-bg:rgba(184,134,11,.14)}}',
     '*{box-sizing:border-box}',
     // 0.4.9 §二.3 — the panel's border is a STATE INDICATOR. The width grew from 1px to 2px so the
     // colour can actually be read from the corner of an eye (a 1px line at the edge of a dark
@@ -2199,6 +2231,11 @@
     'button:disabled{opacity:.45;cursor:default}',
     '.ft{padding:5px 10px;border-top:1px solid var(--gm-line);color:var(--gm-dim);font-size:10px;display:flex;gap:10px}',
     '.note{color:#f1c40f;font-size:11px;margin-top:6px}',
+    // 0.5.1 §2.2.5 — the fallback notice. Kept as a `.note` variant rather than a new top strip
+    // because the panel already has one reserved-height banner (0.4.0 §一.4's update strip, which
+    // grows `--gm-ban`); a second one would have to fight it for the same space at the same edge,
+    // and this notice belongs NEXT TO the numbers it invalidates anyway.
+    '.note.warn{background:var(--gm-warn-bg);border:1px solid var(--gm-warn);border-radius:6px;padding:5px 7px;color:var(--gm-txt)}',
     // ---- 0.4.4 §12/§14: the 提问记录 / 声明确认 panel ----
     // It sits between `.body` and `.ft` inside the same 580px column, so it inherits the panel's
     // width and scrolls with the rest rather than floating.
@@ -2268,6 +2305,11 @@
             '">' + esc(T('panel|语言')) + '</span>' +
           '<span class="lk" data-act="rule" title="' + esc(T('panel|游戏规则')) +
             '">' + esc(T('panel|规则')) + '</span>' +
+          // 0.5.1 §2.1.4 — the model picker. It sits with the other two because it is the third
+          // thing the extension has to be TOLD rather than guess, and the header already wraps
+          // (0.4.10 §一.3) so a fourth label costs a line, not a redesign.
+          '<span class="lk" data-act="engine" title="' + esc(T('panel|检测模型')) +
+            '">' + esc(T('panel|模型')) + '</span>' +
           // 0.4.4 §12 — the 提问 button. Always present so the operator can see WHY it is off
           // (its title says which of §12's five gates is closed) rather than wondering where the
           // feature went.
@@ -2299,6 +2341,8 @@
       // them, and both stay empty until a menu is opened (paintMenus fills the visible one).
       '<div class="ctx" data-slot="langmenu" role="menu"></div>' +
       '<div class="ctx" data-slot="rulemenu" role="menu"></div>' +
+      // 0.5.1 §2.1.4 — the third dropdown. Same `.ctx` implementation as the other two.
+      '<div class="ctx" data-slot="enginemenu" role="menu"></div>' +
       // 0.4.10 §二.1 — the 提问 picker. It reuses `.ctx` (one dropdown implementation, two
       // levels: this box shows the language list, then the question list, and only then sends).
       '<div class="ctx" data-slot="askmenu" role="menu"></div>' +
@@ -2362,6 +2406,7 @@
       });
       return langs;
     }
+    if (which === 'engine') return engineMenuItems();
     return [
       { v: 'auto', label: T('panel|自动（按站点推断）') },
       { v: '0', label: T('panel|自由（无禁手）') },
@@ -2370,8 +2415,55 @@
     ];
   }
 
+  // 0.5.1 §2.1.4 — the model list. The official engines and their availability come straight
+  // from the registry, so this menu cannot promise a model the engine layer would refuse; the
+  // custom ones are the list the service worker last read out of IndexedDB.
+  //
+  // `dis` greys an option out rather than hiding it: an operator who cannot find KataGomo would
+  // conclude the feature is missing, while a greyed row with a reason tells them exactly which
+  // field in the viewer is empty. A greyed row carries NO `data-v` (the same lazy rule the 提问
+  // picker uses), so "there is nothing to click" is structural, not a guard someone can forget.
+  function engineMenuItems() {
+    var reg = (typeof GMEngines !== 'undefined') ? GMEngines : null;
+    if (!reg) return [];
+    // ONE pass over the registry. It already holds the custom models — `refreshEngineList()`
+    // syncs them in before this runs — so appending `customModels` here as well listed every
+    // custom model twice: once from the registry and once from the raw list.
+    return reg.list().map(function (e) {
+      var ok = reg.usable(e.id);
+      return {
+        v: e.id,
+        label: e.name,
+        dis: !ok,
+        why: ok ? '' : T('panel|尚未配置服务地址，请先在查看器的引擎设置里填写'),
+      };
+    });
+  }
+
+  // The custom list has to be fetched: a content script's IndexedDB is the PAGE's, so the
+  // registry here can only hold what the service worker read out of the extension's. Fetched on
+  // every open — five rows at most — so a model deleted in the viewer is gone from this menu
+  // without a reload, and a failed fetch keeps the previous list rather than emptying the menu.
+  var customModels = null;
+  function refreshEngineList() {
+    return send({ type: 'gm-engine-list' }).then(function (resp) {
+      customModels = (resp && resp.models) || [];
+      var reg = (typeof GMEngines !== 'undefined') ? GMEngines : null;
+      if (reg) {
+        reg.sync(customModels.map(function (m) {
+          return { id: m.id, name: m.name, dataId: m.id, fileName: m.fileName, size: m.size, addedAt: m.addedAt };
+        }));
+      }
+      return customModels;
+    }, function () {
+      customModels = customModels || [];
+      return customModels;
+    });
+  }
+
   function menuCurrent(which) {
     if (which === 'lang') return S.lang || 'auto';
+    if (which === 'engine') return S.engineId || 'rapfi';
     return S.rule == null ? 'auto' : String(S.rule);
   }
 
@@ -2465,16 +2557,21 @@
 
   function paintMenus() {
     if (!root) return;
-    ['lang', 'rule'].forEach(function (which) {
+    ['lang', 'rule', 'engine'].forEach(function (which) {
       var box = root.querySelector('[data-slot=' + which + 'menu]');
       if (!box) return;
       var cur = menuCurrent(which);
       var html = '';
       menuItems(which).forEach(function (it) {
         var on = it.v === cur;
-        html += '<div class="it" data-act="pick-' + which + '" data-v="' + esc(it.v) + '"' +
-          ' role="menuitemradio" aria-checked="' + on + '">' +
-          '<span class="ck">' + (on ? '✓' : '') + '</span>' + esc(it.label) + '</div>';
+        // A disabled row carries no `data-v`, so the click handler cannot even be reached with
+        // it — the same structure the 提问 picker uses for a gated question (0.4.10 §二.3).
+        html += it.dis
+          ? '<div class="it dis" title="' + esc(it.why || '') + '">' +
+              '<span class="ck"></span>' + esc(it.label) + '</div>'
+          : '<div class="it" data-act="pick-' + which + '" data-v="' + esc(it.v) + '"' +
+              ' role="menuitemradio" aria-checked="' + on + '">' +
+              '<span class="ck">' + (on ? '✓' : '') + '</span>' + esc(it.label) + '</div>';
       });
       box.innerHTML = html;
     });
@@ -2484,7 +2581,7 @@
 
   function closeMenus() {
     if (!root) return;
-    ['lang', 'rule', 'ask'].forEach(function (which) {
+    ['lang', 'rule', 'engine', 'ask'].forEach(function (which) {
       var box = root.querySelector('[data-slot=' + menuSlot(which) + ']');
       if (box) box.classList.remove('show');
       var btn = root.querySelector('[data-act=' + menuBtn(which) + ']');
@@ -2502,6 +2599,13 @@
     if (!box) return;
     openMenu = which;
     paintMenus();
+    // 0.5.1 §2.1.4 — the model list lives outside this context, so it is refreshed on open and
+    // the box is repainted in place when it lands. Deliberately AFTER the first paint: an empty
+    // menu for one frame is invisible, while a menu that waits for storage before appearing
+    // reads as a button that did nothing.
+    if (which === 'engine') {
+      refreshEngineList().then(function () { if (openMenu === 'engine') paintMenus(); });
+    }
     // Shown before measuring: offsetWidth/Height are 0 while the node is display:none, and a
     // 0-height reading would skip the flip-above-the-button branch entirely.
     box.classList.add('show');
@@ -2613,8 +2717,8 @@
       // 0.4.5 §二 — any click that is neither on a menu nor on its button dismisses an open
       // dropdown, the way a menu is expected to behave. Done before the act dispatch so the
       // other controls keep working with a menu open.
-      if (openMenu && act !== 'lang' && act !== 'rule' && act !== 'ask' &&
-          act !== 'pick-lang' && act !== 'pick-rule' &&
+      if (openMenu && act !== 'lang' && act !== 'rule' && act !== 'engine' && act !== 'ask' &&
+          act !== 'pick-lang' && act !== 'pick-rule' && act !== 'pick-engine' &&
           act !== 'pick-ask-lang' && act !== 'pick-ask-q') {
         closeMenus();
       }
@@ -2627,6 +2731,16 @@
       // ---- 0.4.5 §二 ----
       if (act === 'lang') { toggleMenu('lang'); return; }
       if (act === 'rule') { toggleMenu('rule'); return; }
+      if (act === 'engine') { toggleMenu('engine'); return; }
+      if (act === 'pick-engine') {
+        // Same repaint path as the rule: the write fires chrome.storage.onChanged, which is the
+        // one route that repaints every surface, so nothing is painted by hand here. The next
+        // engine call picks the new id up through `baseOpts()`; an engine already loaded for a
+        // running analysis is swapped by `getEngine` on its next call.
+        saveSetting('engineId', hit.getAttribute('data-v'));
+        closeMenus();
+        return;
+      }
       if (act === 'pick-lang') {
         // 'auto' is a real value here, not an absence: storage.js resolves it against the
         // browser language. The repaint is not done by hand — saveSetting fires
@@ -3435,7 +3549,7 @@
         { n: Math.round(STALL_MS / 60000),
           btn: S.mode === 'global' ? T('panel|分析当前对局') : T('panel|结束并出报告') }) + '</div>';
     }
-    if (engineNote) h += '<div class="note">' + esc(TE(engineNote)) + '</div>';
+    if (engineNote) h += '<div class="note' + (engineWarn ? ' warn' : '') + '">' + esc(TE(engineNote)) + '</div>';
     if (!running() && lastArchive) h += '<div class="ok">' + T('panel|已存档：{name}', { name: esc(lastArchive.name) }) + '</div>';
     // Mutually exclusive with 已存档: a skipped game must not leave the previous game's
     // confirmation on screen, which would read as "this one was saved".

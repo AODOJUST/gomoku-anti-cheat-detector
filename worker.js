@@ -12,10 +12,17 @@
 //      re-import the bridge and the engine would hang on the first search.
 var EngineInstance = null;
 
-function locateFile(url, engineDirURL) {
+function locateFile(url, engineDirURL, dataURL) {
   // The multi and single builds ask for differently-named data packages
   // (rapfi-multi-simd128.data / rapfi-single.data); all of them ship as one rapfi.data.
-  if (/^rapfi.*\.data$/.test(url)) url = 'rapfi.data';
+  if (/^rapfi.*\.data$/.test(url)) {
+    // 0.5.1 §2.2 — a custom weight package arrives as a blob URL created by the offscreen
+    // document out of IndexedDB. ONLY this request is redirected: the `.js` still comes through
+    // `importScripts` from the extension package and the `.wasm` from the engine directory, which
+    // is what keeps a user-supplied model inside MV3's `script-src 'self'`. Redirecting
+    // `locateFile` wholesale would send the wasm fetch to the weight package.
+    return dataURL || (engineDirURL + 'rapfi.data');
+  }
   return engineDirURL + url;
 }
 
@@ -58,6 +65,7 @@ self.onmessage = function (e) {
     var data = msg.data || {};
     var engineURL = data.engineURL;
     var engineDirURL = engineURL.substring(0, engineURL.lastIndexOf('/') + 1);
+    var dataURL = data.dataURL || '';
     var isMulti = /-multi/.test(engineURL);
     if (isMulti && (data.threads === false || !sharedMemoryUsable())) {
       self.postMessage({
@@ -78,7 +86,7 @@ self.onmessage = function (e) {
       return;
     }
     self['Rapfi']({
-      locateFile: function (url) { return locateFile(url, engineDirURL); },
+      locateFile: function (url) { return locateFile(url, engineDirURL, dataURL); },
       mainScriptUrlOrBlob: engineURL,
       onReceiveStdout: function (o) { self.postMessage({ type: 'stdout', data: o }); },
       onReceiveStderr: function (o) { self.postMessage({ type: 'stderr', data: o }); },

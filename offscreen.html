@@ -31,6 +31,12 @@
 <script src="locale/mn.js"></script>
 <script src="storage.js"></script>
 <script src="learn.js"></script>
+<!-- 0.5.1 §2.1.2/§2.2 — the registry must be resident before app.js reads it, and this document
+     is where custom weight packages become blob URLs (worker.js answers `locateFile` with one).
+     It is the only context besides the viewer that may touch that IndexedDB: a content script's
+     IndexedDB belongs to the page. -->
+<script src="engines.js"></script>
+<script src="custom-engine.js"></script>
 <script src="app.js"></script>
 <script src="offscreen.js"></script>
 </body>
