@@ -2248,7 +2248,7 @@
       '<div class="gm">' +
         '<div class="hd" title="' + esc(T('panel|按住此处拖动面板到任意位置')) + '">' +
           '<span aria-hidden="true" style="color:var(--gm-dim);font-size:12px;line-height:1">⠿</span>' +
-          '<b>' + esc(T('panel|Gomoku 反作弊检测')) + '</b><span class="sp"></span>' +
+          '<b>' + esc(T('panel|白身 · 反作弊检测')) + '</b><span class="sp"></span>' +
           '<span class="lk" data-act="open-viewer">' + esc(T('panel|查看器')) + '</span>' +
           // 0.4.10 §一.3 — 📋 / 🌐 / ⚙ became words. An emoji is a picture the operator has to
           // decode, and none of the three has a settled meaning (📋 reads as "notes", 🌐 as
@@ -2458,6 +2458,7 @@
     if (why === 'senderUnknown') return T('panel|发送者颜色未定：可以提问，但回答不会调整 AI 率');
     if (why === 'cooldown') return T('panel|冷却中：10 秒内已发送过');
     if (why === 'alreadyAsked') return T('panel|本局已经问过这道题');
+    if (why === 'alreadyAnnounced') return T('panel|本局已经发过声明');
     if (why === 'rateTooLow') return T('panel|对手 AI 率未超过 55，此题暂不可用');
     return T('panel|当前不可提问');
   }
@@ -4031,7 +4032,10 @@
 
     // Our own message: the anchor. It tells us the chat works, and nothing else.
     if (fromId === CHAT_SELF || isSelfMessage(fromId) === true) {
-      if (t === GMChat.ANNOUNCE) chat.announced = true;
+      // 0.5.0 §3.2 — matched against EVERY wording of the statement, not only the English one.
+      // The operator can now send it by hand in any of the bank's eight languages, and a miss
+      // here is silent: the automatic sender would simply never learn that its statement landed.
+      if (GMChat.announceTexts().indexOf(t) >= 0) chat.announced = true;
       return;
     }
 
@@ -4151,6 +4155,9 @@
       senderIsBlack: chat.senderIsBlack,
       lastSentAt: chat.lastSentAt,
       askedIds: chat.history.map(function (h) { return h.qid; }),
+      // 0.5.0 §3.2 — the statement's second entry point has its own record, so the picker has to
+      // be told about it separately. See chat.js:askBlocked.
+      announced: !!chat.announced,
       // Not read by askBlocked — the callers need them to label their own output.
       _rate: opponentRisk(),
       _openingCode: opening && (opening.code || (typeof opening === 'string' ? opening : null)),
@@ -4379,7 +4386,11 @@
     // `chatAnnounced = { roomId, at }` is what stops a second statement in the same room, and
     // writing it before the send is known to have landed would record a statement that never
     // went out as delivered.
-    sendChatWithRetry(GMChat.ANNOUNCE, sendFailFoot, markAnnounced);
+    // 0.4.4 §7.2 is unchanged by 0.5.0 §3.2: the AUTOMATIC statement is fixed English and does
+    // not follow settings.lang. The language is now passed explicitly instead of being baked
+    // into a chat.js constant, because the same text is also offered as a question the operator
+    // can send by hand in their chosen language.
+    sendChatWithRetry(GMChat.announceText('en'), sendFailFoot, markAnnounced);
   }
 
   function markAnnounced() {
@@ -4511,7 +4522,7 @@
     els.chatPanel.innerHTML =
       '<div class="chd">' + esc(T('panel|自动发送反作弊声明')) + '</div>' +
       '<div class="cbody">' + esc(T('panel|即将向对手发送这条英文声明，发送后无法撤回：')) +
-        '<div class="ctext">' + esc(GMChat.ANNOUNCE) + '</div></div>' +
+        '<div class="ctext">' + esc(GMChat.announceText('en')) + '</div></div>' +
       '<div class="cft"><span class="sp"></span>' +
         '<span class="lk" data-act="chat-confirm-no">' + esc(T('panel|本局忽略')) + '</span>' +
         '<span class="lk" data-act="chat-confirm-yes">' + esc(T('panel|发送')) + '</span></div>';

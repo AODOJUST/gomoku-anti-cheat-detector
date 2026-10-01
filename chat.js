@@ -176,8 +176,47 @@
     },
   };
 
-  /** The §7.2 announcement. FIXED ENGLISH by decree — it does not follow settings.lang. */
-  var ANNOUNCE = 'The Gomoku anti-cheat program has been integrated into matches. Please play with integrity.';
+  /**
+   * 0.5.0 §3.2 — the §7.2 announcement now lives in the question bank as `q-announce`, where it
+   * carries all eight languages, instead of being a second copy of the English sentence here.
+   *
+   * The AUTOMATIC sender still passes 'en' (0.4.4 §7.2: 「固定英文，不随设置语言变化」, pinned by
+   * verify-044); the manual entry in the 提问 picker sends the operator's chosen language. One
+   * text, two entry points — a second copy of the sentence is the "two spellings of one answer"
+   * shape this project has shipped wrong three times.
+   *
+   * Read from the global rather than captured at load time: a module-level `var` would freeze
+   * whichever bank happened to exist at this file's evaluation, and the value would then be
+   * invisible to any test that swaps the bank first. Returns null when the bank is absent — the
+   * caller then simply does not send, which the old constant could never express.
+   */
+  function announceQuestion() {
+    var bank = (typeof GM_QUESTIONS !== 'undefined' && GM_QUESTIONS) || [];
+    for (var i = 0; i < bank.length; i++) {
+      if (bank[i] && bank[i].category === 'announce') return bank[i];
+    }
+    return null;
+  }
+
+  function announceText(lang) {
+    var q = announceQuestion();
+    return q ? textOf(q.text, lang) : null;
+  }
+
+  /**
+   * Every wording of the statement. Used to recognise our OWN message when the chat observer
+   * echoes it back — comparing against the English string alone (as 0.4.4 did) stops working the
+   * moment the operator sends the statement by hand in another language, and the failure is
+   * silent: `chat.announced` simply never becomes true.
+   */
+  function announceTexts() {
+    var q = announceQuestion(), out = [];
+    if (!q || !q.text) return out;
+    for (var k in q.text) {
+      if (Object.prototype.hasOwnProperty.call(q.text, k)) out.push(q.text[k]);
+    }
+    return out;
+  }
 
   function textOf(map, lang) {
     if (!map) return null;
@@ -324,10 +363,19 @@
    */
   function grade(question, answer, ctx) {
     ctx = ctx || {};
-    var w = question && question.weight ? question.weight : 3;
+    // 0.5.0 §三 — `weight != null`, NOT `weight ?`. A weight of 0 means "this is a message, not a
+    // test", and the falsy ternary silently promoted it to the DEFAULT weight of 3, so the two
+    // ungraded questions in the bank would have moved the opponent's risk by ±8 like any other.
+    // Nothing about the old expression looks wrong, which is exactly why it survived.
+    var w = (question && question.weight != null) ? question.weight : 3;
     var text = String(answer == null ? '' : answer).trim();
 
     if (!text) return { branch: 'empty', verdict: 'empty', delta: 0 };
+
+    // A weight-0 question is never graded and never moves the risk score, whatever comes back.
+    // Returned BEFORE the §13.1 dodge and the §13.4 tails below on purpose: those add +2 by
+    // design, and 「不参与答案判定与 AI 率调整」 (§3.3 #3) would be false if they could fire.
+    if (w === 0) return { branch: classifyReply(question, text, ctx), verdict: 'none', delta: 0 };
 
     // §13.1 runs BEFORE the branch test: a long dodge is milder evidence (+2) than a confident
     // 「没学过」, which is why it must not be swallowed by the NO branch.
@@ -490,6 +538,10 @@
     if (ctx.senderIsBlack == null) return 'senderUnknown';
     if (ctx.lastSentAt && ctx.now - ctx.lastSentAt < (question.cooldownMs || 10000)) return 'cooldown';
     if (ctx.askedIds && ctx.askedIds.indexOf(question.id) >= 0) return 'alreadyAsked';
+    // 0.5.0 §3.2 — the statement has a SECOND entry point: the automatic sender (§7.1), which has
+    // its own idempotence record (`chatAnnounced`) and never touches `chat.history`. Without this
+    // the operator could repeat by hand a statement the extension had already sent this game.
+    if (question.category === 'announce' && ctx.announced) return 'alreadyAnnounced';
     var w = question.askWhen || {};
     if (w.aiAbove != null && !(ctx.rate > w.aiAbove)) return 'rateTooLow';
     if (w.always) return null;
@@ -506,7 +558,9 @@
     AUTO_PROMPT_RATE: AUTO_PROMPT_RATE,
     MAX_ADJUSTS: MAX_ADJUSTS,
     MAX_SWING: MAX_SWING,
-    ANNOUNCE: ANNOUNCE,
+    announceQuestion: announceQuestion,
+    announceText: announceText,
+    announceTexts: announceTexts,
     TEMPLATES: TEMPLATES,
 
     detectLang: detectLang,

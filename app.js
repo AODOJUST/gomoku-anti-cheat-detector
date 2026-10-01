@@ -681,6 +681,9 @@ function scanThreats(board) {
 // alternative. None of that has anything to do with what the board allows, so the uniqueness
 // of the defence is decided from the board instead.
 //
+// (0.5.0 §1.1 added a second shape reader beside this one — `classifyFour` — for the four's
+// FORM rather than its uniqueness. They answer different questions and the file keeps both.)
+//
 // `uniqueBlocksForFour(board, side)` enumerates every empty point that, once `side` plays
 // there, removes the OPPONENT's four. That set IS the side's set of legal defences against
 // the four: a point that does not answer it leaves the four standing. Exactly one such point,
@@ -727,6 +730,111 @@ function forcedDefenseByShape(board, side, actual, prevBoard) {
   return { forced: false, reason: unique.length ? 'shape-multi-block' : 'shape-none' };
 }
 
+// ---------- 0.5.0 §1.1 四的形态：真四 / 跳四 / 双四 ----------
+// `scanThreats` answers "is there a four" — a 5-cell window holding exactly 4 own stones and 1
+// empty one. That test cannot tell `XXXX_` from `XX_XX` from `X_XXX`: all three are "4 own + 1
+// empty" and all three would make five at one point. §1.1 is the consequence — `applyTerminal`
+// read a 跳四 as half of a 四三杀 and truncated the record.
+//
+// The property that separates them is the four's SHAPE, and the cheapest way to state it is
+// from the other end: enumerate the points at which this side would complete a five.
+//   · 0 points  — there is no four at all;
+//   · 1 point   — the defender has exactly one legal answer, so the four is FORCING;
+//   · 2+ points — no single answer exists (a live four, or two fours), so it is not "a four
+//                 plus something else", it is already a win.
+// Inside the 1-point case the shapes still differ: when the four stones are CONTIGUOUS
+// (`XXXX_`) the five point sits at an END of the line, and when they are not (`X_XXX`,
+// `XX_XX`, `XXX_X`) it sits INSIDE it. §1.1 calls the first 真四 and the second 跳四, and only
+// the first may be read as half of a 四三杀.
+//
+// This is a SECOND question, not a second spelling of `uniqueBlocksForFour`. That one asks
+// "which of my moves leave the opponent with no four at all" — so a live four answers "none",
+// which verify-048 pins. This one asks "where could the opponent make five". The two agree
+// only while the opponent has a single four; both are needed and neither replaces the other.
+function fivePointsFor(board, side) {
+  if (!board || !board.length || (side !== 'B' && side !== 'W')) return [];
+  const own = {}, occ = {};
+  for (let i = 0; i < board.length; i++) {
+    const s = board[i];
+    if (!s || s.x == null || s.y == null) continue;
+    occ[s.x + ',' + s.y] = true;
+    if (s.side === side) own[s.x + ',' + s.y] = true;
+  }
+  const pts = [];
+  for (let x = 0; x < SIZE; x++) {
+    for (let y = 0; y < SIZE; y++) {
+      if (occ[x + ',' + y]) continue;
+      if (fiveAt(own, x, y)) pts.push([x, y]);
+    }
+  }
+  return pts;
+}
+
+// Would one more own stone at (px,py) make five? `o` is that stone's index inside the 5-cell
+// window, so the window's start slides with it and every alignment through the point is tried.
+// A window only counts when all five of its cells are own stones — an empty cell or an
+// opponent's stone anywhere in it means this is not a five. `own` alone is enough: a cell that
+// is not own is either the new point (counted) or a blocker.
+function fiveAt(own, px, py) {
+  for (let d = 0; d < FOUR_DIRS.length; d++) {
+    const dx = FOUR_DIRS[d][0], dy = FOUR_DIRS[d][1];
+    for (let o = 0; o < 5; o++) {
+      const sx = px - dx * o, sy = py - dy * o;
+      let cells = 0, ok = true;
+      for (let i = 0; i < 5; i++) {
+        const cx = sx + dx * i, cy = sy + dy * i;
+        if (cx < 0 || cx >= SIZE || cy < 0 || cy >= SIZE) { ok = false; break; }
+        if (cx === px && cy === py) { cells++; continue; }
+        if (own[cx + ',' + cy]) cells++;
+      }
+      if (ok && cells === 5) return true;
+    }
+  }
+  return false;
+}
+
+// Is the four completed at `p` a CONTIGUOUS run? Asked directly, as the question it is: does a
+// 5-cell window exist in which `p` sits at one END and the other four cells are all own? A jump
+// four has no such window — its empty point is always strictly between the stones.
+//
+// The spec's sketch inferred this from "does the five point have three neighbours of one colour
+// in some direction", which is the wrong test: in `X_XXX` the three stones to the RIGHT of the
+// hole are a run of three and a neighbour count would call it contiguous. The window edge is
+// the fact; the neighbour count is a symptom of it.
+function fourIsSolid(board, side, p) {
+  const own = {};
+  for (let i = 0; i < board.length; i++) {
+    const s = board[i];
+    if (s && s.side === side && s.x != null && s.y != null) own[s.x + ',' + s.y] = true;
+  }
+  for (let d = 0; d < FOUR_DIRS.length; d++) {
+    const dx = FOUR_DIRS[d][0], dy = FOUR_DIRS[d][1];
+    for (let e = 0; e < 2; e++) {
+      const o = e === 0 ? 0 : 4;                    // the five point at either end
+      const sx = p[0] - dx * o, sy = p[1] - dy * o;
+      let ok = true;
+      for (let i = 0; i < 5; i++) {
+        const cx = sx + dx * i, cy = sy + dy * i;
+        if (cx < 0 || cx >= SIZE || cy < 0 || cy >= SIZE) { ok = false; break; }
+        if (cx === p[0] && cy === p[1]) continue;
+        if (!own[cx + ',' + cy]) { ok = false; break; }
+      }
+      if (ok) return true;
+    }
+  }
+  return false;
+}
+
+// `{kind, points}` or null. `doubleFour` is §1.1's name for "two or more five points", which
+// covers both a true double four and an open four — either way no single defence exists, which
+// is the only thing the caller does with the answer.
+function classifyFour(board, side) {
+  const pts = fivePointsFor(board, side);
+  if (!pts.length) return null;
+  if (pts.length >= 2) return { kind: 'doubleFour', points: pts };
+  return { kind: fourIsSolid(board, side, pts[0]) ? 'solidFour' : 'jumpFour', points: pts };
+}
+
 // 0.3.4: the win-rate proxy is gone (see liveFourHolder above). A step is terminal when the
 // position after it contains a live four. `board` is that position; when a caller cannot
 // supply one the step is simply not terminal — a missed early stop only costs engine time,
@@ -752,18 +860,38 @@ function applyTerminalShape(step, board) {
   if (!t) return null;
   const me = (step.side === 'B' || step.side === 'W') ? step.side : null;
   const you = me === 'B' ? 'W' : (me === 'W' ? 'B' : null);
-  const isFT = (s) => !!s && t[s].four && t[s].openThree;
 
-  if (isFT(me)) return { kind: 'fourThree', attacker: me };
-  if (isFT(you)) return { kind: 'fourThree', attacker: you };
+  // 0.5.0 §1.1 — "four AND open three" was the whole test, and `scanThreats` cannot tell a 真四
+  // from a 跳四. A 跳四 + 活三 is NOT a kill: the four's only answer sits INSIDE the four, which
+  // is exactly where one stone can also answer the open three, and the defender may equally
+  // have a counter-four. Only a solid or double four is read as half of a 四三杀; a jump four
+  // is merely RECORDED (`jumpFourOnly`, which the async half turns into `step.jumpFourFlag`).
+  //
+  // Measuring conservatively is the deliberate direction (§0.3.4): a missed early stop costs
+  // engine time, whereas a false one invents a result and truncates the record.
+  //
+  // `openThree` is also the gate on the classification, because a four without a three is not a
+  // kill and is not reported by anything here — which keeps the per-hand cost of the new
+  // enumeration at zero on the overwhelming majority of positions.
+  const kindOf = (s) => (s && t[s].four && t[s].openThree) ? classifyFour(board, s) : null;
+  const kills = (f) => !!f && (f.kind === 'solidFour' || f.kind === 'doubleFour');
+  const myKind = kindOf(me), yourKind = kindOf(you);
+
+  if (kills(myKind)) return { kind: 'fourThree', attacker: me };
+  if (kills(yourKind)) return { kind: 'fourThree', attacker: you };
   if (me && t[me].liveFour) return { kind: 'liveFour', attacker: me };
   if (me && t[you].liveFour) return { kind: 'liveFour', attacker: you };
+  // Checked AFTER the live four: a position that holds a real live four is over regardless of
+  // which side owns the jump four, and the wording must say so.
+  if (myKind) return { kind: 'jumpFourOnly', attacker: me };
+  if (yourKind) return { kind: 'jumpFourOnly', attacker: you };
   if (!me) {
     // The colour of the side to move is unknown (rare, but a record with no authoritative
     // `stones` can reach here). The shapes are still hard evidence, so stop anyway and
     // report the holder rather than guessing a direction. `attacker: null` carries that
-    // "unknown" through to the wording.
-    if (['B', 'W'].some(isFT)) return { kind: 'fourThree', attacker: null };
+    // "unknown" through to the wording — and the SAME classification decides whether a four
+    // is a kill, so a 跳四 does not stop the game here either.
+    if (['B', 'W'].some((s) => kills(kindOf(s)))) return { kind: 'fourThree', attacker: null };
     if (['B', 'W'].some((s) => t[s].liveFour)) return { kind: 'liveFour', attacker: null };
   }
   return null;
@@ -800,6 +928,15 @@ async function applyTerminal(step, opts, board) {
     step.stopReason = shape.attacker === null ? '任一方形成活四，检测停止'
       : (shape.attacker === step.side ? '当前方形成活四，对手必败' : '对手形成活四，当前方必败');
     return true;
+  }
+
+  // 0.5.0 §1.1 — 跳四 + 活三. Detection CONTINUES (return false, no stopReason): the hand is
+  // recorded so the operator can see why a four that looks like a kill did not end the game,
+  // which is otherwise indistinguishable from a detection that simply missed it.
+  if (shape.kind === 'jumpFourOnly') {
+    step.jumpFourFlag = true;
+    step.terminal = false;
+    return false;
   }
 
   // fourThree. An unknown colour cannot be checked against a defender, so it keeps the old
@@ -894,13 +1031,14 @@ function markEvasion(steps, thresholds) {
   for (let i = 0; i < steps.length; i++) steps[i].evasion = false;
 
   // Same population sideAggregate() scores, so "excluded from the main statistics" below is
-  // literally the same set of hands being moved out of it. `forcedDefense` is already exempt
-  // (§2.4: a hand that had no alternative cannot be a deliberate smoke screen), and the
+  // literally the same set of hands being moved out of it. A forced defence is already exempt
+  // (§2.4: a hand that had no alternative cannot be a deliberate smoke screen) — through
+  // `isExemptUnique()`, so this file has ONE spelling of that rule and not five — and the
   // opening is excluded because there is no "previous hand of my own" yet.
   const own = { B: [], W: [] };
   for (let i = 0; i < steps.length; i++) {
     const s = steps[i];
-    if (!s.analyzed || s.isOpening || s.forcedDefense) continue;
+    if (!s.analyzed || s.isOpening || isExemptUnique(s)) continue;
     if (s.side === 'B' || s.side === 'W') own[s.side].push(s);
   }
   const isGood = (s) => !!s && s.top1 && (s.loss == null || s.loss < goodMax);
@@ -1017,7 +1155,7 @@ function recordPrevBestWR(steps) {
 // while three of them at a fixed interval is a rhythm.
 function evasionStats(steps, side, thresholds) {
   const t = thresholds || BASE_THRESHOLDS;
-  const own = steps.filter(x => x.side === side && x.analyzed && !x.isOpening && !x.forcedDefense);
+  const own = steps.filter(x => x.side === side && x.analyzed && !x.isOpening && !isExemptUnique(x));
   const evs = own.filter(x => x.evasion);
   const count = evs.length;
 
@@ -1253,7 +1391,7 @@ function summarizeSteps(steps, times, opts) {
     totalMoves: steps.length,
     scoredCount: steps.filter(x => x.analyzed).length,
     prejoinCount: steps.filter(x => isPrejoin(x.source)).length,
-    forcedCount: steps.filter(x => x.forcedDefense).length,
+    forcedCount: steps.filter(x => isExemptUnique(x)).length,
     orderSuspect: issues > 0,
     orderIssues: issues,
     hasTime,
@@ -1596,6 +1734,38 @@ function stepProximity(s) {
   return 0;
 }
 
+// ---------- 0.5.0 §1.2 唯一手豁免的边界 ----------
+// The ONLY hand kept out of the main statistics is a 冲四强制应对手 — a hand whose entire
+// content was answering the opponent's four.
+//
+// The rule was already implemented; what §1.2 asked for was for it to be STATABLE. Read as a
+// bare `!x.forcedDefense` in a filter clause it looks like it might exclude every unique hand,
+// and the question "does this also drop a 唯一好手 in an open position?" has no answer from the
+// code. It does not, and it never did:
+//
+//   · `forcedDefense` is set by the board's shape test (`forcedDefenseByShape`, the only
+//     blocking point and the operator played it) or by the engine's win-rate gap;
+//   · both of those are tests for "there was nothing else to play";
+//   · a 唯一手 that is merely the engine's favourite in an open position has neither test
+//     against it, so it stays in the statistics — which is what §1.2 wants.
+//
+// `forcedDefenseHow` is deliberately NOT consulted. A forced defence is a fact about the board;
+// 'shape' and 'engine' are two ways of NOTICING the same fact, and preferring one would make
+// the exemption depend on which detector happened to fire. §1.2 offers the narrower reading as
+// an option; it is not taken, and this function is the single place a future switch would live.
+//
+// SCOPE — this predicate is the definition for THIS FILE, and every site in it that needs the
+// rule calls it (markEvasion, evasionStats, sharpStreakStats, subscoresForSide, segmentSide, and
+// the two `forcedCount` diagnostics). `learn.js` and `viewer.js` carry their own copy of the
+// same clause on purpose: app.js publishes through `module.exports` rather than a global, so
+// calling this from either of them would need the `typeof … === 'function'` fallback that
+// duplicates the rule it was meant to remove. A change here must therefore be mirrored in
+// `learn.js:subscoresForSide` and in the viewer's two step-table filters — verify-053 counts all
+// three files so a future edit cannot move one without being told about the others.
+function isExemptUnique(s) {
+  return !!(s && s.forcedDefense);
+}
+
 // ---------- 0.4.8 §1.2 唯一手连续命中 ----------
 // 唯一手 here is the ENGINE's only-good-move reading (`isSharp`: best-vs-second gap >= 0.12
 // with the best move winning or losing outright) — not the four's only-block reading, which is
@@ -1611,11 +1781,15 @@ function stepProximity(s) {
 // hands of that player — the opponent's intervening hands are not part of the run. A sharp hand
 // that MISSED the top move breaks the chain; a hand that is not sharp at all leaves it
 // standing, because it is neither a hit nor a failure to hit.
+//
+// 0.5.0 §1.2 — the exemption is now stated as a predicate instead of as a bare `… .forcedDefense`
+// in each filter clause. See `isExemptUnique` for what it does and, more importantly, what it
+// deliberately does NOT cover.
 function sharpStreakStats(steps, side) {
   const own = [];
   for (let i = 0; i < steps.length; i++) {
     const s = steps[i];
-    if (s.side === side && s.analyzed && !s.isOpening && !s.forcedDefense) own.push(s);
+    if (s.side === side && s.analyzed && !s.isOpening && !isExemptUnique(s)) own.push(s);
   }
   let maxStreak = 0, totalSharp = 0, streakHits = 0, currentStreak = 0;
   for (let i = 0; i < own.length; i++) {
@@ -1646,7 +1820,7 @@ function sideAggregate(steps, side, hasTime, params, opts) {
   // ACPL produced by the smoke screen rather than by the play. The two evasion terms below
   // are what carries that evidence instead, so nothing is lost.
   const s = steps.filter(x => x.side === side && !x.isOpening && x.analyzed &&
-                              !x.forcedDefense && !x.evasion);
+                              !isExemptUnique(x) && !x.evasion);
   if (!s.length) return null;
   const n = s.length;
   const top1 = avg(s.map(x => x.top1 ? 1 : 0));
@@ -1805,7 +1979,7 @@ function segmentSide(steps, side) {
   // green/orange line at a row that does not match the run it describes.
   const ownIdx = [];
   steps.forEach(function (s, i) {
-    if (s.side === side && s.analyzed && !s.isOpening && !s.forcedDefense) ownIdx.push(i);
+    if (s.side === side && s.analyzed && !s.isOpening && !isExemptUnique(s)) ownIdx.push(i);
   });
   if (ownIdx.length < MIN_SEGMENT) return [];
 
@@ -1994,7 +2168,7 @@ function buildReport(steps, record, opts) {
     // 'win' | 'draw' | 'unknown'. A draw is a finished game with no winner; kept in the
     // report so the viewer and the archive name do not have to guess from a null winner.
     outcome: (record.meta && record.meta.outcome) || 'unknown',
-    forcedCount: steps.filter(x => x.forcedDefense).length,
+    forcedCount: steps.filter(x => isExemptUnique(x)).length,
     // 0.4.8 §1.3: the four-threes that did NOT end the game because the defender's block was
     // itself a four (a 反四). Kept as a list rather than a count: the operator needs to know
     // WHICH hand it was, because that hand is the reason detection continued past a shape the
@@ -2048,6 +2222,10 @@ if (typeof module !== 'undefined' && module.exports) {
     // re-deriving it — the same reason the line above exists.
     forcedDefenseByShape, uniqueBlocksForFour, sharpStreakStats,
     applyTerminalShape, checkFourThreeCounter,
+    // 0.5.0 §1.1/§1.2: the four's FORM (真四 / 跳四 / 双四) and the exemption predicate. The
+    // suite drives both directly — a test that re-implemented `classifyFour` to check it would
+    // be testing its own copy of the rule, which is how this project has gone wrong before.
+    fivePointsFor, classifyFour, fourIsSolid, isExemptUnique,
     // 0.3.3 risk-model plumbing, exported so the learner and the tests can reason about the
     // exact numbers the detector uses.
     riskParams, rampUp, rampDown, loadLearnedParams, BASE_WEIGHTS, BASE_THRESHOLDS,

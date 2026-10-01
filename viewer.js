@@ -2344,6 +2344,12 @@
     // intent and must not read like the engine's 可疑 verdict or like 将败's hopelessness.
     if (s.evasion) badges.push('<span class="badge b-evasion">' + T('viewer|回避') + '</span>');
     if (s.forcedDefense) badges.push('<span class="badge" style="background:#888;color:#fff">' + T('viewer|豁免') + '</span>');
+    // 0.5.0 §1.1 — a 跳四 + 活三, which is deliberately NOT treated as a 四三杀 (the four's only
+    // answer sits inside it, where one stone can also answer the three). The badge exists so the
+    // operator can tell "the detector decided this was not a kill" apart from "the detector
+    // missed a kill": without it, a four that did not stop the game has no visible reason.
+    if (s.jumpFourFlag) badges.push('<span class="badge b-jump" title="' +
+      T('viewer|跳四 + 活三不终止') + '">' + T('viewer|跳四') + '</span>');
     // 0.3.3 C: the step fingerprint-matched a human-confirmed AI move. Its own colour and
     // its own wording — it is a similarity to the operator's own library, which is a
     // different claim from the engine's 可疑 verdict and must not read as the same thing.
@@ -3298,11 +3304,13 @@
       h: { 'zh-CN': '1. 快速开始', en: '1. Quick start' },
       b: {
         'zh-CN': [
+          '白身（Baishen）是这套反作弊检测器的名字。采集与引擎分析都在你自己的浏览器里完成。',
           '安装扩展后打开 gomoku.com 或 papergames.io 的对局页，浮层会自动出现在角落并开始采集。',
           '一局结束（或你点「分析当前对局」）后引擎开始分析。看两样东西：面板上的风险分，和浮层边框的颜色。',
           '边框是给眼角看的：绿=低风险，橙=可疑，红=高风险。详细结论在「查看器」里。',
         ],
         en: [
+          'Baishen（白身）is the name of this anti-cheat detector. Collection and engine analysis both happen inside your own browser.',
           'Open a game on gomoku.com or papergames.io. The overlay appears in a corner on its own and starts collecting.',
           'After the game ends — or when you press 分析当前对局 — the engine analyses it. Watch two things: the risk score in the panel, and the colour of the overlay border.',
           'The border is meant for the corner of your eye: green = low, orange = suspect, red = high. The detailed verdict lives in the viewer.',
@@ -3361,6 +3369,7 @@
           '回避手：明明该走却故意避开的选择，单独统计、不计入主要指标。',
           '唯一手：全局唯一正确手，连续命中是强信号。',
           '无用冲四：白冲一四、不产生威胁，是典型的「装作在进攻」。',
+          '跳四：间隔型的四（如 X_XXX / XX_XX）。它有且只有一个成五点，但那个点在四的中间，挡它的同一手也可能顺手挡掉活三，所以「跳四 + 活三」不按四三杀处理 —— 检测会继续，并在步骤里标出「跳四」。',
         ],
         en: [
           'Risk score: 0–100, higher is more suspicious. Below 40 is normally human, 40–69 suspect, 70+ high.',
@@ -3369,6 +3378,7 @@
           'Evasion moves: choices that deliberately avoid the natural move. Counted separately and kept out of the main metrics.',
           'Unique moves: the one globally correct move. Streaks of them are a strong signal.',
           'Useless fours: a four that creates no real threat — the hallmark of pretending to attack.',
+          'Jump four: a four with a gap (X_XXX / XX_XX). It has exactly one completing point, but that point sits INSIDE the four — the same stone that blocks it may also block an open three. So 跳四 + 活三 is not treated as a kill: detection continues and the step is badged 跳四.',
         ],
       },
     },
@@ -3382,6 +3392,7 @@
           'Top-5 外：前三五名之外的选择，人会有，引擎很少有。',
           '时间模式：落子耗时的分布。人类忽快忽慢，引擎常常过分均匀。',
           '冲四豁免：被对手逼出来的唯一防守不算可疑，按形状判定而不是按引擎判定。',
+          '豁免的范围只有「冲四强制应对手」这一种。开放局面里引擎恰好只推荐一个的「唯一好手」不算被迫，正常计入统计。',
         ],
         en: [
           'Top-1 / 3 / 5: how often the played move is inside the engine\'s best 1 / 3 / 5 candidates.',
@@ -3390,6 +3401,7 @@
           'Outside Top-5: choices the engine would rarely make but a human often would.',
           'Time pattern: the distribution of move times. Humans are erratic; engines are often unnaturally even.',
           'Forced-four exemption: a defence forced by the opponent is not suspicious. This is decided by the SHAPE, not by the engine.',
+          'The exemption covers exactly one kind of hand: a forced answer to a four. A 唯一好手 that is merely the engine\'s favourite in an open position is not forced, so it counts normally.',
         ],
       },
     },
@@ -3907,6 +3919,7 @@
         ' · ' + (!s.analyzed ? T('viewer|(跳过)') : (s.top1 ? 'Top1' : (s.top3 ? 'Top3' : (s.top5 ? 'Top5' : T('viewer|Top5外'))))) +
         (s.isSharp ? ' · ' + T('viewer|唯一手') : '') + (s.desperate ? ' · ' + T('viewer|将败') : '') + (s.evasion ? ' · ' + T('viewer|回避') : '') +
         (s.forcedDefense ? ' · ' + T('viewer|冲四豁免') : '') +
+        (s.jumpFourFlag ? ' · ' + T('viewer|跳四') : '') +
         ' · ' + T('viewer|前5候选 {list}', { list: (s.candStrs || []).join(' ') })
       : T('viewer|棋谱：{n} / {total} 子（拖滑块或点按钮逐步查看）', { n: stones.length, total: total });
     // The legend doubles as the hover readout, so a dashed grey ring explains itself even
@@ -4599,6 +4612,7 @@
          ' · ' + (!st.analyzed ? T('viewer|(跳过)') : (st.top1 ? 'Top1' : (st.top3 ? 'Top3' : (st.top5 ? 'Top5' : T('viewer|Top5外'))))) +
          (st.isSharp ? ' · ' + T('viewer|唯一手') : '') + (st.desperate ? ' · ' + T('viewer|将败') : '') + (st.evasion ? ' · ' + T('viewer|回避') : '') +
          (st.forcedDefense ? ' · ' + T('viewer|冲四豁免') : '') +
+         (st.jumpFourFlag ? ' · ' + T('viewer|跳四') : '') +
          (st.aiSimilar ? ' · ' + T('viewer|疑AI指纹') +
             (st.aiSim != null ? '(' + st.aiSim + ')' : '') : ''))
       : T('viewer|棋谱：{n} / {total} 子（拖滑块或点按钮逐步查看）', { n: stones.length, total: total });

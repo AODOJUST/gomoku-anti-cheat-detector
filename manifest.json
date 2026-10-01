@@ -1,9 +1,9 @@
 {
   "manifest_version": 3,
-  "name": "Gomoku Anti-Cheat Detector",
-  "version": "0.4.12",
+  "name": "白身 (Baishen)",
+  "version": "0.5.0",
   "minimum_chrome_version": "109",
-  "description": "Records gomoku.com and papergames.io games, runs Rapfi offscreen, detects AI-assisted play, and archives replays in 13 languages.",
+  "description": "白身 (Baishen): records and archives gomoku.com / papergames.io games, detects AI-assisted play with Rapfi, 13 languages.",
   "permissions": [
     "storage",
     "offscreen",

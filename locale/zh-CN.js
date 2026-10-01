@@ -89,11 +89,14 @@ GMI18n.register('zh-CN', {
   'type.normal': '普通玩家',
 
   // 0.4.4 — the runtime codes the chat side emits. Listed here so the BASELINE table can resolve
-  // them; the seven generated tables get them from _tools/i18n-extra.js (same arrangement as the
-  // `type.*` block above).
+  // them; the twelve generated tables get them from _tools/i18n-extra.js (same arrangement as the
+  // `type.*` block above). Both halves are load-bearing: `tOr()` returns the raw code when
+  // neither table has the key, so a missing row here shows the operator the word `none`.
   'verdict.correct': '答对', 'verdict.wrong': '答错', 'verdict.unknown': '明确拒答',
   'verdict.vague': '答非所问', 'verdict.empty': '未作答', 'verdict.no': '否',
   'verdict.followup': '追问中',
+  // 0.5.0 §三 — a `weight: 0` question is a message, not a test.
+  'verdict.none': '已发送',
   'senderHow.socket': 'socket 事件', 'senderHow.dom': '页面 DOM',
   'senderHow.anchor-unresolved': '声明锚点（未定）', 'senderHow.unknown': '未确定',
   'llm.notConfigured': '未配置 LLM API', 'llm.quotaExceeded': '本月额度已用尽',
@@ -144,7 +147,7 @@ GMI18n.register('zh-CN', {
   'live.ended': '实时逐步会话已结束。',
 
   // ---- 复制输出模板 (§2.6, verbatim).
-  'copy.prefix': 'Gomoku反AI作弊检测器输出：',
+  'copy.prefix': '白身（Baishen）输出：',
   'copy.degraded': '（降级）',
   'copy.blackTag': '（黑）',
   'copy.whiteTag': '（白）',
@@ -166,16 +169,26 @@ GMI18n.register('zh-CN', {
   // ---- 学习参数标签与学习提示 (learn.js). The parameter labels are keyed by the parameter's
   // STABLE key (`top1`, `riskHigh`, …) rather than by their text, so the tables cannot share
   // them with the viewer's identical wording; `_tools/i18n-extra.js` maps the keys onto the
-  // texts. `learn.noRoleTags` is the one learn result rendered through trError(), which has no
-  // fallback guard — without an entry here zh-CN would print the slug.
+  // texts. Every key of that file must ALSO be listed here: zh-CN is the baseline table and
+  // `t()` cannot resolve a runtime key from anywhere else, so a missing row prints the SLUG
+  // (`learn.weight.evasion`) in the panel. verify-053 asserts the two sets, because nothing in
+  // the toolchain did — 0.4.7 shipped two weight rows and eleven threshold rows that were in
+  // `i18n-extra.js` only, and the contribution breakdown rendered them as raw slugs in Chinese.
   'learn.weight.top1': 'Top1 吻合',
   'learn.weight.acpl': 'ACPL 均损',
   'learn.weight.sharp': '唯一手',
   'learn.weight.out': 'Top5 之外',
   'learn.weight.desperate': '将败冲四',
   'learn.weight.time': '时间规律',
+  // 0.4.2 §2.3 — the two surcharges learned in their own budget. Reached RAW (no fallback) by
+  // the viewer's contribution breakdown, so their absence here was visible, not latent.
+  'learn.weight.evasion': '回避手',
+  'learn.weight.winBlunder': '将胜乱下',
   // 0.4.7 §1.1 — the third per-item surcharge.
   'learn.weight.uselessFour': '无用冲四',
+  // 0.4.8 §1.2 — the streak pair, also a surcharge.
+  'learn.weight.sharpStreak': '唯一手连续',
+  'learn.weight.sharpTotal': '唯一手累计',
 
   'learn.threshold.top1Lo': 'Top1 下界',
   'learn.threshold.top1Hi': 'Top1 上界',
@@ -187,6 +200,19 @@ GMI18n.register('zh-CN', {
   'learn.threshold.riskHigh': '高风险线',
   'learn.threshold.riskMid': '可疑线',
   'learn.threshold.simWeight': '特征库权重',
+  // 0.4.2 §4.3 — the six evasion cuts and the winning-position win-rate line.
+  'learn.threshold.evasionLoss': '回避手损失阈值',
+  'learn.threshold.goodLoss': '好棋损失上限',
+  'learn.threshold.evasionMin': '规律性最小回避数',
+  'learn.threshold.evasionReg': '规律性标准差上限',
+  'learn.threshold.winningWR': '将胜胜率阈值',
+  // 0.4.3 §1.1/§1.6 — two re-anchored ramp cuts and the four AI-class band lines.
+  'learn.threshold.topProxLo': '接近度下界',
+  'learn.threshold.topProxHi': '接近度上界',
+  'learn.threshold.typeAiMin': 'AI 档线',
+  'learn.threshold.typeSuspectMin': '疑似AI 档线',
+  'learn.threshold.typeProMin': '职业选手 档线',
+  'learn.threshold.typeExpertMin': '高手玩家 档线',
   // 0.4.7 §1.1 — the two cuts that split a four-run into VCF / 防御性 / 无用.
   'learn.threshold.fourVcfWR': '冲四 VCF 胜率线',
   'learn.threshold.fourLostWR': '冲四 必败胜率线',

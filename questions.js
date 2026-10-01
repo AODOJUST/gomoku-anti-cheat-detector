@@ -103,6 +103,67 @@
       },
       notes: '开局名题。人类高手对 RIF 开局名有直觉，AI 作弊者通常没有 —— 这是本扩展独有的判定依据，因为本局真实开局名由 GMOpening 从棋谱反推，不依赖对手的答案。',
     },
+
+    // ---------- 0.5.0 §三：两条不判对错的消息 ----------
+    // Both carry `weight: 0`, which `GMChat.grade()` now reads as "this is a message, not a
+    // test": no branch is graded and the adjustment is exactly 0 whatever the opponent replies.
+    // Before 0.5.0 a weight of 0 fell through `question.weight ? … : 3` to the DEFAULT weight of
+    // 3, so the two would have moved the opponent's risk score by ±8 like any other question —
+    // silently, because 0 is falsy and nothing about the value looks wrong.
+    {
+      id: 'q-ask-origin',
+      category: 'social',
+      difficulty: 1,
+      weight: 0,
+      // 随时可提问. It asks nothing the extension can grade, so there is no reason to gate it on
+      // the opponent's rate the way q002 is gated.
+      askWhen: { always: true },
+      cooldownMs: 10000,
+      timeoutMs: 60000,
+      // ENGLISH ONLY, on purpose (§3.1). The question exists to make the opponent REVEAL their
+      // language, and `GMChat.detectLang()` reads the reply: sending it in a language the
+      // operator guessed would prime the answer and destroy the evidence. English is the least
+      // priming choice available, because it is the most likely second language for anyone who
+      // would answer at all.
+      //
+      // A one-language entry needs no special handling anywhere: `GM_QUESTION_LANGS` is the
+      // union over the bank, so English was already in it, and `GMChat.textOf` falls back to
+      // English for every other locale — which is the same string, so the picker cannot send
+      // this question in a language it does not have.
+      text: { en: 'where are you from?' },
+      accepted: [],
+      reject: [],
+      notes: '引导对手自报母语，回答交给 GMChat.detectLang() 更新 chatState.lang。weight 0：不判对错、不动 AI 率。',
+    },
+
+    {
+      id: 'q-announce',
+      category: 'announce',
+      difficulty: 1,
+      weight: 0,
+      askWhen: { always: true },
+      cooldownMs: 10000,
+      timeoutMs: 60000,
+      // The anti-cheat statement. 0.4.4 §7.2 fixed the AUTOMATIC statement to the English text
+      // and said it must not be translated; §3.2 keeps that and adds a manual entry that sends
+      // the operator's chosen language. The two entry points therefore share this one map — the
+      // automatic sender passes 'en' explicitly — instead of keeping a second copy of the
+      // sentence in chat.js, which is the "two spellings of one answer" shape this project has
+      // shipped wrong three times.
+      text: {
+        'zh-CN': '反作弊程序已接入对局，请诚信对弈。',
+        'zh-TW': '反作弊程式已接入對局，請誠信對弈。',
+        ja: '不正行為対策プログラムが対局に導入されました。公正にプレイしてください。',
+        ko: '반부정행위 프로그램이 대국에 적용되었습니다. 정정당당하게 대국해 주세요.',
+        en: 'The Gomoku anti-cheat program has been integrated into matches. Please play with integrity.',
+        ru: 'Программа по борьбе с читерством подключена к матчам. Играйте честно.',
+        fr: 'Le programme anti-triche de Gomoku a été intégré aux parties. Jouez avec intégrité.',
+        de: 'Das Gomoku-Anti-Cheat-Programm wurde in Spiele integriert. Bitte spielen Sie fair.',
+      },
+      accepted: [],
+      reject: [],
+      notes: '开局声明。自动发送固定英文（0.4.4 §7.2），手动入口按提问语言发送。weight 0：不判对错、不动 AI 率。',
+    },
   ];
 
   // 0.4.11 §一.6 — the languages the BANK can actually send, COMPUTED from the data rather than

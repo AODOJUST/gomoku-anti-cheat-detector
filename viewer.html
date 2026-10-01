@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>五子棋 AI 反作弊检测器 · 查看器</title>
+<title>白身 · 查看器</title>
 <style>
   /* ---- 0.4.7 §三.1 主题 · §三.2 透明度 ----
      0.4.6 and earlier shipped ONE palette, hard-coded dark. 0.4.7 makes the palette
@@ -289,6 +289,10 @@
   .b-desp{background:var(--orange);color:#fff}
   .b-ai{background:#3c5ee7;color:#fff}
   .b-pre{background:var(--badge-pre-bg);color:var(--badge-pre-fg)}
+  /* 0.5.0 §1.1 — 跳四. Outlined rather than filled on purpose: every other badge is a verdict
+     the detector reached, this one is a verdict it DECLINED to reach, and the two must not read
+     like the same kind of statement. */
+  .b-jump{background:transparent;color:var(--orange);border:1px solid var(--orange)}
   /* 0.4.3 §1.3: the segment rail. A 4px line down the left edge of every step row — green
      while the side stayed inside the engine's Top5, orange once it stepped outside. The point
      is that a run of hands reads as a run, instead of as N separate ✓ columns the eye has to
@@ -660,7 +664,7 @@
 </head>
 <body>
 <header>
-  <h1>五子棋 AI 反作弊检测器 <span class="sub">查看器 · Rapfi(WASM)</span></h1>
+  <h1>白身 · 反作弊检测 <span class="sub">查看器 · Rapfi(WASM)</span></h1>
   <div class="nav">
     <button class="navbtn active" data-view="detect">检测</button>
     <button class="navbtn" data-view="replay">回放</button>

@@ -1644,6 +1644,11 @@
       // shape test rescued from a hand the engine had already agreed about, and so a
       // regression in either path is visible in an archived game rather than only in a rerun.
       forcedDefenseHow: s.forcedDefenseHow || null,
+      // 0.5.0 §1.1: this hand held a 跳四 + 活三, which is NOT a 四三杀, so detection did not
+      // stop here. Kept per step because the badge is the only way the operator can see WHY a
+      // four that looks like a kill did not end the game — the absence of a stopReason is
+      // otherwise indistinguishable from a detection that simply missed it.
+      jumpFourFlag: !!s.jumpFourFlag,
       // 0.4.8 §1.3: present only on a four-three hand. `counter: true` records that the
       // defender's block was itself a four, which is why detection did NOT stop there.
       fourThreeCounter: s.fourThreeCounter || null,
