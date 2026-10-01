@@ -519,9 +519,22 @@
      inside them, not by capping the panel, which is what the old 620px column did. */
   .set-panel{margin-top:12px}
   .set-panel:first-child{margin-top:0}
-  /* 0.5.2 §5.2 — the sub-heading inside a merged panel (「自定义检测模型」 under 引擎与自定义引擎).
-     Smaller than the panel's own h2 and separated by a rule, so the nesting is legible without
-     another border: two stacked bordered panels would read as two panels again. */
+  /* 0.5.3 — the transparency groups inside 「自定义UI与背景」. Each group is a FULL-WIDTH row
+     (the header) with its own evenly-filled grid of parts under it. Without the `grid-column`
+     span the header is just another grid cell and lands in the middle of the sliders — which is
+     exactly what shipped: 「查看器」 sat in column 1 of the row holding 元素透明度, and 「浮层」
+     was pushed to column 2 of the next one. A group is a heading, not a peer of its parts. */
+  .tp-group{grid-column:1/-1;min-width:0}
+  .tp-group + .tp-group{margin-top:4px}
+  .tp-head{display:flex;align-items:center;gap:8px;font-size:var(--ui-detail-font);
+           font-weight:600;color:var(--txt);cursor:pointer;user-select:none}
+  .tp-head input{flex:0 0 auto;min-width:0}
+  .tp-parts{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,260px),1fr));
+            gap:14px 20px;margin-top:10px;padding-inline-start:4px}
+  /* 0.5.2 §5.2 — the sub-heading inside a merged panel (「自定义检测模型」 under 引擎与自定义引擎,
+     and 「自定义背景」 under 自定义UI与背景). Smaller than the panel's own h2 and separated by a
+     rule, so the nesting is legible without another border: two stacked bordered panels would
+     read as two panels again. */
   .set-sub{margin:16px 0 8px;padding-top:12px;border-top:1px solid var(--line);
            font-size:var(--ui-detail-font);font-weight:600;color:var(--txt)}
   /* 0.5.2 §5.1 — the background preview. Fixed 400×300 and painted with `background-image`, so
@@ -1747,63 +1760,41 @@
             <span class="hint">显示 / 隐藏步骤明细的列（四张表共用）</span>
           </div>
         </div>
-        </div>
       </div>
       <div class="btn-row" style="margin-top:10px">
         <span class="hint">也可以在浏览器工具栏图标上点右键，从「语言」菜单里切换 —— 两条入口写的是同一份设置，改一处两处都会跟着变。</span>
       </div>
     </div>
 
-    <!-- 0.5.3 §1.1.6 — 透明度与模糊. Replaces 0.4.7's single 透明度模式 switch, whose number ran
-         the opposite way (100 = opaque) from the requirement (100 = see-through).
+    <!-- 0.5.3 §1.1.6 + 0.5.2 §5.1 — 「自定义UI与背景」. These were TWO panels, and the split put
+         the two halves of one subject two screens apart: 透明度 decided how much of the picture
+         shows through, and the picture itself was set somewhere else. One reader, one subject.
 
-         The rows are BUILT BY `buildTransparencyPanel()` from `TRANSPARENCY_LIMITS` rather than
-         written out here, because every slider's `max` is that table's ceiling and every readout
-         needs the same value. Ten hand-written controls would mean ten chances to typo a ceiling,
-         and a slider whose max disagrees with the value storage clamps to is a control that
-         silently snaps back when released. -->
+         Replaces 0.4.7's single 透明度模式 switch, whose number ran the opposite way
+         (100 = opaque) from the requirement (100 = see-through).
+
+         The transparency rows are BUILT BY `buildTransparencyPanel()` from `TRANSPARENCY_LIMITS`
+         rather than written out here, because every slider's `max` is that table's ceiling and
+         every readout needs the same value. Ten hand-written controls would mean ten chances to
+         typo a ceiling, and a slider whose max disagrees with the value storage clamps to is a
+         control that silently snaps back when released. -->
     <div class="panel set-panel">
-      <h2 id="tpTitle">透明度与模糊</h2>
+      <h2 id="tpTitle">—</h2>
       <div class="set-grid" id="tpGrid"></div>
       <div class="btn-row" style="margin-top:10px">
         <span class="hint" id="tpHint"></span>
       </div>
-    </div>
 
-    <!-- 0.5.3 §2.2.4 — 回放过滤. Number inputs rather than sliders, which is what §2.2.4 asks
-         for: the operator is naming an exact interval (the default ceiling of 54 is the top of
-         the 高手玩家 band), and a slider that lands on 53 or 55 makes that impossible to hit. -->
-    <div class="panel set-panel">
-      <h2 id="afTitle">回放过滤</h2>
-      <div class="set-grid">
-        <div class="set-item">
-          <label id="afEnabledLabel">启用</label>
-          <div class="fx">
-            <input type="checkbox" id="afEnabled">
-            <span class="hint" id="afEnabledHint"></span>
-          </div>
-        </div>
-        <div class="set-item">
-          <label id="afRangeLabel">AI 率范围</label>
-          <div class="fx">
-            <input type="number" id="afMin" min="0" max="100" step="1" style="width:80px">
-            <span class="hint">–</span>
-            <input type="number" id="afMax" min="0" max="100" step="1" style="width:80px">
-            <span class="hint">%</span>
-          </div>
-        </div>
-      </div>
-      <div class="btn-row" style="margin-top:10px">
-        <span class="hint" id="afHint"></span>
-      </div>
-    </div>
+      <!-- §5.1.5 — the picture is ONE control with TWO independent slots: the in-page 浮层 and
+           the viewer page are stored and tuned separately, because a picture that works as a
+           backdrop behind a 580px panel over a game is rarely the one you want behind a full-page
+           table. Each slot owns its own file, opacity, blur and offset.
 
-    <!-- 0.5.2 §5.1 — 自定义背景. One panel, two independent slots (§5.1.5): the in-page 浮层 and
-         the viewer page are stored and tuned separately, because a picture that works as a
-         backdrop behind a 580px panel over a game is rarely the one you want behind a full-page
-         table. Each slot owns its own file, opacity, blur and offset. -->
-    <div class="panel set-panel">
-      <h2>自定义背景</h2>
+           A `h3.set-sub` rather than a second `h2`: it is a section of this panel, not a panel.
+           The label stays STATIC text — `html|自定义背景` is already in all twelve tables, so
+           giving it an id and filling it from JS would buy nothing and cost a second place to
+           change it. -->
+      <h3 class="set-sub">自定义背景</h3>
       <div class="set-grid">
         <div class="set-item">
           <label>应用到</label>
@@ -1846,6 +1837,34 @@
       </div>
       <div class="bg-prev" id="bgPreview" title="按住拖动调整位置">
         <span class="bg-prev-empty" id="bgPreviewEmpty">还没有背景图</span>
+      </div>
+    </div>
+
+    <!-- 0.5.3 §2.2.4 — 回放过滤. Number inputs rather than sliders, which is what §2.2.4 asks
+         for: the operator is naming an exact interval (the default ceiling of 54 is the top of
+         the 高手玩家 band), and a slider that lands on 53 or 55 makes that impossible to hit. -->
+    <div class="panel set-panel">
+      <h2 id="afTitle">回放过滤</h2>
+      <div class="set-grid">
+        <div class="set-item">
+          <label id="afEnabledLabel">启用</label>
+          <div class="fx">
+            <input type="checkbox" id="afEnabled">
+            <span class="hint" id="afEnabledHint"></span>
+          </div>
+        </div>
+        <div class="set-item">
+          <label id="afRangeLabel">AI 率范围</label>
+          <div class="fx">
+            <input type="number" id="afMin" min="0" max="100" step="1" style="width:80px">
+            <span class="hint">–</span>
+            <input type="number" id="afMax" min="0" max="100" step="1" style="width:80px">
+            <span class="hint">%</span>
+          </div>
+        </div>
+      </div>
+      <div class="btn-row" style="margin-top:10px">
+        <span class="hint" id="afHint"></span>
       </div>
     </div>
 

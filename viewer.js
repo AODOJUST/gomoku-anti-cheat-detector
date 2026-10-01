@@ -807,14 +807,21 @@
   function buildTransparencyPanel() {
     var grid = $('tpGrid');
     if (!grid) return;
-    setTxt('tpTitle', T('viewer|透明度与模糊'));
+    setTxt('tpTitle', T('viewer|自定义UI与背景'));
     setTxt('tpHint', T('viewer|模糊度需要透明度大于 0 才看得见。查看器窗口无法真正透出桌面，这里的「透明」是相对浏览器底色而言；有背景图时，透明度越高背景图越明显。'));
     var html = '';
     TP_GROUPS.forEach(function (grp) {
       var lim = (G.TRANSPARENCY_LIMITS || {})[grp.part] || {};
-      html += '<div class="set-item"><label>' + esc(tpGroupLabel(grp.part)) + '</label><div class="fx">' +
-        '<input type="checkbox" id="' + tpId(grp.part, 'enabled') + '">' +
-        '<span class="hint">' + esc(T('viewer|启用')) + '</span></div></div>';
+      // A GROUP is a full-width row: the header (`tp-head`, with the switch) then a nested grid
+      // of that group's parts. Emitting the header as one more `.set-item` — which is what the
+      // first cut did — makes it a peer of the sliders, so it flows into the same row and
+      // 「浮层」 ends up sitting beside 元素模糊度. `.tp-group{grid-column:1/-1}` in the stylesheet
+      // is what gives the header its own line.
+      html += '<div class="tp-group" data-tp-part="' + grp.part + '">' +
+        '<label class="tp-head"><input type="checkbox" id="' + tpId(grp.part, 'enabled') + '">' +
+        '<span>' + esc(tpGroupLabel(grp.part)) + '</span>' +
+        '<span class="hint">' + esc(T('viewer|启用')) + '</span></label>' +
+        '<div class="tp-parts">';
       grp.rows.forEach(function (key) {
         var max = lim[key];
         if (typeof max !== 'number') return;   // no ceiling => not configurable, see the table
@@ -828,6 +835,7 @@
           (blur ? '<span class="hint">' + esc(T('viewer|需透明度 > 0 才可见')) + '</span>' : '') +
           '</div></div>';
       });
+      html += '</div></div>';
     });
     grid.innerHTML = html;
   }
