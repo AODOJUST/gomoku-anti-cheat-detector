@@ -27,12 +27,12 @@
  * ---------------------------------------------------------------------------------------
  * Why the NUMBERS are not written down here
  * ---------------------------------------------------------------------------------------
- * §1.4.2's tables print a weight for every signal and a cut for every band, and EIGHT of the
- * thirteen weights it prints are stale — it lists top1 0.16 / acpl 0.07 / sharp 0.18 / out 0.22
- * / desperate 0.06 / time 0.12 / evasion 0.05 / winBlunder 0.03 where `BASE_WEIGHTS` holds
- * 0.20 / 0.08 / 0.22 / 0.27 / 0.08 / 0.15 / 0.06 / 0.04. An encyclopedia that quotes a number
- * the detector does not use is worse than one that quotes no number at all, because an operator
- * will read it and believe it.
+ * §1.4.2's tables print a weight for every signal and a cut for every band, and the figures they
+ * print have gone stale more than once: a release rebalances `BASE_WEIGHTS` and the prose table is
+ * not re-derived from it. Quoting the current numbers here would make this file stale the same way
+ * — and it is not a comment that only maintainers read, it is a page the operator reads. An
+ * encyclopedia that states a number the detector does not use is worse than one that states no
+ * number at all.
  *
  * So no entry stores a figure. It stores the KEY it can be read from (`weightKey` / `bandLo` /
  * `bandHi`) and the impact line carries a `{w}` / `{lo}` / `{hi}` placeholder that the renderer
@@ -408,11 +408,14 @@ var GM_TAG_WIKI = (function () {
     // =====================================================================================
     // 检测信号 — app.js BASE_WEIGHTS. The thirteen terms the risk score is summed from.
     //
-    // The first six are the BASE: they always sum to 1.00, and every release since 0.4.2 has
-    // added its new signals as surcharges ON TOP rather than rescaling these (see the note in
-    // app.js above BASE_WEIGHTS). The remaining seven are those surcharges — each is exactly 0
-    // on a game that shows no such pattern, which is what keeps an older game's score
-    // reproducible.
+    // The first six are the 基础统计 (0.4.2's top1/acpl/sharp/out/desperate/time); the remaining
+    // seven are the 行为信号, each exactly 0 on a game that shows no such pattern. Through 0.5.4
+    // the six were the whole budget and the seven rode on top as surcharges; 0.5.5 §1.3 made the
+    // WHOLE table one budget of 1.00 (see the note in app.js above BASE_WEIGHTS), and 0.5.6 §2
+    // shrank the six so the behaviour signals now carry the majority. So neither group is "the"
+    // budget any more — the total is, and the split between the two is a per-release decision.
+    // Each entry reads its own figure live from `weightKey`, which is the only reason this
+    // paragraph can describe the model without repeating a number that will move.
     // =====================================================================================
     {
       id: 'signal-top1', cat: 'signal', nameNs: 'learn.weight', nameVal: 'top1',
@@ -421,12 +424,12 @@ var GM_TAG_WIKI = (function () {
         meaning: '实际走法与引擎首选的一致程度。不是「命中率」那么简单——0.4.3 起用的是'
              + '分档接近度：首选记 1.0、2–5 名记 0.80、6–8 名记 0.50，再取均值后过斜坡。',
         usage: '最基础的一项。它单独说明不了什么，但它是所有其他信号的对照组。',
-        impact: '权重 {w}，基础六项之一（六项合计 1.00）。',
+        impact: '权重 {w}，基础统计六项之一。',
       },
       en: {
         meaning: 'How closely the played moves match the engine\'s first choice. Not a plain hit rate — since 0.4.3 it reads a graded proximity: top-1 scores 1.0, ranks 2–5 score 0.80, ranks 6–8 score 0.50, and the mean goes through a ramp.',
         usage: 'The most basic term. On its own it proves little, but it is the control group for everything else.',
-        impact: 'Weight {w}, one of the six base terms (which sum to 1.00).',
+        impact: 'Weight {w}, one of the six base statistics.',
       },
     },
     {
@@ -435,12 +438,12 @@ var GM_TAG_WIKI = (function () {
       zh: {
         meaning: '平均胜率损失（Average Centipawn Loss 的胜率版本）——每一步相对引擎最佳着手的胜率跌幅。',
         usage: '衡量「下得有多准」的整体水平。人类越强，这一项越低。',
-        impact: '权重 {w}，基础六项之一。',
+        impact: '权重 {w}，基础统计六项之一。',
       },
       en: {
         meaning: 'Average win-rate loss — how much win probability each move gives up against the engine\'s best.',
         usage: 'The overall measure of how accurately the side played. Stronger humans score lower.',
-        impact: 'Weight {w}, one of the six base terms.',
+        impact: 'Weight {w}, one of the six base statistics.',
       },
     },
     {
@@ -450,12 +453,12 @@ var GM_TAG_WIKI = (function () {
         meaning: '「唯一手」命中率——引擎最佳与次优差距 ≥ 0.12 的那些步里，实际走了首选的比例。'
              + '样本少于 3 步时该分项固定为 0.5（无信息）。',
         usage: '最有说服力的一项：普通玩家在唯一手局面里会选错，引擎不会。',
-        impact: '权重 {w}，基础六项之一。',
+        impact: '权重 {w}，基础统计六项之一。',
       },
       en: {
         meaning: 'The 唯一手 hit rate — among hands where the engine\'s best and second-best differ by ≥ 0.12, the share where the top move was actually played. With fewer than 3 such hands the term is fixed at 0.5 (no information).',
         usage: 'The most persuasive term: an ordinary player picks wrong in a unique-move position, an engine does not.',
-        impact: 'Weight {w}, one of the six base terms.',
+        impact: 'Weight {w}, one of the six base statistics.',
       },
     },
     {
@@ -464,12 +467,12 @@ var GM_TAG_WIKI = (function () {
       zh: {
         meaning: '掉出前 5 候选的着手占比。',
         usage: '与「唯一手」互补：唯一手看它抓不抓得住对的一步，这一项看它会不会走出引擎根本没考虑的一步。',
-        impact: '权重 {w}，基础六项之一。',
+        impact: '权重 {w}，基础统计六项之一。',
       },
       en: {
         meaning: 'The share of hands played outside the engine\'s top-5 candidates.',
         usage: 'The complement of 唯一手: that one asks whether it finds the right move, this one whether it plays something the engine never considered.',
-        impact: 'Weight {w}, one of the six base terms.',
+        impact: 'Weight {w}, one of the six base statistics.',
       },
     },
     {
@@ -478,12 +481,12 @@ var GM_TAG_WIKI = (function () {
       zh: {
         meaning: '败势下的无谓冲四。3 次即满值。',
         usage: '人类在必败局面里会「挣扎」——连续冲四试图制造混乱；引擎会安静地走最顽强的一步。',
-        impact: '权重 {w}，基础六项之一。',
+        impact: '权重 {w}，基础统计六项之一。',
       },
       en: {
         meaning: 'Pointless four-chases from a losing position. Three of them saturate the term.',
         usage: 'Humans thrash when lost — chasing fours to create confusion. An engine quietly plays the most stubborn move instead.',
-        impact: 'Weight {w}, one of the six base terms.',
+        impact: 'Weight {w}, one of the six base statistics.',
       },
     },
     {
@@ -493,12 +496,12 @@ var GM_TAG_WIKI = (function () {
         meaning: '落子间隔的规律性：60% 看间隔是否稳定，40% 看间隔与胜率损失是否不相关。',
         usage: '引擎的耗时由搜索量决定，与局面难度无关；人的思考时间会跟着局面走。'
              + '没有计时数据时该分项固定为 0.5。',
-        impact: '权重 {w}，基础六项之一。',
+        impact: '权重 {w}，基础统计六项之一。',
       },
       en: {
         meaning: 'The regularity of move intervals: 60% whether the gaps are steady, 40% whether they are uncorrelated with win-rate loss.',
         usage: 'An engine\'s time is set by search volume, not by how hard the position is; a human\'s thinking time follows the position. With no timing data the term is fixed at 0.5.',
-        impact: 'Weight {w}, one of the six base terms.',
+        impact: 'Weight {w}, one of the six base statistics.',
       },
     },
     {
@@ -508,13 +511,13 @@ var GM_TAG_WIKI = (function () {
         meaning: '回避手：前后都是高分、中间突然走出臭棋的形态。一半看数量，一半看这种形态出现得有多规律。'
              + '5 次且节奏均匀时满值。',
         usage: '0.4.2 引入。针对「故意走几步差的来降低整体风险分」这种规避策略。',
-        impact: '权重 {w}，附加项（叠加在六项之上）。没有回避手时该分项为 0，'
+        impact: '权重 {w}，行为信号之一。没有回避手时该分项为 0，'
              + '因此不改变旧对局的分数。',
       },
       en: {
         meaning: 'Evasion hands: a good move, a sudden blunder, then a good move again. Half the term counts how many, half how evenly they are spaced. Five of them on a regular rhythm saturate it.',
         usage: 'Added in 0.4.2, aimed squarely at "play a few bad moves on purpose to drag the overall score down".',
-        impact: 'Weight {w}, a surcharge on top of the six. It is exactly 0 with no evasion hands, so older games score unchanged.',
+        impact: 'Weight {w}, one of the behaviour signals. It is exactly 0 with no evasion hands.',
       },
     },
     {
@@ -524,12 +527,12 @@ var GM_TAG_WIKI = (function () {
         meaning: '将胜乱下：已经胜势却走出明显劣着。3 次即满值。',
         usage: '与「回避手」成对出现——一个是败势里突然走好，一个是胜势里突然走坏，'
              + '都是「故意」的痕迹。',
-        impact: '权重 {w}，附加项。无此形态时为 0。',
+        impact: '权重 {w}，行为信号之一。无此形态时为 0。',
       },
       en: {
         meaning: 'Blundering while winning: a clearly inferior move played from a won position. Three of them saturate it.',
         usage: 'Pairs with 回避手 — one is suddenly playing well while lost, the other suddenly playing badly while winning. Both are traces of intent.',
-        impact: 'Weight {w}, a surcharge. Zero when the pattern is absent.',
+        impact: 'Weight {w}, one of the behaviour signals. Zero when the pattern is absent.',
       },
     },
     {
@@ -538,12 +541,12 @@ var GM_TAG_WIKI = (function () {
       zh: {
         meaning: '必败方的连续冲四（≥2 步，且该方最佳胜率 ≤ 0.10）。2 段即满值。',
         usage: '0.4.7 引入，比「将败冲四」更严格：不仅败势，还要连着冲。单次可能是诚实的挣扎，连着冲才是无谓。',
-        impact: '权重 {w}，附加项。无此形态时为 0。',
+        impact: '权重 {w}，行为信号之一。无此形态时为 0。',
       },
       en: {
         meaning: 'A run of 2+ consecutive four-chases played from a lost position (that side\'s best win rate ≤ 0.10). Two such runs saturate it.',
         usage: 'Added in 0.4.7 and stricter than 将败冲四: not just lost, but chasing repeatedly. A single one can be an honest attempt; a run cannot.',
-        impact: 'Weight {w}, a surcharge. Zero when the pattern is absent.',
+        impact: 'Weight {w}, one of the behaviour signals. Zero when the pattern is absent.',
       },
     },
     {
@@ -552,12 +555,12 @@ var GM_TAG_WIKI = (function () {
       zh: {
         meaning: '唯一手连中：连续命中唯一手的最长段。0.5.2 起改为指数曲线——连得越长，增量越大（3 段约 0.14，十段封顶）。',
         usage: '人类偶尔猜中唯一手是常事，连着猜中不是。指数曲线的意义在于「第 6 次」比「第 2 次」更可疑。',
-        impact: '权重 {w}，附加项。无唯一手连中时为 0。',
+        impact: '权重 {w}，行为信号之一。无唯一手连中时为 0。',
       },
       en: {
         meaning: 'The longest run of consecutive unique-move hits. Exponential since 0.5.2 — the longer the run, the bigger the increment (a 3-run is worth about 0.14, ten saturates).',
         usage: 'A human guessing a unique move once is ordinary; guessing it repeatedly is not. The exponential curve is what makes the 6th hit more suspicious than the 2nd.',
-        impact: 'Weight {w}, a surcharge. Zero with no streak.',
+        impact: 'Weight {w}, one of the behaviour signals. Zero with no streak.',
       },
     },
     {
@@ -566,12 +569,12 @@ var GM_TAG_WIKI = (function () {
       zh: {
         meaning: '唯一手累计：命中唯一手的总次数，同样是指数曲线。',
         usage: '补「连中」的漏洞——一个从不断长段、但反复命中唯一手的一方，靠这一项被抓出来。',
-        impact: '权重 {w}，附加项。无唯一手命中时为 0。',
+        impact: '权重 {w}，行为信号之一。无唯一手命中时为 0。',
       },
       en: {
         meaning: 'The total number of unique-move hits, also exponential.',
         usage: 'Covers the gap left by the streak term — a side that never runs long but keeps finding the only move is caught here.',
-        impact: 'Weight {w}, a surcharge. Zero with no hits.',
+        impact: 'Weight {w}, one of the behaviour signals. Zero with no hits.',
       },
     },
     {
@@ -603,12 +606,12 @@ var GM_TAG_WIKI = (function () {
         meaning: '活三好手：活三防点连续走成引擎首选的最长段（≥2 段起算），指数曲线。',
         usage: '0.5.2 引入。单次把活三防点走成首选是正常水平——活三往往只有一两个可选点；'
              + '连续两次在两个方向里都选对，才不是运气。',
-        impact: '权重 {w}，附加项。无此池时为 0。',
+        impact: '权重 {w}，行为信号之一。无此池时为 0。',
       },
       en: {
         meaning: 'Live-three defence played as the engine\'s first choice, longest run (counted from 2), on an exponential curve.',
         usage: 'Added in 0.5.2. Blocking a live three with the top choice once is ordinary — there are usually only one or two candidate points. Doing it twice in a row, with two directions to choose from, is not luck.',
-        impact: 'Weight {w}, a surcharge. Zero with no such pool.',
+        impact: 'Weight {w}, one of the behaviour signals. Zero with no such pool.',
       },
     },
   ];

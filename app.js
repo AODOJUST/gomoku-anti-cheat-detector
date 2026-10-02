@@ -1938,26 +1938,35 @@ function rampDown(v, lo, hi) {
 // was protecting was always the total, and a corpus split is exactly what that assertion exists to
 // catch — which is why the reversal had to be an explicit decision rather than a silent edit).
 const BASE_WEIGHTS = {
-  // 0.5.5 §1.3.1 方案 A. 方案 A 的表逐项：top1 0.13 / acpl 0.06 / sharp 0.14 / out 0.15 /
-  // desperate 0.05 / time 0.10 / evasion 0.04 / winBlunder 0.03 / uselessFour 0.03 /
-  // sharpStreak 0.03 / sharpTotal 0.03 / goodPool 0.18 / liveThree 0.03 — 总和 1.00.
+  // 0.5.6 §2.3 — the operator named five terms and their targets (evasion 0.04→0.08,
+  // sharpStreak 0.03→0.14, sharpTotal 0.03→0.18, goodPool 0.18→0.21, liveThree 0.03→0.06;
+  // 0.67 together) and left the other eight to be rescaled. §2.2 fixes the method: the eight
+  // shrink PROPORTIONALLY from 0.69 to 0.33 (×0.4783) and each is rounded to two places.
   //
-  // The three keys whose MEANING is unchanged keep the notes they earned:
-  //   · `uselessFour` — 0.4.7 §1.1's run of consecutive fours played from a lost position. §1.1
-  //     asked for it at 0.05 while comparing it to `desperate` (then 0.08); 0.5.5's table settles
-  //     both at 0.05, which is the value §1.1 named twice.
-  //   · `sharpStreak` / `sharpTotal` — 0.4.8 §1.2's two 唯一手 runs.
-  top1: 0.13, acpl: 0.06, sharp: 0.14, out: 0.15, desperate: 0.05, time: 0.10,
-  evasion: 0.04, winBlunder: 0.03,
-  uselessFour: 0.03,
-  sharpStreak: 0.03,
-  sharpTotal: 0.03,
-  // 0.5.5 §1.1/§1.3.1 — the redefined pool, now the joint-largest single term. It is no longer a
-  // surcharge: a game with no good points scores its `goodPool` 0 contribution like any other term,
-  // and the difference is carried by the terms above having been scaled down.
-  goodPool: 0.18,
-  // §1.2 — the 活三 pool, deliberately unchanged in value and in kind.
-  liveThree: 0.03,
+  // Two things this table must be read with, both of which the suite pins:
+  //   · the eight rounded values do NOT sum to exactly 0.33 by themselves in every rounding
+  //     scheme — §2.3's own running total (verify-058's arithmetic) closes at exactly 1.00, and
+  //     that total, not any sub-total, is the invariant.
+  //   · the DIRECTION is the point: `sharpStreak + sharpTotal + goodPool` = 0.53, over half the
+  //     budget, where `top1 + acpl + sharp + out` = 0.23. The detector is now driven by behaviour
+  //     signals rather than by the raw accuracy terms, which is what §2.4 says out loud.
+  //
+  // The two families the shrink acts on, and where each term came from:
+  //   · 基础六项 (top1/acpl/sharp/out/desperate/time) — the 0.4.2 statistics. They are the ones
+  //     §2.4 says 「各减半」; each is now roughly half its 0.5.5 value.
+  //   · 行为信号 (evasion/winBlunder/uselessFour/sharpStreak/sharpTotal/goodPool/liveThree) —
+  //     0.4.2's evasion pair, 0.4.7's 无用冲四, 0.4.8's two 唯一手 runs, and 0.5.2/0.5.5's two
+  //     pools. These gain, and they are the seven `learn.js` optimises in their own budget.
+  top1: 0.06, acpl: 0.03, sharp: 0.07, out: 0.07, desperate: 0.02, time: 0.05,
+  evasion: 0.08, winBlunder: 0.01,
+  uselessFour: 0.02,
+  sharpStreak: 0.14,
+  sharpTotal: 0.18,
+  // 0.5.5 §1.1/§1.3.1 redefined the pool (Top5, share + streak) and made it first-class rather
+  // than a surcharge; 0.5.6 §2.1 nudges it 0.18→0.21. It is still the largest single term.
+  goodPool: 0.21,
+  // §1.2 — the 活三 pool, now doubled (0.03→0.06) along with the other behaviour signals.
+  liveThree: 0.06,
 };
 const BASE_THRESHOLDS = {
   // 0.4.3 §1.1: the ramp aTop1 now reads. `top1Lo`/`top1Hi` are kept because a pre-0.4.3

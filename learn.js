@@ -36,18 +36,18 @@
   'use strict';
   if (g.GMLearn) return;
 
+  // 0.5.6 §2.3 — same table as app.js BASE_WEIGHTS / storage.js DEFAULT_WEIGHTS. The two-group
+  // structure below (BASE_KEYS = the six statistics, EVASION_KEYS = the seven behaviour signals)
+  // is a separate question from the VALUES and is unchanged: `group()` reads both budgets off
+  // this table, so the split follows the numbers (0.30 / 0.70 in 0.5.6) without a second edit.
   var FALLBACK_WEIGHTS = {
-    top1: 0.13, acpl: 0.06, sharp: 0.14, out: 0.15, desperate: 0.05, time: 0.10,
-    evasion: 0.04, winBlunder: 0.03,
-    // 0.5.5 §1.3.1 方案 A — the table now sums to 1.00 as a WHOLE; the seven non-base terms are no
-    // longer additive surcharges. See app.js BASE_WEIGHTS for the full history (0.4.8 and 0.5.2
-    // both declined this rescaling; 0.5.5 is an explicit decision to take the difference out of
-    // the existing terms so that 好点池 can stand at 0.18).
-    uselessFour: 0.03,
-    sharpStreak: 0.03,
-    sharpTotal: 0.03,
-    goodPool: 0.18,
-    liveThree: 0.03,
+    top1: 0.06, acpl: 0.03, sharp: 0.07, out: 0.07, desperate: 0.02, time: 0.05,
+    evasion: 0.08, winBlunder: 0.01,
+    uselessFour: 0.02,
+    sharpStreak: 0.14,
+    sharpTotal: 0.18,
+    goodPool: 0.21,
+    liveThree: 0.06,
   };
   var FALLBACK_THRESHOLDS = {
     // 0.4.3 §1.1: the ramp aTop1 reads. top1Lo/top1Hi stay for a pre-0.4.3 archive and for the
@@ -78,9 +78,12 @@
   // budget rather than being normalised together with the six. Normalising all thirteen in one sum
   // would let a corpus with no such signal at all hand the six the whole budget and then take it
   // away again on the next run — the base statistics would move between two learned models for
-  // reasons that have nothing to do with the base. The two groups are therefore normalised
-  // separately, to the budget each group's defaults already sum to (0.63 and 0.37 under §1.3.1).
-  // `group()` below reads both budgets off the defaults, so adding a key here is the whole wiring.
+  // reasons that have nothing to do with the base. 0.5.6 §2 does not change that structure: it
+  // moves the SPLIT (the behaviour signals now carry the majority of the budget, and the six carry
+  // less), which is a consequence of the defaults rather than an edit here. The two groups are
+  // normalised separately, to the budget each group's own defaults sum to — `group()` below reads
+  // both off `defaultWeights()`, so adding a key here is the whole wiring and no number is written
+  // down twice.
   var EVASION_KEYS = ['evasion', 'winBlunder', 'uselessFour', 'sharpStreak', 'sharpTotal',
                       // 0.5.2 §1.1.4/§1.2.4 — the group budget is read off the defaults by
                       // `group()` below, so listing the two keys here is the whole wiring.
@@ -719,7 +722,9 @@
     // statistic, and the seven special signals (each of which is exactly 0 on a game that never
     // fired it) are fitted inside their own budget, so a weak corpus cannot gut the base. Each
     // budget is read off the defaults, so changing a default weight moves its group's budget with
-    // it: 0.63 for the six, 0.37 for the seven, 1.00 together.
+    // it and no rebalancing release has to touch this code: 0.5.6 §2 left the six on 0.30 and the
+    // seven on 0.70, where 0.5.5 had them at 0.63 / 0.37 — the numbers are `defaultWeights()`'s,
+    // never this function's.
     var dw = defaultWeights();
     var group = function (keys) {
       var raw = {}, sum = 0, budget = 0, i;

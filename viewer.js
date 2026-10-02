@@ -554,6 +554,11 @@
     // 0.5.4 §1.5 — same reason again: these four labels are set from JS, and rebuilding the
     // controls resets their values, so this must come before `fillSettingsForm()` restores them.
     buildStorageFilter();
+    // 0.5.6 §1.3 — 导入与导出. Every label in the panel (and both category grids) is written by
+    // JS, so the static pass above cannot reach them. Rebuilt rather than re-initialised: the
+    // operator's export ticks survive, because buildIoPanel reads `ioChecked` instead of
+    // resetting it.
+    buildIoPanel();
     // §一.4: the banner and the settings page's status line are built in JS, so they carry no
     // `__gmKey` and the static pass above cannot reach them.
     fillVersionRow();
@@ -2660,6 +2665,370 @@
     await renderSettings();
     setStatus(T('viewer|存档已清空'));
   };
+
+  // =====================================================================
+  // 0.5.6 §一 导入与导出
+  // =====================================================================
+  // Nine categories, two directions. The list lives in ONE place (ioCats()) and both the export
+  // grid and the import dialog are built from it; a second copy is exactly how the two grids
+  // would start to disagree about which categories exist.
+  //
+  // ⚠ §1.3's ASCII sketch ticks only the first four boxes, while §1.3's own interaction rule says
+  // 「默认全选除『背景图片』以外的类别」. A sketch is a layout drawing and the rule is an explicit
+  // requirement, so the RULE is implemented and this is the note. The rule is also the safer
+  // default: a backup that silently omits 学习参数 or 列折叠偏好 looks complete and is not.
+  function ioCats() {
+    return [
+      { key: 'settings',        label: T('viewer|设置（不含 API Key）') },
+      { key: 'blacklist',       label: T('viewer|黑名单') },
+      { key: 'samples',         label: T('viewer|样本库') },
+      { key: 'archives',        label: T('viewer|回放存档') },
+      { key: 'customQuestions', label: T('viewer|自定义问题') },
+      { key: 'customEngines',   label: T('viewer|自定义引擎（不含模型文件）') },
+      { key: 'learnedParams',   label: T('viewer|学习参数') },
+      { key: 'backgrounds',     label: T('viewer|背景图片') },
+      { key: 'viewerCols',      label: T('viewer|列折叠偏好') },
+    ];
+  }
+  // The one category that starts UNCHECKED (§1.3.1): it is the only one whose file can be
+  // megabytes (the images ride as base64), and an operator who wants it will say so.
+  var IO_OFF_BY_DEFAULT = 'backgrounds';
+
+  var ioChecked = null;
+  function ioDefaultChecked() {
+    var d = {};
+    ioCats().forEach(function (c) { d[c.key] = c.key !== IO_OFF_BY_DEFAULT; });
+    return d;
+  }
+  function ioEnsureChecked() {
+    if (!ioChecked) ioChecked = ioDefaultChecked();
+    return ioChecked;
+  }
+  function ioSelected() {
+    ioEnsureChecked();
+    return ioCats().filter(function (c) { return ioChecked[c.key]; })
+      .map(function (c) { return c.key; });
+  }
+  function setIoStatus(id, text) {
+    var el = $(id);
+    if (el) el.textContent = text || '';
+  }
+
+  // Every label is written here rather than in viewer.html, so the whole panel follows a
+  // language switch through one function — the same rule 透明度 and 存储过滤 follow. Rebuilt,
+  // never re-initialised: the operator's ticks survive a repaint.
+  function buildIoPanel() {
+    var boxes = ioEnsureChecked();
+    setTxt('ioTitle', T('viewer|导入与导出'));
+    setTxt('ioExportTitle', T('viewer|导出自定义数据'));
+    setTxt('ioImportTitle', T('viewer|导入自定义数据'));
+    setTxt('ioAll', T('viewer|全选'));
+    setTxt('ioNone', T('viewer|全不选'));
+    setTxt('ioExport', T('viewer|导出为 JSON'));
+    setTxt('ioPick', T('viewer|选择文件'));
+    var host = $('ioCats');
+    if (!host) return;
+    host.innerHTML = ioCats().map(function (c) {
+      return '<label><input type="checkbox" data-io-cat="' + esc(c.key) + '"' +
+        (boxes[c.key] ? ' checked' : '') + '><span>' + esc(c.label) + '</span></label>';
+    }).join('');
+  }
+
+  // ---- 导出 ----
+  // Beijing wall-clock stamp for the filename (§1.3.3). Built with the UTC getters on a +8h
+  // shifted timestamp, so it is the operator's own clock whatever the machine's zone is — the
+  // same reasoning `storage.beijingTime` follows for display, and the reason `toISOString()`
+  // cannot be used here (it would answer in UTC and disagree with every time in the archive list).
+  function ioStamp(ts) {
+    var d = new Date((ts || Date.now()) + 8 * 3600 * 1000);
+    var p = function (n) { return (n < 10 ? '0' : '') + n; };
+    return d.getUTCFullYear() + p(d.getUTCMonth() + 1) + p(d.getUTCDate()) +
+      '-' + p(d.getUTCHours()) + p(d.getUTCMinutes());
+  }
+
+  async function ioExport() {
+    var cats = ioSelected();
+    if (!cats.length) { setIoStatus('ioExportStatus', T('viewer|请至少选择一个类别')); return; }
+    setIoStatus('ioExportStatus', T('viewer|正在导出…'));
+    try {
+      var env = await G.exportCustomData(cats);
+      var name = 'baishen-backup-' + ioStamp(env.exportedAt) + '.json';
+      download(name, JSON.stringify(env, null, 2), 'application/json');
+      setIoStatus('ioExportStatus', T('viewer|已导出：{name}', { name: name }));
+    } catch (e) {
+      setIoStatus('ioExportStatus',
+        T('viewer|导出失败：{err}', { err: GMI18n.trError(String((e && e.message) || e)) }));
+    }
+  }
+
+  // ---- 导入 ----
+  // Step 1 of §1.5: read the file, check its kind, then ASK. Nothing is written until 导入 is
+  // pressed, and the checkbox list is the FILE's own contents (§1.5.2) rather than the export
+  // grid's defaults — importing is not the reverse of exporting, it is a decision.
+  function ioPickFile() {
+    var el = $('ioFile');
+    // Cleared first: without this, picking the SAME file twice fires no `change` event and the
+    // second attempt looks like a dead control.
+    if (el) { el.value = ''; el.click(); }
+  }
+
+  async function ioHandleFile(file) {
+    if (!file) return;
+    setIoStatus('ioImportStatus', T('viewer|正在读取文件…'));
+    var env = null;
+    try {
+      // `Blob.text()` is on every Chromium this extension supports (min 109) — no FileReader
+      // needed here. The one FileReader left in the product is inside storage.js, converting the
+      // other direction (Blob → data URL) for the background images.
+      env = JSON.parse(await file.text());
+    } catch (e) {
+      setIoStatus('ioImportStatus', T('viewer|导入失败：{err}', { err: T('viewer|文件不是有效的 JSON') }));
+      return;
+    }
+    if (!env || env.kind !== G.BACKUP_KIND) {
+      setIoStatus('ioImportStatus', T('viewer|这个文件不是白身备份（缺少 kind 标记）'));
+      return;
+    }
+    setIoStatus('ioImportStatus', '');
+    ioShowImportDialog(env);
+  }
+
+  // §1.4 — a file from a NEWER build may carry settings this one has never heard of. That is a
+  // warning, not a refusal: the categories it does understand still import.
+  function ioVersionWarn(env) {
+    var mine = localVersion();
+    var theirs = String((env && env.appVersion) || '');
+    if (!theirs || !mine) return '';
+    // Numeric-part comparison, not a string one: '0.10.0' > '0.9.0' numerically and the reverse
+    // lexically, which is the one way this could warn in the wrong direction.
+    var num = function (v) {
+      return String(v).split('.').map(function (x) { return parseInt(x, 10) || 0; });
+    };
+    var a = num(theirs), b = num(mine);
+    for (var i = 0; i < Math.max(a.length, b.length); i++) {
+      if ((a[i] || 0) > (b[i] || 0)) {
+        return T('viewer|此备份来自更高版本 {v}，可能无法完整恢复', { v: theirs });
+      }
+      if ((a[i] || 0) < (b[i] || 0)) return '';
+    }
+    return '';
+  }
+
+  // The import dialog's label for each MERGING category is a complete sentence with its unit
+  // inside it rather than a number glued to a unit word. Two reasons: 条 / 个 / 局 are not the
+  // same word everywhere, and a separate `（{n} 局）` row already exists for the archive list
+  // whose English is " ({n} games)" — reusing it here would print "Saved games (42 games)".
+  function ioDialogLabel(cat, n) {
+    switch (cat) {
+      case 'blacklist': return T('viewer|黑名单（{n} 条）', { n: n });
+      case 'customQuestions': return T('viewer|自定义问题（{n} 条）', { n: n });
+      case 'samples': return T('viewer|样本库（{n} 个）', { n: n });
+      case 'customEngines': return T('viewer|自定义引擎（{n} 个）', { n: n });
+      case 'archives': return T('viewer|回放存档（{n} 局）', { n: n });
+    }
+    return '';
+  }
+  function ioCountOf(cat, data) {
+    var v = data && data[cat];
+    return Array.isArray(v) ? v.length : null;
+  }
+  // Only the categories the FILE carries, in the panel's order. One the file omits is not
+  // offered: a checkbox for a category that is not in the file could only ever be a no-op.
+  function ioPresentCats(env) {
+    var data = (env && env.data) || {};
+    return ioCats().filter(function (c) {
+      return Object.prototype.hasOwnProperty.call(data, c.key);
+    });
+  }
+  function ioCatTitle(cat) {
+    var hit = ioCats().filter(function (c) { return c.key === cat; })[0];
+    return hit ? hit.label : cat;
+  }
+
+  function ioShowImportDialog(env) {
+    var cats = ioPresentCats(env);
+    var data = env.data || {};
+    var warn = ioVersionWarn(env);
+    var html = '';
+    if (warn) html += '<div class="r warn">⚠ ' + esc(warn) + '</div>';
+    if (!cats.length) {
+      html += '<div class="r warn">⚠ ' + esc(T('viewer|这个备份里没有任何可导入的类别')) + '</div>';
+    } else {
+      html += '<ul class="io-sel" id="ioSelList">';
+      cats.forEach(function (c) {
+        var n = ioCountOf(c.key, data);
+        // The count is only shown where the file carries a countable list; a label with a
+        // fabricated "（0）" for an object-valued category would be a number nobody asked for.
+        var text = (n == null) ? c.label : ioDialogLabel(c.key, n);
+        html += '<li><label><input type="checkbox" data-io-cat="' + esc(c.key) + '" checked>' +
+          '<span>' + esc(text) + '</span></label></li>';
+      });
+      html += '</ul>';
+      html += '<div class="hint" style="margin-top:10px">' +
+        esc(T('viewer|每项右侧括号内是文件中的数量；合并类（黑名单、样本、回放）为追加导入，不覆盖现有数据。')) +
+        '</div>';
+      html += '<div class="btn-row" style="margin-top:12px">' +
+        '<button class="sec p" id="ioDoImport">' + esc(T('viewer|确认导入')) + '</button></div>';
+    }
+    openModal(T('viewer|选择要导入的类别'), html, function (bd) {
+      var btn = bd.querySelector('#ioDoImport');
+      if (btn) btn.onclick = function () { ioRunImport(env, bd, cats); };
+    });
+  }
+
+  async function ioRunImport(env, bd, cats) {
+    var chosen = [];
+    cats.forEach(function (c) {
+      var box = bd.querySelector('input[data-io-cat="' + c.key + '"]');
+      if (box && box.checked) chosen.push(c.key);
+    });
+    if (!chosen.length) {
+      // The dialog stays open: unchecking everything is a question, not a cancellation.
+      var note = bd.querySelector('.io-pick-none');
+      if (!note) {
+        note = document.createElement('div');
+        note.className = 'r warn io-pick-none';
+        var btn0 = bd.querySelector('#ioDoImport');
+        if (btn0 && btn0.parentNode) btn0.parentNode.insertBefore(note, btn0);
+      }
+      note.textContent = '⚠ ' + T('viewer|请至少选择一个类别');
+      return;
+    }
+    var btn = bd.querySelector('#ioDoImport');
+    if (btn) btn.disabled = true;
+    try {
+      var res = await G.importCustomData(env, chosen);
+      if (!res.ok) {
+        bd.innerHTML = '<div class="r warn">⚠ ' +
+          esc(T('viewer|导入失败：{err}', { err: String(res.error || '') })) + '</div>';
+        return;
+      }
+      // Everything a category can change is re-read and the page repainted BEFORE the report is
+      // written, because the repaint replaces the panels the report would otherwise sit under —
+      // and because "the settings page now shows what was imported" is the thing being checked.
+      await syncAfterImport();
+      // The report replaces the dialog's body rather than closing it: §1.5 step 7 is the outcome
+      // of the action the operator just took, and it belongs where they are standing.
+      bd.innerHTML = ioReportHtml(res.report);
+    } catch (e) {
+      bd.innerHTML = '<div class="r warn">⚠ ' +
+        esc(T('viewer|导入失败：{err}', { err: GMI18n.trError(String((e && e.message) || e)) })) + '</div>';
+    }
+  }
+
+  // A category's line in the report, in that category's own unit. A category with no line has
+  // nothing to say (there is no zero to print for something that was never attempted).
+  function ioAddedText(cat, r) {
+    switch (cat) {
+      case 'blacklist':
+      case 'customQuestions':
+        return T('viewer|{n} 条新增，{m} 条跳过', { n: r.added || 0, m: r.skipped || 0 });
+      case 'samples':
+        return T('viewer|{n} 个新增，{m} 个跳过', { n: r.added || 0, m: r.skipped || 0 });
+      case 'archives':
+        return T('viewer|{n} 局新增，{m} 局跳过', { n: r.added || 0, m: r.skipped || 0 });
+    }
+    return '';
+  }
+  function ioQuote(v) {
+    if (v == null) return '—';
+    if (typeof v === 'object') { try { return JSON.stringify(v); } catch (e) { return String(v); } }
+    return String(v);
+  }
+  // §1.6.4 — every refusal says both numbers: what the file asked for and what is still in
+  // force. The sentence is chosen by the REASON code the validator produced, so the wording and
+  // the rule can never drift apart.
+  function ioReasonText(err) {
+    var v = ioQuote(err.value), kept = ioQuote(err.kept);
+    switch (err.reason) {
+      case 'exceeds-device':
+        return T('viewer|导入值 {v} 超过本机支持的 {cap} 线程，已保持原值 {kept}',
+          { v: v, cap: G.detectedThreads(), kept: kept });
+      case 'out-of-range':
+        return T('viewer|导入值 {v} 超出允许范围，已保持原值 {kept}', { v: v, kept: kept });
+      case 'unsupported':
+        return T('viewer|导入值 {v} 不是支持的语言，已保持原值 {kept}', { v: v, kept: kept });
+      case 'engine-not-found':
+        return T('viewer|导入的引擎 {v} 不存在，已回退到 {kept}', { v: v, kept: kept });
+      default:
+        return T('viewer|导入值 {v} 不是有效取值，已保持原值 {kept}', { v: v, kept: kept });
+    }
+  }
+  function ioReportHtml(report) {
+    var h = '<h4>' + esc(T('viewer|导入完成')) + '</h4>';
+    (report || []).forEach(function (r) {
+      var line = '';
+      switch (r.cat) {
+        case 'settings':
+          line = T('viewer|设置：{ok} 项成功，{refused} 项退回', { ok: r.ok || 0, refused: r.refused || 0 });
+          break;
+        case 'blacklist': case 'samples': case 'archives': case 'customQuestions':
+          line = ioAddedText(r.cat, r);
+          break;
+        case 'learnedParams': case 'viewerCols':
+          line = T('viewer|已覆盖');
+          break;
+        case 'backgrounds':
+          line = T('viewer|已导入 {n} 张背景图片', { n: r.restored || 0 });
+          break;
+        case 'customEngines':
+          line = T('viewer|自定义引擎的模型文件不包含在备份中，请在新设备上重新上传（备份中记录了 {n} 个模型）',
+            { n: r.listed || 0 });
+          break;
+      }
+      if (!line) return;
+      h += '<span class="r">' + esc(ioCatTitle(r.cat)) + '：' + esc(line) + '</span>';
+      if (r.cat === 'settings' && r.errors && r.errors.length) {
+        r.errors.forEach(function (e) {
+          h += '<span class="sub warn">⚠ ' + esc(ioReasonText(e)) + '</span>';
+        });
+      }
+    });
+    if (h === '<h4>' + esc(T('viewer|导入完成')) + '</h4>') {
+      h += '<span class="r">' + esc(T('viewer|没有导入任何内容')) + '</span>';
+    }
+    return h;
+  }
+
+  // Everything an imported category can change, re-read and repainted in one place. `repaintForLang`
+  // is the right hammer here even though the language may not have changed: it is this file's
+  // "rebuild every JS-built panel" path, and going through it means an import cannot leave one
+  // panel showing a stale value that the next language switch would then fix.
+  async function syncAfterImport() {
+    S = await G.loadSettings();
+    applyLang(S.lang);
+    applyTheme(S.theme);
+    applyTransparency(S.transparency);
+    // 0.5.3 §3.2 — colPrefs is a second reader of chrome.storage that does not go through
+    // settings at all, so an imported `viewerCols` is invisible until it is reloaded.
+    await loadColPrefs();
+    applyColPrefs();
+    await refreshCustomRegistry();
+    repaintForLang();
+    await applyViewerBg();
+  }
+
+  if ($('ioAll')) $('ioAll').onclick = function () { ioEnsureChecked(); ioCats().forEach(function (c) { ioChecked[c.key] = true; }); buildIoPanel(); };
+  if ($('ioNone')) $('ioNone').onclick = function () { ioEnsureChecked(); ioCats().forEach(function (c) { ioChecked[c.key] = false; }); buildIoPanel(); };
+  if ($('ioExport')) $('ioExport').onclick = ioExport;
+  if ($('ioPick')) $('ioPick').onclick = ioPickFile;
+  if ($('ioFile')) {
+    $('ioFile').addEventListener('change', function (ev) {
+      var f = (ev.target && ev.target.files) ? ev.target.files[0] : null;
+      ioHandleFile(f);
+    });
+  }
+  // Delegated: buildIoPanel replaces the grid's whole innerHTML on every repaint (and on every
+  // language switch), so a per-box handler would be attached to nodes that no longer exist — the
+  // same reason the custom-model and custom-question lists delegate.
+  if ($('ioCats')) {
+    $('ioCats').addEventListener('change', function (ev) {
+      var box = ev.target && ev.target.closest ? ev.target.closest('input[data-io-cat]') : null;
+      if (!box) return;
+      ioEnsureChecked();
+      ioChecked[box.getAttribute('data-io-cat')] = !!box.checked;
+    });
+  }
 
   // =====================================================================
   // 检测（原 localhost 版）
@@ -7527,6 +7896,10 @@
     // 0.5.4 §1.5 — the four labels and the two `max` attributes, before fillSettingsForm paints
     // the values. Rebuilt on a language switch too (see repaintForLang).
     buildStorageFilter();
+    // 0.5.6 §1.3 — the category grid and its labels. Built before fillSettingsForm like the two
+    // panels above; the default ticks (§1.3.1: everything except 背景图片) are applied by
+    // buildIoPanel's first call, which is this one.
+    buildIoPanel();
     // 0.5.1 §2.1.4 — the custom models live in IndexedDB, so the registry has to be filled before
     // the three dropdowns can name them. Reads only; the engine status line is deliberately NOT
     // asked for here (see renderSettings).

@@ -886,6 +886,28 @@
   .crow{display:flex;align-items:center;gap:14px;padding:10px 0;border-bottom:1px solid var(--line-soft);font-size:var(--ui-detail-font)}
   .crow .cn{flex:1}
 
+  /* ---- 0.5.6 §1.3 导入与导出 ---- */
+  /* Two columns, because nine checkboxes in one column push 导入 off the fold and the two
+     halves of the panel are meant to be read together. `minmax(0,1fr)` rather than `1fr`: a
+     long label (自定义引擎（不含模型文件）) would otherwise widen its column past half the
+     panel and squeeze the other one.
+     ⚠ The checkbox is pinned (`flex:0 0 auto`) for the reason the 0.5.5 patch had to learn a
+     second time: a bare `input` inside a flex row defaults to `flex:1`, so the CONTROL grows to
+     fill the row and its 13px box ends up floating in the middle of an invisible strip that
+     still toggles when clicked anywhere along it. */
+  .io-cats{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px 18px;margin-top:6px}
+  .io-cats label{display:flex;align-items:baseline;gap:8px;font-size:var(--ui-detail-font);cursor:pointer}
+  .io-cats input[type=checkbox]{flex:0 0 auto;width:auto;min-width:0;margin:0}
+  .io-report{margin-top:10px;font-size:var(--ui-detail-font);line-height:1.8}
+  .io-report h4{margin:0 0 6px;font-size:var(--ui-detail-font);font-weight:600}
+  .io-report .r{display:block}
+  .io-report .r.warn{color:var(--yellow)}
+  .io-report .sub{display:block;padding-inline-start:18px;color:var(--mut);font-size:var(--ui-detail-small)}
+  .io-report .hint{font-size:var(--ui-detail-small)}
+  .io-sel{margin:0;padding:0;list-style:none}
+  .io-sel label{display:flex;align-items:baseline;gap:8px;padding:5px 0;font-size:var(--ui-detail-font);cursor:pointer}
+  .io-sel input[type=checkbox]{flex:0 0 auto;width:auto;min-width:0;margin:0}
+
   /* ---- detail ---- */
   .dhead{display:flex;flex-wrap:wrap;gap:12px 26px;align-items:baseline}
   .dhead .t{font-size:var(--ui-detail-large);font-weight:600}
@@ -2176,6 +2198,38 @@
         <button class="sec danger" id="setResetLearn">重置学习参数</button>
         <span class="hint">删除样本不会自动更新学习结果 —— 需回到「样本库」点「重新学习」。</span>
       </div>
+    </div>
+
+    <!-- 0.5.6 §1.3 — 导入与导出. It gets its own panel because it is the only control on this
+         page that writes more than one storage key in a single action, and the only one whose
+         effect is worth a confirming step before it happens. Every label is written by
+         buildIoPanel(), so the whole panel follows a language switch through one function —
+         the same rule 透明度 and 存储过滤 follow.
+         The `—` placeholders are not translated: they carry no CJK, so the static pass leaves
+         them alone (keys.cjs's inventory only collects CJK-bearing text). -->
+    <div class="panel set-panel">
+      <h2 id="ioTitle">—</h2>
+      <h3 class="set-sub" id="ioExportTitle">—</h3>
+      <div class="btn-row">
+        <button class="sec" id="ioAll">—</button>
+        <button class="sec" id="ioNone">—</button>
+      </div>
+      <div class="io-cats" id="ioCats"></div>
+      <div class="btn-row" style="margin-top:10px">
+        <button class="sec p" id="ioExport">—</button>
+        <span class="hint" id="ioExportStatus"></span>
+      </div>
+      <h3 class="set-sub" id="ioImportTitle">—</h3>
+      <div class="btn-row">
+        <!-- Kept in the DOM rather than created on demand: a file input that is not in the
+             document cannot be clicked on some builds, and one created per click leaks an
+             object URL per attempt. `display:none` is what makes it invisible without
+             removing it. -->
+        <input type="file" id="ioFile" accept=".json,application/json" style="display:none">
+        <button class="sec" id="ioPick">—</button>
+        <span class="hint" id="ioImportStatus"></span>
+      </div>
+      <div class="io-report" id="ioReport"></div>
     </div>
 
     <div class="panel set-panel">

@@ -1768,14 +1768,18 @@
   // This is the same literal set as app.js BASE_WEIGHTS and learn.js FALLBACK_WEIGHTS — the three
   // are one set of numbers. A value that is absent or non-numeric here is ignored by riskParams(),
   // so a profile written before this build simply keeps its own stored numbers.
+  // 0.5.6 §2.3 — the operator's five targets plus the proportional shrink of the other eight.
+  // Kept term-for-term identical to app.js BASE_WEIGHTS; the suite asserts the three copies
+  // (here, app.js, learn.js) agree, because a drift between them is a detector that scores one
+  // way in the viewer and another way offscreen.
   var DEFAULT_WEIGHTS = {
-    top1: 0.13, acpl: 0.06, sharp: 0.14, out: 0.15, desperate: 0.05, time: 0.10,
-    evasion: 0.04, winBlunder: 0.03,
-    uselessFour: 0.03,
-    sharpStreak: 0.03,
-    sharpTotal: 0.03,
-    goodPool: 0.18,
-    liveThree: 0.03,
+    top1: 0.06, acpl: 0.03, sharp: 0.07, out: 0.07, desperate: 0.02, time: 0.05,
+    evasion: 0.08, winBlunder: 0.01,
+    uselessFour: 0.02,
+    sharpStreak: 0.14,
+    sharpTotal: 0.18,
+    goodPool: 0.21,
+    liveThree: 0.06,
   };
   var DEFAULT_THRESHOLDS = {
     // 0.4.3 §1.1: the ramp aTop1 reads now that it is fed a graded proximity instead of a
@@ -2722,6 +2726,427 @@
     return n;
   }
 
+  // =====================================================================
+  // 0.5.6 §一 导出自定义数据 / 导入与退回
+  // =====================================================================
+  // One JSON file carrying the operator's local profile, with a per-category checkbox at BOTH
+  // ends. §一.1's two uses — backup, and moving a profile to another machine — set the two rules
+  // that shape everything below:
+  //
+  //   · the SECRET must not leave the machine. §1.2 excludes `llm.apiKey`, and that is enforced
+  //     here in stripSecrets() rather than in the panel: a panel is a place a future caller can
+  //     forget about, and this is a data function.
+  //   · an IMPORTED setting this device cannot honour is REFUSED, not clamped (§1.6.1). Every
+  //     other writer in this file clamps — a hand-edited profile should land on something legal —
+  //     but an import is different because the operator is watching the result and will believe
+  //     it. §1.6.1's own example: import 16 threads onto an 8-thread machine, a clamp stores 8
+  //     without a word, and the operator walks away thinking the machine now runs 16.
+  //
+  // The whole round trip is driven from the STORAGE layer (viewer.js only renders), so the suite
+  // can exercise it against the in-memory shim (`__memApi`) with no browser at all.
+  var BACKUP_KIND = 'baishen-backup';
+  var BACKUP_VERSION = 1;
+  var EXPORT_CATEGORIES = ['settings', 'blacklist', 'samples', 'archives',
+                           'customQuestions', 'customEngines', 'learnedParams',
+                           'backgrounds', 'viewerCols'];
+  // The settings key that already HAS its own category. Leaving it inside `settings` as well
+  // would make §1.3's 「不勾选自定义问题」 impossible: the unchecked category would ride back in
+  // on the checked one.
+  var SPLIT_SETTINGS_KEYS = ['customQuestions'];
+  // `bg-overlay` / `bg-viewer` are the storage slots; the file names each by the surface it
+  // paints (§1.4's `backgrounds.overlay` / `.viewer`).
+  var BG_EXPORT_ID = { 'bg-overlay': 'overlay', 'bg-viewer': 'viewer' };
+
+  function appVersion() {
+    try {
+      if (g.chrome && g.chrome.runtime && g.chrome.runtime.getManifest) {
+        return String(g.chrome.runtime.getManifest().version || '');
+      }
+    } catch (e) {}
+    return '';
+  }
+
+  // §1.2 — the export-safe projection of `settings`. REBUILT rather than deleted-in-place so the
+  // caller's object is never touched, and so a key added to DEFAULTS later is carried by default
+  // (safe) rather than dropped by default (silently absent from every backup).
+  function stripSecrets(settings) {
+    var out = {};
+    for (var k in (settings || {})) if (settings.hasOwnProperty(k)) out[k] = settings[k];
+    if (out.llm && typeof out.llm === 'object') {
+      var llm = {};
+      for (var l in out.llm) if (out.llm.hasOwnProperty(l) && l !== 'apiKey') llm[l] = out.llm[l];
+      out.llm = llm;
+    }
+    for (var i = 0; i < SPLIT_SETTINGS_KEYS.length; i++) delete out[SPLIT_SETTINGS_KEYS[i]];
+    return out;
+  }
+
+  // Absent ⇒ every category. An explicit list is honoured category by category, and an unknown
+  // name in it is ignored rather than carried into the output.
+  function pickCategories(categories) {
+    var want = Array.isArray(categories) ? categories : EXPORT_CATEGORIES;
+    var out = {};
+    for (var i = 0; i < EXPORT_CATEGORIES.length; i++) {
+      out[EXPORT_CATEGORIES[i]] = want.indexOf(EXPORT_CATEGORIES[i]) >= 0;
+    }
+    return out;
+  }
+
+  async function exportCustomData(categories) {
+    var cats = pickCategories(categories);
+    var data = {};
+    if (cats.settings) data.settings = stripSecrets(await loadSettings());
+    if (cats.blacklist) data.blacklist = (await loadBlacklist()).players || [];
+    if (cats.samples) data.samples = await loadSamples();
+    if (cats.archives) data.archives = await loadArchives();
+    if (cats.customQuestions) data.customQuestions = await loadCustomQuestions();
+    if (cats.customEngines) {
+      // Metadata only (§1.2): a weight package is up to 100MB and has no business in a JSON
+      // backup. `list()` already strips the blob.
+      var CE = g.GMCustomEngines;
+      data.customEngines = (CE && CE.list) ? await CE.list() : [];
+    }
+    if (cats.learnedParams) data.learnedParams = await loadLearnedParams();
+    if (cats.backgrounds) {
+      var bg = {};
+      for (var i = 0; i < BG_SLOTS.length; i++) {
+        var row = await loadBackground(BG_SLOTS[i]);
+        if (!row || !row.blob) continue;
+        // A read failure degrades to "this slot is not in the backup", never to a failed export:
+        // the file is still worth writing with the other eight categories in it.
+        var url = '';
+        try { url = await blobToDataUrl(row.blob); } catch (e) { url = ''; }
+        if (!url) continue;
+        var cfg = clampBgConfig(row);
+        var rec = { blob: url };
+        for (var c in cfg) if (cfg.hasOwnProperty(c)) rec[c] = cfg[c];
+        bg[BG_EXPORT_ID[BG_SLOTS[i]]] = rec;
+      }
+      data.backgrounds = bg;
+    }
+    if (cats.viewerCols) {
+      var got = null;
+      try { got = await api().get('viewerCols'); } catch (e) { got = null; }
+      data.viewerCols = (got && got.viewerCols && typeof got.viewerCols === 'object')
+        ? got.viewerCols : {};
+    }
+    return {
+      kind: BACKUP_KIND,
+      version: BACKUP_VERSION,
+      exportedAt: Date.now(),
+      appVersion: appVersion(),
+      data: data,
+    };
+  }
+
+  // The inverse of blobToDataUrl. The header is matched whole (up to the first comma) so a
+  // malformed one fails the regex instead of yielding a blob full of header text.
+  function dataUrlToBlob(url) {
+    var s = String(url == null ? '' : url);
+    var m = /^data:([^;,]*)(;base64)?,/.exec(s);
+    if (!m) return null;
+    var body = s.slice(m[0].length);
+    try {
+      if (m[2]) {
+        var bin = atob(body);
+        var arr = new Uint8Array(bin.length);
+        for (var i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+        return new Blob([arr], { type: m[1] || 'application/octet-stream' });
+      }
+      return new Blob([decodeURIComponent(body)], { type: m[1] || 'text/plain' });
+    } catch (e) { return null; }
+  }
+
+  // §1.6.2 — every settings key that needs a rule of its own. Pure and synchronous: it takes the
+  // imported object and the CURRENT settings and returns the object to save plus the list of
+  // refusals, which is what lets the suite drive every branch with a fixture.
+  //
+  // A refused value leaves `next[key]` at the CURRENT value — not at a clamp, and not at a
+  // default. That is §1.6.1's whole point, and it is also why `next` is a deep-enough copy: the
+  // three object-valued settings are rebuilt through their own normalisers so a partial edit
+  // cannot reach back into `current`.
+  function validateImportedSettings(raw, current) {
+    var errors = [];
+    var applied = 0;
+    var bad = function (key, value, reason) { errors.push({ key: key, value: value, reason: reason }); };
+    var next = Object.assign({}, current || {});
+    next.transparency = normalizeTransparency(current && current.transparency);
+    next.archiveFilter = normalizeArchiveFilter(current && current.archiveFilter);
+    next.storageFilter = normalizeStorageFilter(current && current.storageFilter);
+    next.llm = Object.assign({}, (current && current.llm) || {});
+    if (!raw || typeof raw !== 'object') return { next: next, errors: errors, applied: applied };
+
+    // 1. threadNum — the one that is not a range but a DEVICE CAPABILITY (§1.6.2's first row).
+    var cap = detectedThreads();
+    if (raw.threadNum != null) {
+      if (typeof raw.threadNum !== 'number' || raw.threadNum < 0 || raw.threadNum > cap) {
+        bad('threadNum', raw.threadNum, 'exceeds-device');
+      } else { next.threadNum = raw.threadNum; applied++; }
+    }
+    var range = function (key, lo, hi) {
+      if (raw[key] == null) return;
+      var v = raw[key];
+      if (typeof v !== 'number' || !isFinite(v) || v < lo || v > hi) bad(key, v, 'out-of-range');
+      else { next[key] = v; applied++; }
+    };
+    range('minArchiveMoves', MIN_MOVES_LO, MIN_MOVES_HI);
+    range('openingCutoff', 0, 40);
+    range('thinkMs', 500, Infinity);
+    if (raw.aiThinkMs != null) {
+      var ai = raw.aiThinkMs;
+      if (typeof ai !== 'number' || !isFinite(ai) || ai < 0) bad('aiThinkMs', ai, 'out-of-range');
+      else { next.aiThinkMs = ai; applied++; }
+    }
+    // 6. lang — 'auto' or a locale this build actually ships. A language with no table would
+    //    render every string in the fallback while the dropdown claimed otherwise.
+    var localeList = (g.GMI18n && g.GMI18n.LOCALES) ? g.GMI18n.LOCALES : [];
+    if (raw.lang != null) {
+      if (raw.lang !== 'auto' && localeList.indexOf(raw.lang) < 0) bad('lang', raw.lang, 'unsupported');
+      else { next.lang = raw.lang; applied++; }
+    }
+    var enumKey = function (key, allowed) {
+      if (raw[key] == null) return;
+      if (allowed.indexOf(raw[key]) < 0) bad(key, raw[key], 'invalid');
+      else { next[key] = raw[key]; applied++; }
+    };
+    enumKey('mode', ['global', 'stepwise']);
+    enumKey('suspect', ['both', 'B', 'W']);
+    enumKey('theme', THEMES);
+    // 0.4.5 §二.2 — `rule` is null (自动) or one of the three modes. Absent stays absent.
+    if (raw.rule !== undefined && raw.rule !== null) {
+      if ([0, 1, 2].indexOf(raw.rule) < 0) bad('rule', raw.rule, 'invalid');
+      else { next.rule = raw.rule; applied++; }
+    }
+    // 7. transparency — every numeric field against its OWN ceiling, read from the same table the
+    //    clamp uses, so the validator and the clamps can never disagree about a maximum.
+    var t = raw.transparency;
+    if (t && typeof t === 'object') {
+      var parts = ['viewer', 'overlay'];
+      for (var p = 0; p < parts.length; p++) {
+        var part = parts[p];
+        var src = (t[part] && typeof t[part] === 'object') ? t[part] : null;
+        if (!src) continue;
+        if (src.enabled !== undefined) {
+          if (typeof src.enabled !== 'boolean') bad('transparency.' + part + '.enabled', src.enabled, 'invalid');
+          else { next.transparency[part].enabled = src.enabled; applied++; }
+        }
+        var lims = TRANSPARENCY_LIMITS[part];
+        for (var nk in lims) {
+          if (!lims.hasOwnProperty(nk) || src[nk] == null) continue;
+          var nv = src[nk];
+          if (typeof nv !== 'number' || !isFinite(nv) || nv < 0 || nv > lims[nk]) {
+            bad('transparency.' + part + '.' + nk, nv, 'out-of-range');
+          } else { next.transparency[part][nk] = Math.round(nv); applied++; }
+        }
+      }
+    }
+    // 8. archiveFilter — both ends in 0–100 AND min ≤ max (§1.6.2). All-or-nothing: a file with
+    //    one bad end must not leave the pair half-applied, which would read as a valid range.
+    var af = raw.archiveFilter;
+    if (af && typeof af === 'object') {
+      var afErr = false;
+      if (af.enabled !== undefined && typeof af.enabled !== 'boolean') {
+        bad('archiveFilter.enabled', af.enabled, 'invalid'); afErr = true;
+      }
+      var ok100 = function (v) { return typeof v === 'number' && isFinite(v) && v >= 0 && v <= 100; };
+      var hasLo = af.minRisk != null, hasHi = af.maxRisk != null;
+      if ((hasLo && !ok100(af.minRisk)) || (hasHi && !ok100(af.maxRisk)) ||
+          (hasLo && hasHi && af.minRisk > af.maxRisk)) {
+        bad('archiveFilter', { minRisk: af.minRisk, maxRisk: af.maxRisk }, 'invalid'); afErr = true;
+      }
+      if (!afErr) {
+        if (af.enabled !== undefined) { next.archiveFilter.enabled = af.enabled; applied++; }
+        if (hasLo) { next.archiveFilter.minRisk = Math.round(af.minRisk); applied++; }
+        if (hasHi) { next.archiveFilter.maxRisk = Math.round(af.maxRisk); applied++; }
+      }
+    }
+    // 9. storageFilter — 0–50 on both ends (same shape as above).
+    var sf = raw.storageFilter;
+    if (sf && typeof sf === 'object') {
+      var sfErr = false;
+      if (sf.enabled !== undefined && typeof sf.enabled !== 'boolean') {
+        bad('storageFilter.enabled', sf.enabled, 'invalid'); sfErr = true;
+      }
+      var ok50 = function (v) { return typeof v === 'number' && isFinite(v) && v >= 0 && v <= 50; };
+      var sLo = sf.minOrdered != null, sHi = sf.maxUnordered != null;
+      if ((sLo && !ok50(sf.minOrdered)) || (sHi && !ok50(sf.maxUnordered))) {
+        bad('storageFilter', { minOrdered: sf.minOrdered, maxUnordered: sf.maxUnordered }, 'out-of-range');
+        sfErr = true;
+      }
+      if (!sfErr) {
+        if (sf.enabled !== undefined) { next.storageFilter.enabled = sf.enabled; applied++; }
+        if (sLo) { next.storageFilter.minOrdered = Math.round(sf.minOrdered); applied++; }
+        if (sHi) { next.storageFilter.maxUnordered = Math.round(sf.maxUnordered); applied++; }
+      }
+    }
+    // 10. engineId — must be in the LIVE registry. This is the one rule whose failure has a
+    //     defined fallback rather than a rollback: §1.6.2 says fall back to Rapfi, because an
+    //     engine id nothing answers to leaves the detector unable to run at all.
+    if (raw.engineId != null) {
+      var reg = g.GMEngines;
+      var known = !!(reg && reg.get && reg.get(raw.engineId));
+      if (known) { next.engineId = raw.engineId; applied++; }
+      else {
+        next.engineId = (reg && reg.DEFAULT_ID) ? reg.DEFAULT_ID : 'rapfi';
+        bad('engineId', raw.engineId, 'engine-not-found');
+      }
+    }
+    // The LLM panel travels with `settings` but its KEY never does (§1.2). Everything else in it
+    // overwrites; `apiKey` keeps whatever this machine already had, so importing a colleague's
+    // backup cannot blank out — or silently adopt — a key.
+    if (raw.llm && typeof raw.llm === 'object') {
+      var defLlm = DEFAULTS.llm || {};
+      for (var lk in raw.llm) {
+        if (!raw.llm.hasOwnProperty(lk) || lk === 'apiKey') continue;
+        if (!(lk in defLlm)) continue;                       // a key this build does not have
+        if (typeof raw.llm[lk] !== typeof defLlm[lk]) continue;
+        next.llm[lk] = raw.llm[lk]; applied++;
+      }
+    }
+    // The rest have no range of their own: take them only when the type matches the default's, so
+    // a corrupt file cannot put a string where a boolean belongs. Object-valued keys (the arrays
+    // and the two objects already handled above) are skipped by construction.
+    var handled = { threadNum: 1, minArchiveMoves: 1, openingCutoff: 1, thinkMs: 1, aiThinkMs: 1,
+                    lang: 1, mode: 1, suspect: 1, theme: 1, rule: 1, transparency: 1,
+                    archiveFilter: 1, storageFilter: 1, engineId: 1, llm: 1 };
+    for (var k in raw) {
+      if (!raw.hasOwnProperty(k) || handled[k] || !(k in DEFAULTS)) continue;
+      var def = DEFAULTS[k], v = raw[k];
+      if (typeof def === 'boolean' && typeof v === 'boolean') { next[k] = v; applied++; }
+      else if (typeof def === 'string' && typeof v === 'string') { next[k] = v; applied++; }
+      else if (typeof def === 'number' && typeof v === 'number' && isFinite(v)) { next[k] = v; applied++; }
+    }
+    // Each refusal reports the value that was KEPT alongside the one that was rejected, because
+    // §1.6.4's report says both ("导入值 16 … 已保持原值 8"). Resolved from `next` after the fact,
+    // which is correct precisely because a refused key never writes to `next` — so what is read
+    // back is the imported file's value falling through to the current setting.
+    var keptAt = function (path) {
+      var parts = String(path || '').split('.');
+      var cur = next;
+      for (var i = 0; i < parts.length; i++) {
+        if (cur == null || typeof cur !== 'object') return null;
+        cur = cur[parts[i]];
+      }
+      return cur === undefined ? null : cur;
+    };
+    for (var e2 = 0; e2 < errors.length; e2++) errors[e2].kept = keptAt(errors[e2].key);
+    return { next: next, errors: errors, applied: applied };
+  }
+
+  // §1.5 — apply the file category by category and return the REPORT §1.6.4 renders.
+  //
+  // Merge vs overwrite is §1.5.3's table. The three "append" categories go through the SAME
+  // importers the 导入 buttons use (`importBlacklist` / `importSamples` / `importArchives`), so a
+  // file and a hand-picked file cannot disagree about id remapping, tagging or pruning.
+  async function importCustomData(envelope, categories) {
+    if (!envelope || envelope.kind !== BACKUP_KIND) {
+      return { ok: false, error: 'bad-kind', report: [] };
+    }
+    var cats = pickCategories(categories);
+    var data = (envelope.data && typeof envelope.data === 'object') ? envelope.data : {};
+    var report = [];
+    var add = function (cat, o) { var r = o || {}; r.cat = cat; report.push(r); return r; };
+
+    if (cats.settings && data.settings && typeof data.settings === 'object') {
+      var current = await loadSettings();
+      var res = validateImportedSettings(data.settings, current);
+      await saveSettings(res.next);
+      add('settings', { applied: true, ok: res.applied, refused: res.errors.length, errors: res.errors });
+    }
+    if (cats.blacklist) {
+      var inc = Array.isArray(data.blacklist) ? data.blacklist : [];
+      var cur = (await loadBlacklist()).players || [];
+      var have = {};
+      cur.forEach(function (e) { if (e && e.id) have[e.id] = true; });
+      var fresh = [], invalid = 0, dup = 0;
+      for (var i = 0; i < inc.length; i++) {
+        var e = sanitizeBlacklistEntry(inc[i]);
+        if (!e) { invalid++; continue; }
+        // §1.5.3 — 「ID 重复则跳过」, which is NOT the updater `importBlacklist` runs by default:
+        // an import adds a stranger's block list, it does not re-edit the entries already here.
+        if (have[e.id]) { dup++; continue; }
+        have[e.id] = true;
+        fresh.push(e);
+      }
+      var br = fresh.length ? await importBlacklist(fresh, 'append') : { added: 0, total: cur.length };
+      add('blacklist', { applied: true, added: br.added, skipped: invalid + dup,
+                         invalid: invalid, duplicate: dup });
+    }
+    if (cats.samples) {
+      var sinc = Array.isArray(data.samples) ? data.samples : [];
+      var good = [], badS = 0;
+      for (var j = 0; j < sinc.length; j++) {
+        if (normalizeSample(sinc[j])) good.push(sinc[j]); else badS++;
+      }
+      var sr = good.length ? await importSamples(good) : { added: 0, remapped: 0 };
+      add('samples', { applied: true, added: sr.added, remapped: sr.remapped || 0, skipped: badS });
+    }
+    if (cats.archives) {
+      var ainc = Array.isArray(data.archives) ? data.archives : [];
+      var goodA = [], badA = 0;
+      for (var ai = 0; ai < ainc.length; ai++) {
+        // §1.6.2's last row: the same normaliser the manual 导入棋谱 path uses decides what is a
+        // game at all — a row without `record.moves` is not one, and is skipped rather than
+        // stored as an unplayable archive.
+        if (normalizeArchive(ainc[ai])) goodA.push(ainc[ai]); else badA++;
+      }
+      var ar = goodA.length ? await importArchives(goodA) : { added: 0, remapped: 0 };
+      add('archives', { applied: true, added: ar.added, remapped: ar.remapped || 0, skipped: badA });
+    }
+    if (cats.customQuestions) {
+      var qinc = Array.isArray(data.customQuestions) ? data.customQuestions : [];
+      var existing = await loadCustomQuestions();
+      var haveQ = {};
+      existing.forEach(function (q) { if (q && q.id) haveQ[q.id] = true; });
+      var merged = existing.slice(), addedQ = 0, badQ = 0;
+      for (var m = 0; m < qinc.length && merged.length < MAX_CUSTOM_QUESTIONS; m++) {
+        var q = normalizeQuestion(qinc[m], merged.length);
+        if (!q) { badQ++; continue; }
+        // §1.5.3 — 「ID 冲突分配新 ID」, exactly like samples.
+        while (haveQ[q.id]) q.id = q.id + '-x';
+        haveQ[q.id] = true;
+        merged.push(q);
+        addedQ++;
+      }
+      if (addedQ) await saveCustomQuestions(merged);
+      var over = Math.max(0, qinc.length - addedQ - badQ);
+      add('customQuestions', { applied: true, added: addedQ, skipped: badQ + over });
+    }
+    if (cats.customEngines) {
+      // §1.2 keeps the weight packages OUT of the backup (up to 5 × 100MB), so what arrives is a
+      // named list with no blob behind it. Registering a row anyway would put an entry in both
+      // engine pickers that cannot answer a single search — worse than not importing it, because
+      // it looks like it worked. So this category is exported for inventory, and the import says
+      // outright that the package has to come across by hand.
+      var ceList = Array.isArray(data.customEngines) ? data.customEngines : [];
+      add('customEngines', { applied: false, reason: 'binary-not-in-backup', listed: ceList.length });
+    }
+    if (cats.learnedParams && data.learnedParams && typeof data.learnedParams === 'object') {
+      await saveLearnedParams(data.learnedParams);
+      add('learnedParams', { applied: true, overridden: true });
+    }
+    if (cats.backgrounds && data.backgrounds && typeof data.backgrounds === 'object') {
+      var n = 0, skippedBg = 0;
+      for (var si = 0; si < BG_SLOTS.length; si++) {
+        var rec = data.backgrounds[BG_EXPORT_ID[BG_SLOTS[si]]];
+        if (!rec || typeof rec !== 'object') continue;
+        var blob = dataUrlToBlob(rec.blob);
+        // The ceiling is enforced here too: a hand-edited backup must not be able to push a
+        // 12MB image past the limit `saveBackground` exists to keep.
+        if (!blob || blob.size > BG_MAX_BYTES) { skippedBg++; continue; }
+        await saveBackground(BG_SLOTS[si], blob, rec);
+        n++;
+      }
+      add('backgrounds', { applied: true, restored: n, skipped: skippedBg });
+    }
+    if (cats.viewerCols && data.viewerCols && typeof data.viewerCols === 'object') {
+      var put = {}; put.viewerCols = data.viewerCols;
+      try { await api().set(put); } catch (e) {}
+      add('viewerCols', { applied: true });
+    }
+    return { ok: true, report: report };
+  }
+
   g.GMStorage = {
     DEFAULTS: DEFAULTS,
     MAX_ARCHIVES: MAX_ARCHIVES,
@@ -2894,6 +3319,17 @@
     isBlacklisted: isBlacklisted,
     touchBlacklistEntry: touchBlacklistEntry,
     importBlacklist: importBlacklist,
+    // ---- 0.5.6 §一 导出自定义数据 / 导入与退回 ----
+    BACKUP_KIND: BACKUP_KIND,
+    BACKUP_VERSION: BACKUP_VERSION,
+    EXPORT_CATEGORIES: EXPORT_CATEGORIES,
+    exportCustomData: exportCustomData,
+    importCustomData: importCustomData,
+    validateImportedSettings: validateImportedSettings,
+    // Pure helpers the settings panel and the suite both use; exported for the same reason the
+    // two normalisers above are — one implementation, no second copy at the call site.
+    stripSecrets: stripSecrets,
+    dataUrlToBlob: dataUrlToBlob,
     __memApi: memApi,
   };
 
