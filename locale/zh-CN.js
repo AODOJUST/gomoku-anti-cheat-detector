@@ -57,6 +57,8 @@ GMI18n.register('zh-CN', {
 
   'jobLabel.全局分析': '全局分析',
   'jobLabel.导入回放': '导入回放',
+  'jobLabel.重新分析': '重新分析',
+  'jobLabel.导入至回放': '导入至回放',
   'jobLabel.实时逐步': '实时逐步',
 
   // ---- 会话身份 (content.js meta.identity). ID_LABEL in viewer.js keeps these as canonical

@@ -1911,46 +1911,52 @@ function rampDown(v, lo, hi) {
 // learner and the viewer read; this literal is what a run uses before anyone ever pressed
 // 重新学习, and the two are the same numbers.
 //
-// 0.4.2 §2.3 adds the last two. They are a SURCHARGE on top of the six, not a slice of them:
+// 0.4.2 §2.3 added the last two. They were a SURCHARGE on top of the six, not a slice of them:
 // 0.4.2's acceptance criteria require a risk score that does not move when neither signal
 // fires (§2.6 #6, §五 #5), and making room by scaling the six down to 0.90 — the arithmetic
 // §2.3 sketches — would multiply EVERY existing score by ~0.9 and flip games sitting on the
-// 70 cut from 高风险 to 可疑. So the six keep the values that sum to 1, the two add on top,
-// and sideAggregate() clamps the total at 100. learn.js normalises the two groups separately
-// for the same reason.
+// 70 cut from 高风险 to 可疑. So the six kept the values that summed to 1, the two added on
+// top, and sideAggregate() clamped the total at 100. learn.js normalised the two groups
+// separately for the same reason. NOTE: 0.5.5 §1.3 supersedes this — see below.
+// ⚠⚠ 0.5.5 §1.3 REVERSES the surcharge model that 0.4.8 and 0.5.2 both refused to give up.
+//
+// History: 0.4.8 §1.2 and 0.5.2 §1.1.4 each wrote a single table summing to 1.00 and each time the
+// instruction was declined, because scaling the six down so a new term could take a slice out of
+// them multiplies EVERY archived score (~0.87) and flips games sitting on the 70/40 cuts from
+// 高风险 to 可疑 — i.e. it silently invalidates the comparability of the whole corpus. The six kept
+// their sum, and every newer signal rode on top (the table summed to 1.28).
+//
+// 0.5.5 §1.3.2 is not that instruction reissued: it is an explicit, operator-confirmed decision
+// (「权重方案 A」) that 好点池 becomes a first-class term at 0.18 — the same magnitude as 唯一手 —
+// and that the difference is taken OUT of the existing terms rather than added on top. `out`
+// (−0.07) and `sharp` (−0.04) carry most of it, on the stated grounds that all three describe the
+// same phenomenon (did the player stay inside the engine's own recommendations) from different
+// angles, and that goodPool covers the widest version of it.
+//
+// So the invariant this table protects is now 「the whole table sums to 1.00」 — NOT 「the six sum to
+// 1.00 and everything else rides on top」. verify-048's assertion was moved with it (the property it
+// was protecting was always the total, and a corpus split is exactly what that assertion exists to
+// catch — which is why the reversal had to be an explicit decision rather than a silent edit).
 const BASE_WEIGHTS = {
-  top1: 0.20, acpl: 0.08, sharp: 0.22, out: 0.27, desperate: 0.08, time: 0.15,
-  evasion: 0.06, winBlunder: 0.04,
-  // 0.4.7 §1.1: a run of >=2 consecutive fours played from a LOST position (bestWR <= 0.10).
-  // Same status as the two above — a surcharge on top of the six, not a slice of them, so a
-  // game with no such run scores exactly what it scored before. §1.1 asks for it to be
-  // "同级（0.05）" with `desperate`; `desperate` is 0.08, so the spec's parenthetical and its
-  // own comparison disagree. 0.05 is the number it names twice, and this is a NEW signal with
-  // no corpus behind it yet, so the smaller of the two is the honest choice and the one the
-  // §五 checklist writes. Replace with a learned value once samples exist.
-  uselessFour: 0.05,
-  // 0.4.8 §1.2: the two 唯一手 (sharp-move) streak terms. Same status again — surcharges on
-  // top of the six, not a slice of them.
+  // 0.5.5 §1.3.1 方案 A. 方案 A 的表逐项：top1 0.13 / acpl 0.06 / sharp 0.14 / out 0.15 /
+  // desperate 0.05 / time 0.10 / evasion 0.04 / winBlunder 0.03 / uselessFour 0.03 /
+  // sharpStreak 0.03 / sharpTotal 0.03 / goodPool 0.18 / liveThree 0.03 — 总和 1.00.
   //
-  // §1.2's weight table writes all eleven weights as one set summing to 1.00 (which would drag
-  // the six down to 0.81 and move every archived score). That contradicts §1.2's own
-  // acceptance criterion #5 — "未命中任何唯一手时，两项贡献为 0，风险分与旧版一致" — and the
-  // project's standing rule that the six always sum to 1.00 with every newer signal added
-  // outside. The operator chose the acceptance criterion, so the six and the three existing
-  // surcharges keep their values and these two are added at the magnitudes §1.2 names.
-  sharpStreak: 0.04,
+  // The three keys whose MEANING is unchanged keep the notes they earned:
+  //   · `uselessFour` — 0.4.7 §1.1's run of consecutive fours played from a lost position. §1.1
+  //     asked for it at 0.05 while comparing it to `desperate` (then 0.08); 0.5.5's table settles
+  //     both at 0.05, which is the value §1.1 named twice.
+  //   · `sharpStreak` / `sharpTotal` — 0.4.8 §1.2's two 唯一手 runs.
+  top1: 0.13, acpl: 0.06, sharp: 0.14, out: 0.15, desperate: 0.05, time: 0.10,
+  evasion: 0.04, winBlunder: 0.03,
+  uselessFour: 0.03,
+  sharpStreak: 0.03,
   sharpTotal: 0.03,
-  // 0.5.2 §1.1.4 / §1.2.4: the two pool terms. Surcharges again, for the third release running.
-  //
-  // ⚠ §1.1.4 says 「权重表新增 goodPool: 0.03（其余项按比例缩小到总和 1.00）」 — the same
-  // instruction 0.4.8 §1.2 gave, and it is not taken, for the same reason: scaling the existing
-  // eleven so the table sums to 1.00 multiplies EVERY archived risk score by ~0.87 and flips
-  // games sitting on the 70/40 cuts from 高风险 to 可疑. That would silently invalidate the whole
-  // archive corpus's comparability, which is the property the surcharge model exists to protect
-  // (see BASE_WEIGHTS' note above, and verify-048 which asserts the six still sum to 1.00 and the
-  // surcharges ride on top). Both new terms are exactly 0 on a game with no pool signal, so such
-  // a game scores bit-for-bit what it scored before.
-  goodPool: 0.03,
+  // 0.5.5 §1.1/§1.3.1 — the redefined pool, now the joint-largest single term. It is no longer a
+  // surcharge: a game with no good points scores its `goodPool` 0 contribution like any other term,
+  // and the difference is carried by the terms above having been scaled down.
+  goodPool: 0.18,
+  // §1.2 — the 活三 pool, deliberately unchanged in value and in kind.
   liveThree: 0.03,
 };
 const BASE_THRESHOLDS = {
@@ -2378,46 +2384,124 @@ function sharpStreakStats(steps, side) {
   return { maxStreak, totalSharp, streakHits };
 }
 
-// ---------- 0.5.2 §1.1 好点积累池 ----------
-// 好点 = 落在引擎 Top3 及其以内. §1.1.1 states the predicate as `step.top1 || step.top3` and
-// then glosses it as `stepProximity >= 0.75`; the two are NOT the same thing in this codebase and
-// the predicate wins.
+// ---------- 0.5.5 §一 好点池重定义 ----------
+// 好点 = 落在引擎 Top5 及其以内（Top6-8 只在「必要时」算 —— 见下）。0.5.2 用的是 Top3，本次扩大
+// 到 Top5 并按 §1.1.4 把主指标从「连续 ≥3 次」换成「占比 70% + 连续度 30%」。
 //
-// Why: `PROX` (see stepProximity) grades top3 at 0.80 — but 0.4.7 deliberately merged the Top2-3
-// and Top4-5 tiers into ONE 0.80 band, because the engine's ordering past its first pick is noisy
-// at a fixed time budget. So `stepProximity(s) >= 0.75` is true for Top2-5, i.e. the gloss would
-// silently widen 好点 from three candidates to five. The spec's own §1.2 then settles which
-// reading was meant: the 活三 boundary there is written straight as `step.top3`, never as a
-// proximity. Same boundary, so the same reading is used here.
+// ⚠ 0.5.2 的 `stepProximity >= 0.75` 那条读法**彻底不在了**：PROX 把 Top2-3 与 Top4-5 并成同一
+// 个 0.80 带，用接近度当阈值等于把边界交给一个 0.4.7 已经判定为噪声的分级。现在判据是 top5 位，
+// 与接近度无关 —— 这也是 §1.1.2 写死的形式。
 //
-// `GOOD_PROX` is kept as the named constant the spec asks for and is asserted by the suite, but
-// the predicate is the one §1.1.1 writes out.
-const GOOD_PROX = 0.75;
-const GOOD_POOL_MIN = 3;      // consecutive good points before the term starts scoring
+// 「必要时」的语义 = §1.1.3：只有记录到的思考时间超过 THINK_MS_EXTENDED（6s）时，引擎才被要求
+// 给出 8 个候选（见 nbestFor），所以 Top6-8 只在那样的手上存在。**复用同一个 6000 常量**而不是
+// 再写一个字面量 —— 两个地方的 6000 迟早会分家。
+const GOOD_TOP8_MS = THINK_MS_EXTENDED;   // > 6s, the width nbestFor asks for top8
+const GOOD_RATIO_LO = 0.55;               // below this share of good points the rate scores 0
+const GOOD_RATIO_SPAN = 0.45;             // 0.55 -> 0.0, 1.00 -> 1.0
+const GOOD_STREAK_MIN = 3;                // consecutive good points before the streak scores
+const GOOD_STREAK_BASE = 1.25;            // 3 -> 0.1, 8 -> 0.5, 15 -> 1.0
+const GOOD_STREAK_DIV = 8;
+const GOOD_W_RATIO = 0.7;                 // §1.1.4 组合：占比 70% + 连续度 30%
+const GOOD_W_STREAK = 0.3;
 
-function isGoodPoint(s) { return !!(s && (s.top1 || s.top3)); }
-
-// Stamps the running 好点 streak on every hand, per side. Same "neither a hit nor a failure"
-// semantics as sharpStreakStats: a hand that is un-analysed, in the opening cutoff, or a 冲四豁免
-// (exempt) is SKIPPED — it neither extends the run nor breaks it. Everything else either extends
-// it or resets it to 0, so a streak counts consecutive SCORED hands of that player.
+// The predicate. §1.1.2's own JS, with one addition: a null step is not a good move (the old
+// `isGoodPoint` was total, and a suite that hands it `null` must not crash the pass).
 //
-// Walks the whole step list once per side rather than filtering first, so the stamped value is a
-// property of the hand in table order — the viewer reads it directly and must not have to rebuild
-// the run. Idempotent: the first loop resets every hand to 0.
+// ⚠ The 冲四豁免 test is `isExemptUnique(s)`, NOT `s.forcedDefense`: app.js has ONE spelling of
+// that rule (0.5.0 §1.1: the verdict is decided by shape) and verify-053 counts the other
+// spellings in code to keep it that way. Writing the flag here by hand tripped that tripwire.
+function isGoodMove(s) {
+  if (!s || !s.analyzed || s.isOpening || isExemptUnique(s)) return false;
+  if (s.top5) return true;
+  if (s.top8 && s.thinkMs != null && s.thinkMs > GOOD_TOP8_MS) return true;
+  return false;
+}
+
+// Which hands the pool is measured over: this side's scored hands, past the opening cutoff, minus
+// the 冲四豁免 ones. ONE predicate with three consumers (the ratio, the streak walk and the per-hand
+// stamp below) — 0.5.5 shipped a version where the skip rule was written out twice, which is the
+// failure this project has paid for five times. The exemption goes through `isExemptUnique` for the
+// same reason it does in every other call site in this file.
+//
+// 活三好手 deliberately has its own pool (`liveThreePool`) and does NOT appear here: per §1.2 a
+// 活三 defence that lands as the engine's first choice is a good point on its own merits, so it is
+// not double-counted either way.
+function goodPoolCounts(s, side) {
+  return !!s && s.side === side && s.analyzed && !s.isOpening && !isExemptUnique(s);
+}
+
+// A hand that is not on this side's own list never reaches isGoodMove's second tier, so `thinkMs`
+// is only read for hands the side actually played.
+function goodOwnSteps(steps, side) {
+  return (steps || []).filter((s) => goodPoolCounts(s, side));
+}
+
+// §1.1.3 indicator A — 好点占比. `own` is the population above, so the denominator is hands this
+// side actually played rather than table rows.
+function goodMoveRatio(steps, side) {
+  const own = goodOwnSteps(steps, side);
+  if (!own.length) return { ratio: 0, count: 0, total: 0 };
+  const good = own.filter(isGoodMove);
+  return { ratio: good.length / own.length, count: good.length, total: own.length };
+}
+
+// §1.1.3 indicator B — 好点连续度: the LONGEST run of consecutive good points. A miss resets it;
+// a hand outside the population is not in `own` at all, so it neither extends nor breaks the run
+// (the same "neither a hit nor a failure" semantics sharpStreakStats uses).
+function goodMoveStreak(steps, side) {
+  let max = 0, cur = 0;
+  goodOwnSteps(steps, side).forEach((s) => {
+    if (isGoodMove(s)) { cur++; if (cur > max) max = cur; }
+    else cur = 0;
+  });
+  return max;
+}
+
+// §1.1.4 — the two sub-scores and their combination. Both are exactly 0 for a side with no good
+// points at all, and the streak sub-score is 0 for anything under GOOD_STREAK_MIN, so a short run
+// costs nothing: §1.1.4's 「连续度低不减少」.
+//
+// ⚠ Same formula-vs-gloss problem 0.5.2 hit, and the same call: §1.1.4's own note prints
+// 「3 → 0.1；8 → 0.5；15 → 1.0」 while `(1.25^(streak-2) - 1) / 8` gives 0.031 / 0.352 / 1.000.
+// The FORMULA is implemented — it is the code, it is unambiguous, and the acceptance criteria it
+// has to satisfy (starts at 3, grows with the run, reaches 1.0 at 15) are all met by it.
+function computeGoodPool(steps, side) {
+  const r = goodMoveRatio(steps, side);
+  const streak = goodMoveStreak(steps, side);
+  const aRatio = clamp((r.ratio - GOOD_RATIO_LO) / GOOD_RATIO_SPAN, 0, 1);
+  const aStreak = streak >= GOOD_STREAK_MIN
+    ? clamp((Math.pow(GOOD_STREAK_BASE, streak - 2) - 1) / GOOD_STREAK_DIV, 0, 1)
+    : 0;
+  return {
+    ratio: r.ratio, count: r.count, total: r.total, streak,
+    aRatio, aStreak,
+    aGoodPool: GOOD_W_RATIO * aRatio + GOOD_W_STREAK * aStreak,
+  };
+}
+
+// Stamps the RUNNING 好点 count on every hand, per side, plus the predicate's own verdict (`isGood`).
+// The running count is what the step table's 好点池 column prints and what `slimStep` persists;
+// `isGood` is persisted separately so an archive can be re-scored without re-deriving the rule from
+// top5/top8/thinkMs.
+//
+// ⚠ This is the per-hand view of the SAME walk `goodMoveStreak` does, not a second opinion: both
+// read `goodPoolCounts` + `isGoodMove`, and the max of what is stamped here equals what that
+// function returns. Kept as a stamping pass because the viewer needs a property ON the hand in
+// table order and must not rebuild the run.
 function markGoodPool(steps) {
-  for (let i = 0; i < steps.length; i++) steps[i].goodPool = 0;
+  for (let i = 0; i < steps.length; i++) {
+    steps[i].goodPool = 0;
+    steps[i].isGood = false;
+  }
   for (const side of ['B', 'W']) {
     let streak = 0;
     for (let i = 0; i < steps.length; i++) {
       const s = steps[i];
-      if (s.side !== side || !s.analyzed || s.isOpening || isExemptUnique(s)) continue;
-      if (isGoodPoint(s)) {
-        streak++;
-        s.goodPool = streak;
-      } else {
-        streak = 0;
-      }
+      if (!goodPoolCounts(s, side)) continue;
+      const good = isGoodMove(s);
+      s.isGood = good;
+      if (good) { streak++; s.goodPool = streak; }
+      else streak = 0;
     }
   }
   return steps;
@@ -2617,18 +2701,19 @@ function sideAggregate(steps, side, hasTime, params, opts) {
   // call as 0.4.8 made when §1.2's weight table contradicted §1.2's own criterion.
   const aSharpStreak = ss.maxStreak >= 3 ? clamp((Math.pow(1.3, ss.maxStreak - 2) - 1) / 5, 0, 1) : 0;
   const aSharpTotal = ss.streakHits >= 3 ? clamp((Math.pow(1.15, ss.streakHits - 2) - 1) / 8, 0, 1) : 0;
-  // 0.5.2 §1.1.4 / §1.2.4 — the two new pools. Read off the hands this side actually scored
-  // (`s`, i.e. after the evasion/exempt exclusions above), which is also the population the
-  // streak walks stamped, so the max is the longest run among the hands being reported on.
+  // 0.5.5 §1.1.4 — the redefined 好点池. The whole computation lives in computeGoodPool(), which
+  // takes the FULL step list and does its own population filtering, exactly as §1.1.3's two
+  // functions do: the pool is measured over this side's scored, non-opening, non-exempt hands —
+  // NOT over `s` above, which additionally drops the evasion hands. The evasion filter belongs to
+  // the six (see the note at the top of this function); a 好点 is a fact about where a move landed,
+  // and 0.5.2's stamping pass drew its population the same way.
   //
-  // `aGoodPool` ramps linearly from the 3rd consecutive good point (3 → 0.1, 12 → 1.0).
-  // `aLiveThree` is the exponential one, starting at the 2nd: a single 活三 defence played as the
-  // engine's first choice is ordinary, two in a row on a two-way choice is not.
+  // `aLiveThree` is unchanged from 0.5.2 (its own independent pool, exponential, from the 2nd).
   //
   // ⚠ Same formula-vs-gloss note as above: §1.2.4 prints 4 → 0.22 / 6 → 0.5 where the
   // expression gives 0.30 / 0.68. The formula is implemented.
-  const goodPoolMax = s.reduce((m, x) => Math.max(m, x.goodPool || 0), 0);
-  const aGoodPool = goodPoolMax >= GOOD_POOL_MIN ? clamp((goodPoolMax - 2) / 10, 0, 1) : 0;
+  const gp = computeGoodPool(steps, side);
+  const aGoodPool = gp.aGoodPool;
   const liveThreeMax = s.reduce((m, x) => Math.max(m, x.liveThreePool || 0), 0);
   const aLiveThree = liveThreeMax >= LIVE_POOL_MIN
     ? clamp((Math.pow(1.3, liveThreeMax - 1) - 1) / 4, 0, 1)
@@ -2643,9 +2728,9 @@ function sideAggregate(steps, side, hasTime, params, opts) {
   const simW = hasLib ? clamp(t.simWeight != null ? t.simWeight : 0.10, 0, 0.5) : 0;
   const wEff = {};
   for (const k in w) wEff[k] = w[k] * (1 - simW);
-  // The six 0.3.1 terms plus simW still sum to 1; the two evasion terms are a surcharge on
-  // top of that (see BASE_WEIGHTS), so the total may exceed 1 and is clamped. With no evasion
-  // the surcharge is 0 and this is arithmetically the 0.4.1 expression.
+  // 0.5.5: the table now sums to 1.00 as a whole (see BASE_WEIGHTS), so scaling all of it by
+  // (1 − simW) and adding `simW * aSim` on top keeps the total at exactly 1.00 — the property the
+  // max possible score depends on. With no feature library `simW` is 0 and this is the identity.
   const risk = clamp(100 * (wEff.top1 * aTop1 + wEff.acpl * aAcpl + wEff.sharp * aSharp + wEff.out * aOut
                     + wEff.desperate * aDesperate + wEff.time * aTime + simW * aSim
                     + wEff.evasion * aEvasion + wEff.winBlunder * aWinBlunder
@@ -2668,10 +2753,13 @@ function sideAggregate(steps, side, hasTime, params, opts) {
     // detail table can say "唯一手最长连续命中 N 次 / 累计 M 次" without recomputing either.
     sharpStreakMax: ss.maxStreak,
     sharpStreakHits: ss.streakHits,
-    // 0.5.2 §1.1/§1.2. The two pool figures behind the terms above, reported so the detail table
-    // and the learner can read the run length without re-walking the sequence — the same reason
-    // sharpStreakMax/sharpStreakHits are carried.
-    goodPoolMax, liveThreeMax,
+    // 0.5.5 §1.1.3/§1.4.1. The two 好点 figures behind the term above, reported so the metric table
+    // can print 「好点占比」 and 「好点最长连击」 without recomputing either — the same reason
+    // sharpStreakMax/sharpStreakHits are carried. `goodRatio`/`count`/`total` come from the ratio
+    // walk, `goodStreak` from the streak walk, and all three are read off the SAME population.
+    goodRatio: gp.ratio, goodCount: gp.count, goodTotal: gp.total, goodStreak: gp.streak,
+    // §1.2. Unchanged: the 活三 pool's own run length.
+    liveThreeMax,
     contributions: {
       top1: wEff.top1 * aTop1 * 100, acpl: wEff.acpl * aAcpl * 100, sharp: wEff.sharp * aSharp * 100,
       out: wEff.out * aOut * 100, desperate: wEff.desperate * aDesperate * 100, time: wEff.time * aTime * 100,
@@ -2958,8 +3046,14 @@ if (typeof module !== 'undefined' && module.exports) {
     fivePointsFor, classifyFour, fourIsSolid, isExemptUnique,
     // 0.5.2 §1.1/§1.2: the two pool passes and their constants. Exported so the suite can drive
     // each one directly on a hand-built step list — the same reason every line above exists.
-    markGoodPool, isGoodPoint, markLiveThreeFlags, markLiveThreePool, markPoolSignals,
-    isLiveThreeDefense, GOOD_PROX, GOOD_POOL_MIN, LIVE_POOL_MIN, LIVE_THREE_WR_GAP,
+    markGoodPool, markLiveThreeFlags, markLiveThreePool, markPoolSignals,
+    isLiveThreeDefense, LIVE_POOL_MIN, LIVE_THREE_WR_GAP,
+    // 0.5.5 §1.1: the redefined pool — the predicate, the two indicators, the combination, and the
+    // five constants behind them. `isGoodPoint`/`GOOD_PROX` are GONE with the Top3 reading they
+    // belonged to; a suite still naming them is naming a rule this build no longer has.
+    isGoodMove, goodPoolCounts, goodMoveRatio, goodMoveStreak, computeGoodPool,
+    GOOD_TOP8_MS, GOOD_RATIO_LO, GOOD_RATIO_SPAN, GOOD_STREAK_MIN,
+    GOOD_STREAK_BASE, GOOD_STREAK_DIV, GOOD_W_RATIO, GOOD_W_STREAK,
     // 0.3.3 risk-model plumbing, exported so the learner and the tests can reason about the
     // exact numbers the detector uses.
     riskParams, rampUp, rampDown, loadLearnedParams, BASE_WEIGHTS, BASE_THRESHOLDS,

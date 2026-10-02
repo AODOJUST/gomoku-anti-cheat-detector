@@ -1757,32 +1757,24 @@
   // ---------- 0.3.3 learned parameters ----------
   // The learner's output. `null` means "never trained" — the detector then uses the
   // 0.3.1 defaults, which is exactly the pre-0.3.3 behaviour.
-  // 0.3.3 §3.5 / 0.4.2 §2.3. `evasion` and `winBlunder` are a SURCHARGE on top of the six
-  // 0.3.1 terms, not a slice of them. 0.4.2's own acceptance criteria require an unchanged
-  // risk score whenever neither signal fires (§2.6 #6, §五 #5), and making room for the two by
-  // scaling the six down to 0.90 would multiply every existing score by ~0.9 — enough to flip
-  // a game sitting exactly on the 70 cut from 高风险 to 可疑. So the six keep the values that
-  // sum to 1 and the surcharge is additive; app.js clamps the total at 100. Same literal as
-  // app.js BASE_WEIGHTS and learn.js FALLBACK_WEIGHTS — the three are one set of numbers.
+  // 0.3.3 §3.5 / 0.4.2 §2.3. Every term of the risk score lives in ONE table, and since 0.5.5 §1.3
+  // that table sums to 1.00 as a whole: `evasion`/`winBlunder`/`uselessFour`/`sharpStreak`/
+  // `sharpTotal`/`goodPool`/`liveThree` are no longer additive surcharges riding on top of a
+  // six-term base — 0.5.5's operator-confirmed 方案 A took the difference out of the existing terms
+  // so that 好点池 could become a first-class 0.18 term. See app.js BASE_WEIGHTS for the history
+  // (0.4.8 and 0.5.2 both refused this rescaling; 0.5.5 is an explicit decision to do it, and the
+  // corpus-splitting consequence is the reason it had to be explicit).
+  //
+  // This is the same literal set as app.js BASE_WEIGHTS and learn.js FALLBACK_WEIGHTS — the three
+  // are one set of numbers. A value that is absent or non-numeric here is ignored by riskParams(),
+  // so a profile written before this build simply keeps its own stored numbers.
   var DEFAULT_WEIGHTS = {
-    top1: 0.20, acpl: 0.08, sharp: 0.22, out: 0.27, desperate: 0.08, time: 0.15,
-    evasion: 0.06, winBlunder: 0.04,
-    // 0.4.7 §1.1: a run of >=2 consecutive fours played from a lost position. Same status as
-    // the two above — a surcharge on top of the six, not a slice of them. §1.1 says "与
-    // desperate 同级（0.05）"; `desperate` is 0.08, so its parenthetical and its comparison
-    // disagree, and 0.05 is the number it names twice (and the one §五's checklist writes).
-    // It is a brand-new signal with no corpus, so the smaller value is also the safer one.
-    uselessFour: 0.05,
-    // 0.4.8 §1.2: the two 唯一手 streak surcharges. Kept at the magnitudes §1.2 names while the
-    // six base weights stay at 1.00 (see app.js BASE_WEIGHTS for why the table is not adopted
-    // wholesale). Absent or non-numeric values here are ignored by riskParams(), so a profile
-    // written before this build simply runs without them.
-    sharpStreak: 0.04,
+    top1: 0.13, acpl: 0.06, sharp: 0.14, out: 0.15, desperate: 0.05, time: 0.10,
+    evasion: 0.04, winBlunder: 0.03,
+    uselessFour: 0.03,
+    sharpStreak: 0.03,
     sharpTotal: 0.03,
-    // 0.5.2 §1.1.4/§1.2.4: the two pool surcharges. §1.1.4 asks for the table to be rescaled so
-    // it sums to 1.00 again; not adopted, for the reason the paragraph above gives — it would
-    // move every archived score. Same literal as app.js BASE_WEIGHTS and learn.js's copy.
-    goodPool: 0.03,
+    goodPool: 0.18,
     liveThree: 0.03,
   };
   var DEFAULT_THRESHOLDS = {
@@ -2213,6 +2205,11 @@
       goodPool: isFinite(s.goodPool) ? s.goodPool : 0,
       liveThreePool: isFinite(s.liveThreePool) ? s.liveThreePool : 0,
       liveThreeDefense: !!s.liveThreeDefense,
+      // 0.5.5 §四: the 好点 predicate's own verdict, persisted so a reader does not have to
+      // re-derive the rule from top5/top8/thinkMs — three of the fields it reads, and the one
+      // of them (top8) that only exists on a hand the engine was given eight candidates for.
+      // `liveThreeDefense` above is kept for the same class of reason.
+      isGood: !!s.isGood,
       // 0.4.7 §1.1: the four-run classification. Kept per step so the badge survives a reload,
       // and `prevBestWR` beside it because the archive's own reader may want to re-derive the
       // kind (the classification is a function of this one number plus the run's extent).
@@ -2430,6 +2427,20 @@
         // distinction `evasionCount` draws a few lines above).
         sharpStreakMax: a.sharpStreakMax == null ? null : a.sharpStreakMax,
         sharpStreakHits: a.sharpStreakHits == null ? null : a.sharpStreakHits,
+        // 0.5.5 §1.4.1: the two 好点 figures the metric table prints. Deliberately NOT defaulted —
+        // an archive written before this build has no `goodStreak` at all (the old `goodPoolMax`
+        // measured a DIFFERENT quantity, 好点 being Top3 then and Top5 now), so the viewer prints
+        // `—` for it rather than re-labelling an old number with the new name. Same distinction
+        // `sharpStreakMax` above draws.
+        goodRatio: a.goodRatio == null ? null : a.goodRatio,
+        goodCount: a.goodCount == null ? null : a.goodCount,
+        goodTotal: a.goodTotal == null ? null : a.goodTotal,
+        goodStreak: a.goodStreak == null ? null : a.goodStreak,
+        // ⚠ 0.5.2 wrote neither pool figure into the archive at all, so the viewer's two pool rows
+        // read `—` in the replay detail and real numbers in the live detail — the same archive
+        // described itself differently depending on which pane it was open in. 0.5.5 persists
+        // both; the row's own formatter still prints `—` for the archives that predate them.
+        liveThreeMax: a.liveThreeMax == null ? null : a.liveThreeMax,
         // 0.3.3 C: how many of this side's steps fingerprint-matched a known AI move.
         simCount: a.simCount || 0,
         time: a.time || null,

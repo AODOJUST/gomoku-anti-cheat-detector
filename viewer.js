@@ -94,9 +94,15 @@
   // the same runtime key `learn.js` renders its own weight table with (see _tools/i18n-extra.js).
   // A second label map here would be the "same answer in two places" failure this project has
   // already paid for twice, so this set is deliberately only a MEMBERSHIP list, not a label table.
+  // 0.5.5 §1.4.2 — every term that reaches this map is printed by its label instead of its slug.
+  // `goodPool`/`liveThree` (0.5.2) and `sharpStreak`/`sharpTotal` (0.4.8) were missing from it, so
+  // the breakdown printed 「好点池」's four neighbours as `goodPool 12.3` / `liveThree 0.4` — the
+  // exact camelCase Slug the comment below says it exists to avoid. Member: 1 is a marker, the
+  // wording itself comes from i18n (`learn.weight.<key>`).
   var CONTRIB_TXT = {
     top1: 1, acpl: 1, sharp: 1, out: 1, desperate: 1, time: 1,
     evasion: 1, winBlunder: 1, uselessFour: 1,
+    sharpStreak: 1, sharpTotal: 1, goodPool: 1, liveThree: 1,
   };
   // 被怀疑方 is three-valued and the same ternary was spelled out four times.
   function suspectName(v) {
@@ -289,12 +295,12 @@
   // 0.3.5 §3.2 步骤明细列：折叠 / 展开
   // =====================================================================
   // One preference shared by ALL FOUR step tables (检测 / 回放详情 / 样本详情 / 样本编辑),
-  // because they are the same 15 columns in the same order and a per-table setting would mean
+  // because they are the same 17 columns in the same order and a per-table setting would mean
   // four places to keep in sync for no benefit.
   //
-  // Default: the seven columns that describe a hand (方 / 实际 / T1 / T3 / T5 / 标记 / 人工标记)
-  // stay; the engine's working (最佳 / 前5候选 / 胜率差 / 妙手 / 将败 / 被迫防守 / 耗时ms) folds
-  // away. `#` is fixed — it is the row's identity, not a column to read, and hiding it would
+  // Default: the eight columns that describe a hand (方 / 实际 / T1 / T3 / T5 / 好点池 / 标记 /
+  // 人工标记) stay; the engine's working (最佳 / 前5候选 / 胜率差 / 妙手 / 将败 / 被迫防守 / 耗时ms)
+  // folds away. `#` is fixed — it is the row's identity, not a column to read, and hiding it would
   // leave the table with no way to say which hand a row is.
   // 0.4.1 §五.3: a FUNCTION, not a module-level array. `T()` is called once per column on
   // every rebuild now, because a frozen `label` kept whatever language was selected when the
@@ -312,6 +318,11 @@
       { key: 'top1',      label: 'T1',         hide: false },
       { key: 'top3',      label: 'T3',         hide: false },
       { key: 'top5',      label: 'T5',         hide: false },
+      // 0.5.5 §1.4.3 — the 好点池 column. It sits immediately after T5 because that is the tier it
+      // is read from: ✓ when the hand landed inside the engine's top five (or, on a hand the engine
+      // was given eight candidates for, inside the top eight), plus the RUNNING count once the run
+      // is worth printing. `goodPool`/`isGood` are stamped on the step by app.js — this is a read.
+      { key: 'good',      label: T('viewer|好点池'), hide: false },
       { key: 'loss',      label: T('viewer|胜率差'),     hide: true  },
       { key: 'sharp',     label: T('viewer|妙手'),       hide: true  },
       { key: 'desperate', label: T('viewer|将败'),       hide: true  },
@@ -424,7 +435,7 @@
   }
 
   // The header ▼ can hide a column but cannot bring it back — the header goes with it. This
-  // menu is the way back, and it is the only place that lists all sixteen at once.
+  // menu is the way back, and it is the only place that lists all seventeen at once.
   function renderColMenu() {
     var el = $('colMenu');
     if (!el || !colPrefs) return;
@@ -555,7 +566,7 @@
     fillSampleTagFilter();
     renderLearnStatus();
     setPauseLabel();
-    // 0.4.1 §五.3: the fifteen step columns are a JS-built table of contents, so the static
+    // 0.4.1 §五.3: the step columns are a JS-built table of contents, so the static
     // pass above cannot reach them. `buildColToggles` re-stamps the fold glyphs' titles and
     // `renderColMenu` rebuilds the ▾ menu from scratch — between them the whole column UI
     // follows the language, which it did not before (the menu kept the load-time language).
@@ -3847,6 +3858,11 @@
       '<td>' + esc(s.actualStr) + '</td><td>' + esc(s.bestStr || '—') + '</td>' +
       '<td style="text-align:left;font-family:monospace">' + esc((s.candStrs || []).join(' ')) + '</td>' +
       '<td>' + (s.top1 ? '✓' : '') + '</td><td>' + (s.top3 ? '✓' : '') + '</td><td>' + (s.top5 ? '✓' : '') + '</td>' +
+      // 0.5.5 §1.4.3 — 「该步是否好点（✓/空）」 plus the running count, and the count only from 2
+      // so a lone good point does not print a column of 1s. `s.goodPool` is the stamped run length
+      // and `s.isGood` the predicate's verdict; the latter is what makes a non-top5 hand that
+      // qualified through the extended tier visible, `s.top5` alone would leave it blank.
+      '<td>' + (s.isGood ? '✓' : '') + ((s.goodPool || 0) >= 2 ? T('viewer|（连续 {n}）', { n: s.goodPool }) : '') + '</td>' +
       '<td>' + (s.loss != null ? (s.loss * 100).toFixed(1) + '%' : '—') + '</td>' +
       '<td>' + (s.isSharp ? T('viewer|是') : '') + '</td><td>' + (s.desperate ? T('viewer|是') : '') + '</td>' +
       '<td>' + (s.evasion ? T('viewer|是') : '') + '</td>' +
@@ -3862,7 +3878,7 @@
   }
 
   // 0.3.5 §2.4: every step table colours the WHOLE row by the side that played it, so a hand
-  // can be followed across all sixteen columns. The class goes on the <tr>; the badges and
+  // can be followed across all seventeen columns. The class goes on the <tr>; the badges and
   // annotation buttons inside keep their own colours (see viewer.html). All four step tables
   // share this one helper so a new table can never be added without it.
   //
@@ -3937,6 +3953,15 @@
     if (!a || a[key] == null) return '—';
     return T('viewer|{n}次', { n: a[key] || 0 });
   }
+  // 0.5.5 §1.4.1 — the 好点占比 cell. The RATE alone would hide how much evidence is behind it: 100%
+  // of four hands and 100% of fifty are the same number and not the same claim, so the counts ride
+  // in the same cell (the shape the spec prints). `—` when the ratio is absent, i.e. a pre-0.5.5
+  // archive — and also when the side has no countable hands at all, which is the same "no reading"
+  // the other rows print rather than a rate of 0 the side never earned.
+  function goodRatioCell(a) {
+    if (!a || a.goodRatio == null || !a.goodTotal) return '—';
+    return T('viewer|{p}（{n}/{m}）', { p: pct(a.goodRatio), n: a.goodCount || 0, m: a.goodTotal });
+  }
   function simCount(a) { return a ? T('viewer|{n} 步', { n: a.simCount || 0 }) : '—'; }
   // 0.4.2 §2.5. The evasion row carries two numbers because they answer different questions —
   // how many, and how evenly they were spaced. `0.00` regularity is the normal answer for one
@@ -3997,13 +4022,13 @@
       // streak rows say so.
       '<tr><td>' + T('viewer|唯一手最长连续命中') + '</td><td>' + ssCell(rep.black, 'sharpStreakMax') + '</td><td>' + ssCell(rep.white, 'sharpStreakMax') + '</td></tr>' +
       '<tr><td>' + T('viewer|唯一手累计命中') + '</td><td>' + ssCell(rep.black, 'sharpStreakHits') + '</td><td>' + ssCell(rep.white, 'sharpStreakHits') + '</td></tr>' +
-      // 0.5.2 §1.1/§1.2 — the two pool rows. Same reason the two above sit here: they are RUN
-      // lengths, not rates, and each is a signal the rows above cannot express. 好点池 counts
-      // consecutive Top3-or-better hands (≥3 before it scores); 活三好手 counts consecutive 活三
-      // defences played as the engine's own first choice (≥2). They are deliberately INDEPENDENT
-      // pools — a good point between two 活三 defences extends the first without disturbing the
-      // second, so a side can show a long run in one and none in the other.
-      '<tr><td>' + T('viewer|好点池最长连击') + '</td><td>' + ssCell(rep.black, 'goodPoolMax') + '</td><td>' + ssCell(rep.white, 'goodPoolMax') + '</td></tr>' +
+      // 0.5.5 §1.4.1 — the redefined 好点池, reported as its two components rather than as one run
+      // length: the RATE is the headline (它 is 70% of the sub-score) and the longest RUN is the
+      // supporting figure the old row already carried. Both are `—` for an archive that predates
+      // 0.5.5 — its `goodPoolMax` measured a different quantity (好点 was Top3 then, Top5 now), so
+      // relabelling it would be a lie rather than a fallback.
+      '<tr><td>' + T('viewer|好点占比') + '</td><td>' + goodRatioCell(rep.black) + '</td><td>' + goodRatioCell(rep.white) + '</td></tr>' +
+      '<tr><td>' + T('viewer|好点最长连击') + '</td><td>' + ssCell(rep.black, 'goodStreak') + '</td><td>' + ssCell(rep.white, 'goodStreak') + '</td></tr>' +
       '<tr><td>' + T('viewer|活三好手最长连击') + '</td><td>' + ssCell(rep.black, 'liveThreeMax') + '</td><td>' + ssCell(rep.white, 'liveThreeMax') + '</td></tr>' +
       '<tr><td>' + T('viewer|Top5 之外') + '</td><td>' + (rep.black ? pct(rep.black.outTop5) : '—') + '</td><td>' + (rep.white ? pct(rep.white.outTop5) : '—') + '</td></tr>' +
       '<tr><td>' + T('viewer|将败冲四') + '</td><td>' + desCount(rep.black) + '</td><td>' + desCount(rep.white) + '</td></tr>' +
@@ -7501,7 +7526,7 @@
     await refreshCustomRegistry();
     // 0.3.5 §3.2: build the per-column ▼ glyphs first (they are static markup-level), then
     // apply the stored fold state so the first paint already has the right columns hidden —
-    // applying it after a render would flash the full fifteen-column table on every load.
+    // applying it after a render would flash the full width table on every load.
     buildColToggles();
     wireColMenu();
     await loadColPrefs();

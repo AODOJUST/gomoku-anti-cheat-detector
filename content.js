@@ -230,6 +230,11 @@
   // `reason` is the code `shouldSkipByCounts` returned, so the renderer names the rule that
   // actually fired instead of guessing which of the two thresholds it must have been.
   var lastStorageSkip = null;  // { reason: 'ordered-too-few'|'unordered-too-many', n, lim }
+  // 0.5.5 §2.3.3 #1 — the FOURTH reason a report is not kept, and the only one that is not a rule:
+  // the run produced nothing to archive. A boolean rather than a record because its sentence has no
+  // numbers to print — and it does NOT ride on `job.note`, which is a plain string the queue row
+  // escapes: putting the 强制保存 entry's markup there printed the `<span>` as literal text.
+  var lastEmptySkip = false;
   // Engine status as the offscreen document reports it: which build won, and whether it is
   // a pthread build. Shown as a note only when something is worth saying (degraded to
   // single-thread, or an explicit thread count on a multi build).
@@ -1073,7 +1078,22 @@
     // them forced defences) — the record and the per-move verdicts are still worth
     // keeping. Only a report with no verdicts at all is refused.
     var hasAgg = !!(report.black || report.white);
-    if (!hasAgg && !(report.steps || []).length) return null;
+    if (!hasAgg && !(report.steps || []).length) {
+      // 0.5.5 §2.3.3 #1 — every non-archive has to SAY so. This path was silent: the run finished,
+      // nothing appeared in the archive, and nothing said why.
+      //
+      // The 强制保存 entry is offered here too, because §2.3.3 #2 asks for it on every 「未存档」
+      // note and because it is not a dead end in the case that actually reaches this branch: an
+      // empty report usually means the RUN produced nothing (a failed or interrupted analysis),
+      // and 导入至回放 starts a fresh job — which either produces a report this time (and, with
+      // `_forceSave` set, is archived with all three gates skipped) or prints this same line
+      // again. Nothing is archived from an empty report either way.
+      job.note = T('panel|无有效数据，未存档。');
+      lastEmptySkip = true;
+      lastSkip = null; lastFilterSkip = null; lastStorageSkip = null; lastArchive = null;
+      if (root) paintStatus();
+      return null;
+    }
     // 0.3.7 §一.1: a finalize job archives a SNAPSHOT taken when the game ended, not the
     // live collectors. Analysis is asynchronous and the collectors are reset synchronously
     // by the next game, so reading them here would file the new game's board under the old
@@ -1081,6 +1101,15 @@
     // to analyse what is on screen right now).
     var record = job._snap ? job._snap.record : toRecord(activeMoves());
     var players = job._snap ? job._snap.players : playerNames();
+    // 0.5.5 §2.2.2 — the operator's explicit 「导入至回放」 / the status line's 「强制保存」. It
+    // bypasses ALL THREE gates below — the length floor, the count filter and the AI-rate filter.
+    //
+    // §2.3.3 #3 makes that equivalence part of the contract rather than a convenience: the panel
+    // offers this entry beside EVERY one of the three 「未存档」 messages, 手数不足 included, so an
+    // entry that then refused a short game would do nothing precisely where it is offered. The
+    // button itself keeps a 5-hand sanity floor (§2.2.2) so this is still "save a game", never
+    // "save an empty board".
+    var force = !!job._forceSave;
     // Short games are not archived: a 6-move abort has no signal in it and would push a
     // real game out of the 200-entry cap. The threshold is a setting (5–30).
     //
@@ -1106,10 +1135,11 @@
       record.moves.length || 0
     );
     var minMoves = GMStorage.clampMinMoves(S.minArchiveMoves);
-    if (total < minMoves) {
+    if (!force && total < minMoves) {
       job.note = T('panel|对局过短：仅 {n} 手（少于 {min} 手），未存档。', { n: total, min: minMoves });
       lastSkip = { moves: total, min: minMoves };
       lastArchive = null;
+      lastEmptySkip = false;
       // Short by THE RECORD's own length, not by what was scored. Marked as handled so the
       // finalize path does not re-evaluate it on every later signal.
       if (job._epoch != null) markEpochArchived(job._epoch);
@@ -1121,7 +1151,7 @@
     // also the honest one: a game we barely captured says nothing about either player no matter
     // what its score came out as, so 「有序手不足」 is the more fundamental of the two
     // explanations. The same manual exemption as below applies — this is the AUTOMATIC path.
-    var countSkip = GMStorage.shouldSkipByCounts(record, report, S.storageFilter);
+    var countSkip = force ? null : GMStorage.shouldSkipByCounts(record, report, S.storageFilter);
     if (countSkip) {
       job.note = countSkip.reason === 'ordered-too-few'
         ? T('panel|有序手仅 {n} 手（低于 {min} 手），未存档。', { n: countSkip.ordered, min: countSkip.min })
@@ -1134,6 +1164,7 @@
       lastSkip = null;
       lastFilterSkip = null;
       lastArchive = null;
+      lastEmptySkip = false;
       // Marked handled for the same reason the other two gates are: the finalize path
       // re-evaluates on every later signal, and a game the operator's own rule already excluded
       // would otherwise be re-decided on every move.
@@ -1149,7 +1180,7 @@
     //
     // §2.2.5: this is the AUTOMATIC path only. There is no manual 「存为存档」 here to exempt —
     // the overlay has no such button; the viewer's does, and viewer.js passes `{manual:true}`.
-    if (GMStorage.shouldSkipArchive(report, S.archiveFilter)) {
+    if (!force && GMStorage.shouldSkipArchive(report, S.archiveFilter)) {
       var af = GMStorage.normalizeArchiveFilter(S.archiveFilter);
       var afRisk = Math.round(Math.max(
         report.black ? (report.black.risk || 0) : 0,
@@ -1159,6 +1190,7 @@
       lastFilterSkip = { risk: afRisk, min: af.minRisk, max: af.maxRisk };
       lastSkip = null;
       lastArchive = null;
+      lastEmptySkip = false;
       // Marked handled for the same reason as the length gate: the finalize path re-evaluates on
       // every later signal, and re-deciding a game the operator's own rule already excluded would
       // re-run the whole check on each move.
@@ -1182,8 +1214,14 @@
       job.archiveId = entry.id;
       lastArchive = entry;
       lastSkip = null;
+      lastEmptySkip = false;
       if (job._epoch != null) markEpochArchived(job._epoch);   // 0.3.7 §一.1
       console.log('[detector] 已存档：' + entry.name);
+      // 0.5.5 §2.2.5 #5 — a FORCED save gets a toast as well as the status line. The status line
+      // is inside a scrolling column and the operator pressed a button that deliberately
+      // overrode their own rules; the confirmation has to be where they are looking. An ordinary
+      // archive keeps the status line alone, so nothing about the automatic path changes.
+      if (force) GmToast.show(T('toast|已强制保存：{name}', { name: entry.name }), 'success');
       if (root) paintStatus();
       return entry;
     } catch (e) {
@@ -2553,6 +2591,11 @@
     'button:disabled{opacity:.45;cursor:default}',
     '.ft{padding:5px 10px;border-top:1px solid var(--gm-line);color:var(--gm-dim);font-size:10px;display:flex;gap:10px}',
     '.note{color:#f1c40f;font-size:11px;margin-top:6px}',
+    // 0.5.5 §2.3.2 — the 强制保存 entry inside a 「未存档」 note. `.lk` is styled inside `.hd` and
+    // `.toast` only, so a bare one here would render as unstyled text that does not look clickable.
+    // No background is touched, so this rule's position in the sheet is irrelevant (unlike the
+    // 0.5.4 alpha block at the end, which must stay last).
+    '.note .lk{color:var(--gm-lk);cursor:pointer;text-decoration:underline}',
     // 0.5.1 §2.2.5 — the fallback notice. Kept as a `.note` variant rather than a new top strip
     // because the panel already has one reserved-height banner (0.4.0 §一.4's update strip, which
     // grows `--gm-ban`); a second one would have to fight it for the same space at the same edge,
@@ -3308,6 +3351,10 @@
       if (act === 'toggle-more') { moreOpen = !moreOpen; paintControls(); return; }
       if (act === 'analyze') { manualAnalyze(); return; }
       if (act === 'replay') { manualReplay(); return; }
+      // 0.5.5 §2.2.2/§2.3.2 — one handler for BOTH entries (the button group's 导入至回放 and the
+      // 「强制保存」 link inside each 「未存档」 note), which is what §2.3.3 #3 calls for: the two are
+      // the same action, so they must not be two code paths.
+      if (act === 'force-save') { manualSaveToReplay(); return; }
       if (act === 'export') { exportSelected(); return; }
       if (act === 'clear') { jobs = []; seqCounter = 0; selectedId = null; paint(); return; }
     });
@@ -3843,7 +3890,7 @@
    * on screen; the panel still says so, and the border has to agree with the panel.
    *
    * So 检测结果 is tested FIRST. `inGame || ended` keeps the other half of 待机 intact: with no
-   * board and no finished game there is no 检测结果 to show even if a job carries one (导入回放 on
+   * board and no finished game there is no 检测结果 to show even if a job carries one (重新分析 on
    * an empty board), and that is still 待机.
    */
   function borderStateFromPanel(cur) {
@@ -3907,6 +3954,20 @@
 
   function riskColor(level) {
     return level === '高风险' ? '#e74c3c' : level === '可疑' ? '#f1c40f' : '#2ecc71';
+  }
+
+  // 0.5.5 §2.3.2 — the one 强制保存 entry, appended to ALL FOUR 「未存档」 notes: the length floor,
+  // the count filter, the AI-rate filter, and the empty report (which is the one that reaches the
+  // note through a job rather than through paintStatus — see archiveFromJob).
+  //
+  // ⚠ §2.3.2's sketch wraps ALL of them in a single `未存档：{reason}` template driven by one
+  // `lastSkip`. The panel does not have one skip variable and must not be given one: 0.4.3/0.5.3/
+  // 0.5.4 each gave their gate its OWN slot precisely because one variable cannot print three
+  // different reasons (the §一.4 note below says so at length). So the sentences stay as they are
+  // — each already names the threshold that fired — and only the entry is shared, which is the
+  // part §2.3.3 #3 actually requires.
+  function forceSaveLinkHtml() {
+    return ' <span class="lk" data-act="force-save">' + T('panel|强制保存') + '</span>';
   }
 
   function paintStatus() {
@@ -4056,7 +4117,7 @@
     // confirmation on screen, which would read as "this one was saved".
     if (!running() && !lastArchive && lastSkip) {
       h += '<div class="note">' + T('panel|对局过短：仅 {n} 手（少于 {min} 手），未存档。阈值可在设置里改。',
-        { n: lastSkip.moves, min: lastSkip.min }) + '</div>';
+        { n: lastSkip.moves, min: lastSkip.min }) + forceSaveLinkHtml() + '</div>';
     }
     // 0.5.3 §2.2.3 — the other reason a game is not kept, and it gets its own line rather than
     // sharing `lastSkip`: the two say different things, and the 对局过短 message above prints
@@ -4065,7 +4126,7 @@
     // turning the filter on looks like archiving silently stopped working.
     if (!running() && !lastArchive && lastFilterSkip) {
       h += '<div class="note">' + T('panel|AI 率 {r}% 在过滤范围内（{min}%–{max}%），未存档。',
-        { r: lastFilterSkip.risk, min: lastFilterSkip.min, max: lastFilterSkip.max }) + '</div>';
+        { r: lastFilterSkip.risk, min: lastFilterSkip.min, max: lastFilterSkip.max }) + forceSaveLinkHtml() + '</div>';
     }
     // 0.5.4 §一.4 — the third reason. Its own slot and its own sentence for the reason spelled
     // out above the `lastFilterSkip` line: the numbers differ, and one variable cannot print
@@ -4075,7 +4136,14 @@
         ? T('panel|有序手仅 {n} 手（低于 {min} 手），未存档。',
             { n: lastStorageSkip.n, min: lastStorageSkip.lim })
         : T('panel|无序手 {n} 手（高于 {max} 手），未存档。',
-            { n: lastStorageSkip.n, max: lastStorageSkip.lim })) + '</div>';
+            { n: lastStorageSkip.n, max: lastStorageSkip.lim })) + forceSaveLinkHtml() + '</div>';
+    }
+    // 0.5.5 §2.3.3 #1 — the fourth reason, and the only one that is not a rule of the operator's:
+    // the run produced no report at all. Rendered HERE, through the same escaped-safe path as the
+    // three above, rather than appended to `job.note` — that field is a plain string the queue row
+    // escapes, so the entry's markup showed up as literal `<span>` text (behave-058 caught it).
+    if (!running() && !lastArchive && lastEmptySkip) {
+      h += '<div class="note">' + T('panel|无有效数据，未存档。') + forceSaveLinkHtml() + '</div>';
     }
 
     els.top.innerHTML = h;
@@ -4221,7 +4289,11 @@
               esc(T('panel|分析当前对局')) + '</button>'
           : '<button class="p" data-act="analyze"' + (busyBatch ? ' disabled' : '') + '>' +
               esc(liveJob ? T('panel|结束并出报告') : T('panel|开始实时逐步')) + '</button>') +
-        '<button data-act="replay"' + (busy ? ' disabled' : '') + '>' + esc(T('panel|导入回放')) + '</button>' +
+        '<button data-act="replay"' + (busy ? ' disabled' : '') + '>' + esc(T('panel|重新分析')) + '</button>' +
+        // 0.5.5 §2.2.3 — beside 重新分析, and NOT disabled by `busy`: it refuses a busy board itself
+        // (§2.2.2's 正在分析，请等待完成), and greying it out whenever any job ran would hide the
+        // entry that exists to rescue a game the filters just refused.
+        '<button data-act="force-save">' + esc(T('panel|导入至回放')) + '</button>' +
         '<button data-act="export"' + (selectedId ? '' : ' disabled') + '>' + esc(T('panel|导出JSON')) + '</button>' +
         '<button data-act="clear"' + (jobs.length && !busy ? '' : ' disabled') + '>' + esc(T('panel|清空队列')) + '</button>' +
       '</div>' +
@@ -5548,11 +5620,44 @@
     }
   }
 
+  // 0.5.5 §2.2.1 — renamed from 「导入回放」. The old name promised an import and delivered a
+  // re-analysis of the CURRENT game; nothing selects a file, nothing reads one. 「重新分析」 is
+  // what the button has always done, and it stops the operator confusing it with the §2.2.2
+  // 「导入至回放」 button beside it, which really does write to the archive.
   function manualReplay() {
-    if (!allowAnalyze(T('panel|回放'))) return;
+    if (!allowAnalyze(T('panel|重新分析'))) return;
     if (running()) return;
     if (liveJob) { liveFinish(); }
-    newJob('step', '导入回放');
+    newJob('step', '重新分析');
+    paint();
+    pump();
+  }
+
+  // 0.5.5 §2.2.2 — 「导入至回放」. The one thing the panel could not do: keep a game the
+  // operator's own filters had excluded, because 「浮层保存局面会失败或对属于过滤范围的局面不进行
+  // 保存」 and a valuable position must not be lost to a rule.
+  //
+  // It is NOT a re-analysis carrying a flag: it starts the same `global` job the 分析当前对局 button
+  // starts — that is what produces the report an archive is built from — and marks it `_forceSave`,
+  // which archiveFromJob reads to skip the three gates.
+  //
+  // §2.2.2's sketch writes `toRecord(moves)` into a local that is never read again. The local is not
+  // reproduced: the job takes its OWN snapshot in startJob(), which is the path every other job goes
+  // through and the one that keeps the record and the report describing the same position (see the
+  // §五.4 note there) — a record built here would be a second, always slightly older one.
+  //
+  // `allowAnalyze()` is deliberately NOT called, because §2.2.2 gives this action its own two
+  // guards. The mid-join warning it would add is not lost: startJob() writes 「检测器中途加入…」 onto
+  // the job (so the panel shows it), and the archive records `quality: partial`.
+  function manualSaveToReplay() {
+    if (running()) { alert(T('panel|正在分析，请等待完成')); return; }
+    var moves = activeMoves();
+    // §2.2.2's own 5-hand floor. Below it there is no game to keep, and the bypass below would
+    // otherwise let a stray click file an empty board.
+    if (moves.length < 5) { alert(T('panel|手数太少，无法保存')); return; }
+    if (!confirm(T('panel|将当前对局强制保存到回放？此操作会绕过存储过滤规则。'))) return;
+    var job = newJob('global', '导入至回放');
+    job._forceSave = true;
     paint();
     pump();
   }

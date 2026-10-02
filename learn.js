@@ -37,19 +37,16 @@
   if (g.GMLearn) return;
 
   var FALLBACK_WEIGHTS = {
-    top1: 0.20, acpl: 0.08, sharp: 0.22, out: 0.27, desperate: 0.08, time: 0.15,
-    evasion: 0.06, winBlunder: 0.04,
-    // 0.4.7 §1.1: the useless-four-run surcharge. See app.js BASE_WEIGHTS for the reasoning
-    // behind 0.05 (§1.1 names 0.05 twice and compares it to `desperate`, which is 0.08).
-    uselessFour: 0.05,
-    // 0.4.8 §1.2: the two 唯一手 streak surcharges. Same status as the three above — added on
-    // top of the six, so they are learned inside the surcharge budget rather than normalised
-    // with the base. See app.js BASE_WEIGHTS for why §1.2's single 1.00 table is not adopted.
-    sharpStreak: 0.04,
+    top1: 0.13, acpl: 0.06, sharp: 0.14, out: 0.15, desperate: 0.05, time: 0.10,
+    evasion: 0.04, winBlunder: 0.03,
+    // 0.5.5 §1.3.1 方案 A — the table now sums to 1.00 as a WHOLE; the seven non-base terms are no
+    // longer additive surcharges. See app.js BASE_WEIGHTS for the full history (0.4.8 and 0.5.2
+    // both declined this rescaling; 0.5.5 is an explicit decision to take the difference out of
+    // the existing terms so that 好点池 can stand at 0.18).
+    uselessFour: 0.03,
+    sharpStreak: 0.03,
     sharpTotal: 0.03,
-    // 0.5.2 §1.1.4/§1.2.4: the two pool surcharges. Same status as the five above, and same
-    // reason §1.1.4's 「缩小到总和 1.00」 is not adopted (see app.js BASE_WEIGHTS).
-    goodPool: 0.03,
+    goodPool: 0.18,
     liveThree: 0.03,
   };
   var FALLBACK_THRESHOLDS = {
@@ -77,29 +74,34 @@
   var LOW_SAMPLES = 20;
 
   var BASE_KEYS = ['top1', 'acpl', 'sharp', 'out', 'desperate', 'time'];
-  // 0.4.2 §2.3: the two evasion terms are a SURCHARGE — they add to the risk score instead of
-  // taking a share of it (see app.js BASE_WEIGHTS for why). So they are learned inside their
-  // own budget rather than normalised together with the six: normalising all eight to 1 would
-  // scale the six down to ~0.9 and drop every score by 10%, which is exactly what 0.4.2
-  // §2.6 #6 forbids. The two groups are therefore normalised separately, to 1.00 and 0.10.
-  //
-  // 0.4.7 §1.1 puts `uselessFour` in the SURCHARGE group too, and for the same reason: it is
-  // added on top of the six, so folding it into the base budget would take a slice out of
-  // Top1/ACPL/… and move every existing score. The surcharge budget is now 0.15 (0.06 + 0.04
-  // + 0.05), read off the defaults by `group()` below, so adding the key here is all the
-  // wiring the learner needs.
+  // 0.4.2 §2.3, restated for 0.5.5's single 1.00 table: the seven special signals keep their own
+  // budget rather than being normalised together with the six. Normalising all thirteen in one sum
+  // would let a corpus with no such signal at all hand the six the whole budget and then take it
+  // away again on the next run — the base statistics would move between two learned models for
+  // reasons that have nothing to do with the base. The two groups are therefore normalised
+  // separately, to the budget each group's defaults already sum to (0.63 and 0.37 under §1.3.1).
+  // `group()` below reads both budgets off the defaults, so adding a key here is the whole wiring.
   var EVASION_KEYS = ['evasion', 'winBlunder', 'uselessFour', 'sharpStreak', 'sharpTotal',
-                      // 0.5.2 §1.1.4/§1.2.4 — the surcharge budget is read off the defaults by
+                      // 0.5.2 §1.1.4/§1.2.4 — the group budget is read off the defaults by
                       // `group()` below, so listing the two keys here is the whole wiring.
                       'goodPool', 'liveThree'];
   var WEIGHT_KEYS = BASE_KEYS.concat(EVASION_KEYS);
 
-  // 0.5.2 §1.1/§1.2 — the two pool thresholds, mirrored from app.js (GOOD_POOL_MIN /
-  // LIVE_POOL_MIN). learn.js is a separate module and cannot import app.js, so they are repeated
-  // here; verify-055 asserts the two files agree, so an edit to one cannot move without the
-  // other being reported.
-  var GOOD_POOL_MIN = 3;
+  // 0.5.2 §1.1/§1.2 — the 活三 pool's threshold, mirrored from app.js (LIVE_POOL_MIN). learn.js is
+  // a separate module and cannot import app.js, so it is repeated here; the suite asserts the two
+  // files agree, so an edit to one cannot move without the other being reported.
   var LIVE_POOL_MIN = 2;
+
+  // 0.5.5 §1.1.4 — the 好点 pool's five thresholds and two combination weights, mirrored from
+  // app.js. Same reason as the line above, and the same assertion covers them.
+  var GOOD_TOP8_MS = 6000;
+  var GOOD_RATIO_LO = 0.55;
+  var GOOD_RATIO_SPAN = 0.45;
+  var GOOD_STREAK_MIN = 3;
+  var GOOD_STREAK_BASE = 1.25;
+  var GOOD_STREAK_DIV = 8;
+  var GOOD_W_RATIO = 0.7;
+  var GOOD_W_STREAK = 0.3;
 
   var WEIGHT_LABEL = {
     top1: 'Top1 吻合', acpl: 'ACPL 均损', sharp: '唯一手', out: 'Top5 之外',
@@ -546,15 +548,17 @@
     // no longer uses — and the two would drift silently, each staying internally consistent.
     var aSharpStreak = ss.maxStreak >= 3 ? clamp((Math.pow(1.3, ss.maxStreak - 2) - 1) / 5, 0, 1) : 0;
     var aSharpTotal = ss.streakHits >= 3 ? clamp((Math.pow(1.15, ss.streakHits - 2) - 1) / 8, 0, 1) : 0;
-    // 0.5.2 §1.1.4/§1.2.4, mirrored from app.js sideAggregate(): the two pool terms. Read off the
-    // per-hand values slimStep() persists rather than re-walked here — both walks live in app.js
-    // and a second copy is how this project has gone wrong before. The population is `steps`, the
-    // evasion-excluded list, which is what app.js takes its max over.
-    //
-    // An archive written before 0.5.2 carries neither field, so both max to 0 and such a sample
-    // trains exactly as it did — the same "read both shapes" rule the rest of this file follows.
-    var gpMax = maxOf(steps, 'goodPool');
-    var aGoodPool = gpMax >= GOOD_POOL_MIN ? clamp((gpMax - 2) / 10, 0, 1) : 0;
+    // 0.5.5 §1.1.4, mirrored from app.js sideAggregate(): the redefined 好点 pool. The population
+    // is `all` — this side's scored, non-opening, non-forced-defence hands — which is exactly what
+    // app.js's goodPoolCounts() selects, so `gp.ratio`/`gp.streak` here are the same two numbers
+    // the report carries. `steps` (evasion-excluded) would be the WRONG list: the evasion filter
+    // belongs to the six, and 0.5.5 §1.1.3 measures the pool over a hand's own side regardless.
+    var gp = goodPoolFigures(all);
+    var aGoodPool = gp.aGoodPool;
+    // 0.5.2 §1.2.4: the 活三 pool, unchanged — read off the per-hand value slimStep() persists
+    // rather than re-walked here. The walk lives in app.js and a second copy is how this project
+    // has gone wrong before. An archive written before 0.5.2 carries no such field, so it maxes to
+    // 0 and the term is exactly 0 — the same "old corpus trains the same way" rule as above.
     var ltMax = maxOf(steps, 'liveThreePool');
     var aLiveThree = ltMax >= LIVE_POOL_MIN
       ? clamp((Math.pow(1.3, ltMax - 1) - 1) / 4, 0, 1) : 0;
@@ -571,7 +575,47 @@
       uselessFourCount: steps.filter(function (x) { return x.fourKind === 'useless'; }).length,
       uselessFourRuns: uselessRuns,
       sharpStreakMax: ss.maxStreak, sharpStreakHits: ss.streakHits,
-      goodPoolMax: gpMax, liveThreeMax: ltMax,
+      liveThreeMax: ltMax,
+      // 0.5.5 §1.4.1: the two 好点 figures the report carries, mirrored so the learner's own table
+      // can print them beside the subscore they produced. There is deliberately no `goodPoolMax`
+      // any more: it was the SAME number as `goodStreak` under a second name, and one answer
+      // printed twice is how the two copies start to drift.
+      goodRatio: gp.ratio, goodStreak: gp.streak,
+    };
+  }
+
+  // 0.5.5 §1.1.2/§1.1.4, mirrored from app.js isGoodMove()/computeGoodPool(). `seq` is already the
+  // pool's population — this side's scored, non-opening, non-forced-defence hands, in table order
+  // (see `all` in subscoresForSide) — which is exactly what app.js's goodPoolCounts() selects, so
+  // the two walks cannot disagree about WHICH hands count. Only the predicate and the curve are
+  // mirrored here.
+  //
+  // The persisted `isGood` flag wins when the archive carries one (0.5.5+); an older archive has
+  // none, so it is re-derived from the very fields app.js reads. Deriving rather than defaulting
+  // to false is what lets the learner fit the rule the detector actually runs.
+  function archivedIsGood(x) {
+    if (x.isGood != null) return !!x.isGood;
+    if (x.top5) return true;
+    return !!(x.top8 && x.thinkMs != null && x.thinkMs > GOOD_TOP8_MS);
+  }
+  function goodPoolFigures(seq) {
+    var total = seq.length, count = 0, streak = 0, cur = 0;
+    for (var i = 0; i < total; i++) {
+      if (archivedIsGood(seq[i])) {
+        count++; cur++;
+        if (cur > streak) streak = cur;
+      } else {
+        cur = 0;
+      }
+    }
+    var ratio = total ? count / total : 0;
+    var aRatio = clamp((ratio - GOOD_RATIO_LO) / GOOD_RATIO_SPAN, 0, 1);
+    var aStreak = streak >= GOOD_STREAK_MIN
+      ? clamp((Math.pow(GOOD_STREAK_BASE, streak - 2) - 1) / GOOD_STREAK_DIV, 0, 1) : 0;
+    return {
+      ratio: ratio, count: count, total: total, streak: streak,
+      aRatio: aRatio, aStreak: aStreak,
+      aGoodPool: GOOD_W_RATIO * aRatio + GOOD_W_STREAK * aStreak,
     };
   }
 
@@ -669,12 +713,13 @@
     // a single term and throw away every other piece of evidence — the floor keeps all eight
     // in the sum, so a weak dataset degrades to "roughly uniform", never to "one metric".
     //
-    // 0.4.2 §2.3: TWO sums, not one. The six share a budget of 1.00 and the two evasion terms
-    // share their own — the sum of their defaults, 0.10. Normalising all eight in one sum
-    // would hand the six ~0.9 of their former share and drop every score by 10%, so a learned
-    // run with no evasion at all would score lower than an unlearned one, which is exactly
-    // what §2.6 #6 forbids. Each budget is read off the defaults, so changing a default weight
-    // moves its group's budget with it.
+    // 0.4.2 §2.3: TWO sums, not one — and 0.5.5 keeps the two-group STRUCTURE even though the
+    // whole table now sums to 1.00. The split is not about surcharges any more: it is about which
+    // terms the learner is willing to re-allocate against each other. The six are the base
+    // statistic, and the seven special signals (each of which is exactly 0 on a game that never
+    // fired it) are fitted inside their own budget, so a weak corpus cannot gut the base. Each
+    // budget is read off the defaults, so changing a default weight moves its group's budget with
+    // it: 0.63 for the six, 0.37 for the seven, 1.00 together.
     var dw = defaultWeights();
     var group = function (keys) {
       var raw = {}, sum = 0, budget = 0, i;
@@ -734,9 +779,10 @@
   function riskOfSub(sub, weights) {
     var r = 0;
     WEIGHT_KEYS.forEach(function (k) { r += (weights[k] || 0) * sub[k]; });
-    // Clamped to mirror app.js sideAggregate() exactly: the two evasion weights sit ON TOP of
-    // the six, so an evasion-heavy side can add up past 1.0. Without the clamp here the risk
-    // cut search could place 高风险 above 100 — a line the real score can never cross.
+    // Clamped to mirror app.js sideAggregate() exactly. Since 0.5.5 §1.3.1 the table sums to 1.00
+    // as a whole, so a perfect subscore on every term reaches exactly 100; the clamp is kept
+    // because a learned set can still be nudged over by rounding, and because the risk cut search
+    // must never be able to place 高风险 above a line the real score cannot cross.
     return clamp(100 * r, 0, 100);
   }
 
@@ -933,6 +979,11 @@
     optimizeRampThresholds: optimizeRampThresholds,
     optimizeRiskCuts: optimizeRiskCuts,
     subscoresForSide: subscoresForSide,
+    // 0.5.5 §1.1.4: the mirrored 好点-pool curve, exported so the suite can drive it against
+    // app.js's computeGoodPool over one sequence — the two could drift while each stayed
+    // internally consistent, which is the failure this project has shipped three times.
+    goodPoolFigures: goodPoolFigures,
+    archivedIsGood: archivedIsGood,
     riskOfSub: riskOfSub,
     weightedAUC: weightedAUC,
     runLearning: runLearning,

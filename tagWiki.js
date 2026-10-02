@@ -578,14 +578,22 @@ var GM_TAG_WIKI = (function () {
       id: 'signal-good-pool', cat: 'signal', nameNs: 'learn.weight', nameVal: 'goodPool',
       applied: true, weightKey: 'goodPool',
       zh: {
-        meaning: '好点积累池：连续走在前 3 候选以内的最长段（≥3 段才起算），线性斜坡。',
-        usage: '0.5.2 引入。看的是「一直保持在好点上」这件事本身，而不是某一步是否命中首选。',
-        impact: '权重 {w}，附加项。无此池时为 0，因此不改变 0.5.2 之前对局的分数。',
+        meaning: '好点池：好点占比（占七成）与最长连续好点（占三成）的组合。'
+               + '好点 = 这一步落在引擎前 5 候选以内；记录到的思考时间超过 6 秒的手上，前 8 候选也算。',
+        usage: '0.5.2 引入、0.5.5 重定义：看的是「一直保持在好点上」这件事本身，而不是某一步'
+             + '是否命中首选。占比 55% 以下不计分，连续度不足 3 不扣分 —— 短连击只是不加分，'
+             + '不会把占比挣来的分吃掉。',
+        impact: '权重 {w}，是整张权重表里最大的一项。没有好点时占比项为 0。',
       },
       en: {
-        meaning: 'A good-point pool: the longest run of consecutive hands inside the top-3 candidates (counted from 3), on a linear ramp.',
-        usage: 'Added in 0.5.2. It reads the sustained fact of staying on good points rather than whether any single hand hit the top choice.',
-        impact: 'Weight {w}, a surcharge. Zero with no such pool, so pre-0.5.2 games score unchanged.',
+        meaning: 'A good-point pool: 70% the share of hands inside the engine\'s top-5 candidates, '
+               + '30% the longest run of them. A good point is a hand inside the top five; on a hand '
+               + 'whose recorded thinking time exceeded 6s, the top eight count as well.',
+        usage: 'Added in 0.5.2 and redefined in 0.5.5. It reads the sustained fact of staying on '
+             + 'good points rather than whether any single hand hit the top choice. Nothing scores '
+             + 'below a 55% share, and a run shorter than three costs nothing — a short run fails to '
+             + 'add, it does not eat the share\'s contribution.',
+        impact: 'Weight {w}, the largest single term in the table. Zero with no good points at all.',
       },
     },
     {

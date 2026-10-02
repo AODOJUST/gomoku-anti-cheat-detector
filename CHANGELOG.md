@@ -7,6 +7,18 @@ nobody ever read the history from there anyway.
 
 Every entry below is the original prose, verbatim — only the headings and blank lines are new.
 
+## 0.5.5
+
+0.5.5 rebuilds the single largest term of the score, and gives the overlay the button its neighbour never was.
+
+**好点池 redefined (P0).** A 好点 used to be a move inside the engine’s Top3. It is now a move inside the Top5, plus Top6–8 but only on the steps where the engine was actually asked for them — that is, where `thinkMs > 6000`. Asking for a deeper list on the slow moves and a shallower one on the fast moves is not a reason to measure the whole game against a line that only exists on some of it. The criterion is no longer 「three good moves in a row」 but two figures combined: 占比 — how large a share of the player’s own analysed, non-opening, non-exempt moves were good — weighted 70%, and 连续度 — the longest run — 30%. A share below 55% scores nothing and 100% scores full marks; a run shorter than three carries no penalty, deliberately, since an occasional bad move says nothing and only a run is a signal; from three upward it accumulates on a 1.25 power curve that saturates at fifteen. Black and white are computed separately.
+
+The 活三 pool does **not** move: it keeps its own independent `liveThreePool` and is never counted into 好点池, so nothing is scored twice. The weight goes from 0.03 to **0.18**, level with 唯一手, and it is paid for out of the rest of the table — `out` gives up 0.07, `sharp` 0.04, and the remaining terms come down slightly — which takes the table from the 1.28 it has carried since 0.4.8 and normalises it to **1.00**. That is the part worth recording: 0.4.8 and 0.5.2 each wrote this change and each declined to make it, because both treated the odd-one-out pools as a SURCHARGE laid on top of the original six. The invariant is the whole table now, and the whole table sums to one.
+
+In 查看器 the 指标汇总 gains 好点占比 and 好点最长连击, the 贡献分解 has a 好点池 item, and 步骤明细 gains a 好点池 column that ticks the steps which qualified and prints how far the run has reached.
+
+**Overlay (P1).** The button labelled 「导入回放」 has never imported anything — it re-runs a stepwise analysis over the current game, so it is now 「重新分析」, which is what it does. The import it was named for arrives for real: 「导入至回放」 files the current game into the replay archive **by force**, stepping over both count filters (the ordered floor and the unordered ceiling) and the AI-rate filter, after a single confirmation. It is also the one-click remedy behind every 「未存档」 notice: a game held back by the move floor, by the count filter, by the AI-rate filter, or a report that came back empty for both sides — all four now state their reason and offer a 强制保存 link that performs the same action. Previously an empty report took the notice and the entry away together, and the operator was left with an archive that simply had not appeared and no way to tell whether the analysis had not finished or a rule had eaten it.
+
 ## 0.5.4
 
 0.5.4 puts a second judgement in front of the archive, stops transparency from fading the text along with the panel, makes blur an actual frosted-glass effect, has the compact face show the most recent result, turns the overlay’s copy button into a two-item drawer, and lets every card in 标签百科 open a large-type detail window.
