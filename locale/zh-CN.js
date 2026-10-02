@@ -187,6 +187,7 @@ GMI18n.register('zh-CN', {
   'copy.done': '已复制到剪贴板',
   'copy.fail': '复制失败',
   'copy.noData': '尚无分析结果，无法复制',
+  'copy.codeOnly': '仅可复制棋谱代码（尚无分析结果）',
   'copy.partial': '分析未完成，复制的是当前已完成部分',
   'copy.title': '复制当前结果',
 

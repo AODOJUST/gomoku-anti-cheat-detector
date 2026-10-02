@@ -221,34 +221,43 @@
     return t;
   }
 
-  // ---- 0.5.3 §1.1 透明度与模糊 ----
+  // ---- §1.1 透明度与模糊 / 0.5.4 §2.1 作用范围收缩 ----
   // The stored number is a TRANSPARENCY PERCENTAGE, not a CSS opacity: 0% = 完全不透明,
   // 100% = 全透明. The conversion — `cssOpacity = 1 - t/100` — lives in storage.js's
   // `cssOpacity()` so this page and content.js cannot end up disagreeing about it.
   //
   // ⚠ 0.4.7 had the direction inverted: its `level: 100` meant FULLY OPAQUE, so its slider ran
   // backwards against its own label and the CSS had to hand out two different alphas to hide
-  // the contradiction. §1.1 replaces the model instead of reinterpreting the number, which is
-  // why the old `opacity` key is deliberately NOT migrated (see the note in storage.js).
+  // the contradiction. §1.1 replaces the model instead of reinterpreting the number.
+  //
+  // ⚠ 0.5.4 §2.1 replaces the MECHANISM. 0.5.3 wrote the result into `--viewer-elem-opacity` and
+  // the stylesheet applied `opacity:` to the container — which fades the container's text, its
+  // inputs and its progress bars along with its fill. The variable is a BACKGROUND ALPHA now
+  // (`--viewer-elem-bg-alpha`), consumed as `rgba(var(--panel-rgb), …)`, so the type inside is
+  // untouched by construction. The conversion is unchanged: it is still `cssOpacity(percent)`,
+  // just written into an alpha channel instead of into `opacity`.
   //
   // Five independently capped parts; two are the viewer's, three belong to the overlay and are
   // applied there by content.js. The ceilings (95 / 80 / 95 / 90 / 80) are enforced by
   // `normalizeTransparency`, not by the sliders' `max` attributes: the slider's max is an
   // affordance, while the stored profile is an input this page never validates, and a value
-  // past the ceiling would be written straight into `opacity:` and silently discarded at
+  // past the ceiling would be written straight into `rgba()` and silently discarded at
   // computed-value time — leaving the element fully opaque with the readout claiming otherwise.
   //
   // Every variable is written even when the part is switched OFF, as 1 / 0px. The stylesheet
-  // reads all four unconditionally, so skipping the write would leave the previous profile's
+  // reads all three unconditionally, so skipping the write would leave the previous profile's
   // values behind and the UI would stay faded with the switch off.
+  //
+  // 按钮模糊度 is GONE (§2.1.2) and with it `--viewer-btn-blur`: there is no button-blur half of
+  // this function any more. A stale variable would be harmless (nothing reads it) which is
+  // exactly why it must not be left behind — the next person would wire it up again.
   function applyTransparency(setting) {
     var t = G.normalizeTransparency(setting);
     var root = document.documentElement;
     var v = t.viewer.enabled ? t.viewer : null;
-    root.style.setProperty('--viewer-elem-opacity', String(G.cssOpacity(v ? v.element : 0)));
+    root.style.setProperty('--viewer-elem-bg-alpha', String(G.cssOpacity(v ? v.element : 0)));
     root.style.setProperty('--viewer-elem-blur', (v ? v.elementBlur : 0) + 'px');
-    root.style.setProperty('--viewer-btn-opacity', String(G.cssOpacity(v ? v.button : 0)));
-    root.style.setProperty('--viewer-btn-blur', (v ? v.buttonBlur : 0) + 'px');
+    root.style.setProperty('--viewer-btn-bg-alpha', String(G.cssOpacity(v ? v.button : 0)));
     return t;
   }
 
@@ -531,6 +540,9 @@
     // ten labels are built in JS, so the static pass cannot reach them. The rebuild resets the
     // sliders, which is why it has to come before `fillSettingsForm()` restores their values.
     buildTransparencyPanel();
+    // 0.5.4 §1.5 — same reason again: these four labels are set from JS, and rebuilding the
+    // controls resets their values, so this must come before `fillSettingsForm()` restores them.
+    buildStorageFilter();
     // §一.4: the banner and the settings page's status line are built in JS, so they carry no
     // `__gmKey` and the static pass above cannot reach them.
     fillVersionRow();
@@ -615,6 +627,7 @@
     $('setAutoAnnounce').checked = !!S.autoSendAnnouncement;
     fillTransparencyForm();
     fillArchiveFilterForm();
+    fillStorageFilterForm();
     fillLlmForm();
     // 0.5.1 §2.1.4/§2.2 — labels, dropdown contents, the address field and the status line. The
     // custom-model LIST is filled from whatever the registry holds right now; boot() and every
@@ -761,6 +774,75 @@
       : T('viewer|该范围内的对局不保存回放；双方同时检测时以较高的一侧为基准。手动「存为存档」不受此过滤影响。'));
   }
 
+  // ---- 0.5.4 §1.5: 存储过滤的双段滑条 ----
+  // Two thresholds over the SHAPE of a capture, drawn as one bar with a decorative gap. The left
+  // segment is a LOWER bound (bigger = stricter ⇒ it grows rightwards); the right is an UPPER
+  // bound (bigger = more permissive ⇒ it grows leftwards, into the gap). §1.5.1 gives that
+  // reasoning, and it is the whole reason the right slider is mirrored.
+  //
+  // ⚠ The mirror is NOT a static `dir="rtl"` on the element. This page is laid out with `dir` on
+  // <html> for the Arabic locale (i18n.js sets it), and a `dir="rtl"` range input inside an RTL
+  // document reads as LTR — the two mirrors cancel and both sliders grow the same way. The right
+  // track therefore takes the OPPOSITE of the document's direction, recomputed on every paint by
+  // `syncStorageFilterDir()`.
+  //
+  // Slider, number box and the two arrows are three views of ONE value (§1.5.4), so they are
+  // described once in this table and wired once by the loop rather than three times by hand.
+  var SF_ROWS = [
+    { key: 'minOrdered', range: 'slMinOrdered', num: 'setMinOrdered' },
+    { key: 'maxUnordered', range: 'slMaxUnordered', num: 'setMaxUnordered' },
+  ];
+
+  function sfRangeEl(row) { return $(row.range); }
+  function sfNumEl(row) { return $(row.num); }
+
+  function syncStorageFilterDir() {
+    var el = $('slMaxUnordered');
+    if (!el) return;
+    var docDir = String(document.documentElement.getAttribute('dir') || 'ltr').toLowerCase();
+    el.setAttribute('dir', docDir === 'rtl' ? 'ltr' : 'rtl');
+  }
+
+  // The RANGE is what the design fixes (0–50, §1.1); the ceilings come from
+  // `STORAGE_FILTER_LIMITS` so the slider and the clamp can never disagree — the same rule the
+  // transparency panel follows, and for the same reason (a max that disagrees with the clamp
+  // snaps back on release with no visible cause).
+  function buildStorageFilter() {
+    var lim = (G.STORAGE_FILTER_LIMITS || {});
+    setTxt('sfTitle', T('viewer|存储过滤'));
+    setTxt('sfEnabledLabel', T('viewer|启用'));
+    setTxt('sfEnabledHint', T('viewer|开启后，下面两个条件任一命中的对局不自动保存回放。'));
+    setTxt('sfRangeLabel', T('viewer|有序手下限 / 无序手上限'));
+    setTxt('sfHint', T('viewer|有序手低于下限、无序手高于上限的对局不会被自动存档。手动「存为存档」不受此过滤影响。'));
+    SF_ROWS.forEach(function (row) {
+      var hi = typeof lim[row.key] === 'number' ? lim[row.key] : 50;
+      var r = sfRangeEl(row), n = sfNumEl(row);
+      if (r) r.setAttribute('max', String(hi));
+      if (n) n.setAttribute('max', String(hi));
+    });
+    syncStorageFilterDir();
+  }
+
+  // Paints every control from `S.storageFilter`. Same "never rewrite a box the operator is
+  // typing into" guard as `fillArchiveFilterForm`: the commit is debounced, and a save that
+  // landed between two keystrokes would otherwise move the caret and eat the rest of the number.
+  function fillStorageFilterForm() {
+    var f = G.normalizeStorageFilter(S.storageFilter);
+    var en = $('sfEnabled');
+    if (en) en.checked = !!f.enabled;
+    var typing = (typeof document !== 'undefined') ? document.activeElement : null;
+    SF_ROWS.forEach(function (row) {
+      var r = sfRangeEl(row), n = sfNumEl(row);
+      if (r) r.disabled = !f.enabled;
+      if (n) n.disabled = !f.enabled;
+      var v = String(f[row.key]);
+      if (r) r.value = v;
+      if (n && n !== typing) n.value = v;
+    });
+    var arrows = document.querySelectorAll('#sfSlider .ds-arrow');
+    for (var i = 0; i < arrows.length; i++) arrows[i].disabled = !f.enabled;
+  }
+
   // ---- 0.5.3 §1.1.6: 透明度与模糊 ----
   // The panel is BUILT, not written into viewer.html, from the same table storage clamps
   // against. Two things have to agree for a slider to be usable — its `max` and the ceiling
@@ -775,11 +857,15 @@
       part: 'viewer',
       // Only the parts that have a ceiling of their own are listed; `TRANSPARENCY_LIMITS` is
       // the authority and the loop below reads every max straight out of it.
-      rows: ['element', 'elementBlur', 'button', 'buttonBlur'],
+      // 0.5.4 §2.1.2 — `buttonBlur` is gone from the table AND from here: a blurred backdrop
+      // behind a button is not a look. A row with no ceiling is skipped by the loop below, so
+      // leaving the name in would have been silently harmless — which is why it is removed from
+      // the list rather than left to be skipped.
+      rows: ['element', 'elementBlur', 'button'],
     },
     {
       part: 'overlay',
-      rows: ['background', 'backgroundBlur', 'element', 'elementBlur', 'button', 'buttonBlur'],
+      rows: ['background', 'backgroundBlur', 'element', 'elementBlur', 'button'],
     },
   ];
 
@@ -791,7 +877,6 @@
     if (key === 'element') return T('viewer|元素透明度');
     if (key === 'elementBlur') return T('viewer|元素模糊度');
     if (key === 'button') return T('viewer|按钮透明度');
-    if (key === 'buttonBlur') return T('viewer|按钮模糊度');
     if (key === 'background') return T('viewer|背景透明度');
     if (key === 'backgroundBlur') return T('viewer|背景模糊度');
     return key;
@@ -804,11 +889,26 @@
   function tpIsBlur(key) { return key.indexOf('Blur') > 0; }
   function tpId(part, key) { return 'tp-' + part + '-' + key; }
 
+  /**
+   * The readout next to one slider. ONE implementation, because it is printed from two places —
+   * the full repaint and the live drag — and this project has been bitten four times by a rule
+   * with two copies: the two would have drifted the moment the wording changed, and the drift
+   * would show up as "the number is right while dragging but wrong after a reload".
+   *
+   * `背景不透明` and not `不透明` since 0.5.4 §2.1.1: the number is the alpha on the container's
+   * own FILL, while the text inside stays fully opaque, so the shorter wording would now claim
+   * something about the type that is not true.
+   */
+  function tpReadout(key, n) {
+    return tpIsBlur(key) ? (n + 'px')
+                         : T('viewer|透明 {t}% · 背景不透明 {o}', { t: n, o: G.cssOpacity(n) });
+  }
+
   function buildTransparencyPanel() {
     var grid = $('tpGrid');
     if (!grid) return;
     setTxt('tpTitle', T('viewer|自定义UI与背景'));
-    setTxt('tpHint', T('viewer|模糊度需要透明度大于 0 才看得见。查看器窗口无法真正透出桌面，这里的「透明」是相对浏览器底色而言；有背景图时，透明度越高背景图越明显。'));
+    setTxt('tpHint', T('viewer|透明度只作用于容器背景，文字、输入框与进度条不受影响。模糊度为毛玻璃效果——它只模糊元素背后的内容，需要透明度大于 0 才看得见；查看器窗口无法真正透出桌面，这里的「透明」是相对浏览器底色而言，有背景图时越透明背景图越明显。'));
     var html = '';
     TP_GROUPS.forEach(function (grp) {
       var lim = (G.TRANSPARENCY_LIMITS || {})[grp.part] || {};
@@ -855,14 +955,7 @@
         el.value = String(t[grp.part][key]);
         el.disabled = !on;
         if (!val) return;
-        var n = t[grp.part][key];
-        if (tpIsBlur(key)) {
-          val.textContent = n + 'px';
-        } else {
-          // Both halves of the same fact. `cssOpacity` is the one the browser acts on, so
-          // printing it makes the slider self-checking: drag to 95 and read 0.05.
-          val.textContent = T('viewer|透明 {t}% · 不透明 {o}', { t: n, o: G.cssOpacity(n) });
-        }
+        val.textContent = tpReadout(key, t[grp.part][key]);
       });
     });
   }
@@ -2206,8 +2299,7 @@
           var val = $(tpId(grp.part, key) + '-val');
           if (!val) return;
           var n = next[grp.part][key];
-          if (tpIsBlur(key)) val.textContent = n + 'px';
-          else val.textContent = T('viewer|透明 {t}% · 不透明 {o}', { t: n, o: G.cssOpacity(n) });
+          val.textContent = tpReadout(key, n);
           var el = $(tpId(grp.part, key));
           if (el) el.disabled = !next[grp.part].enabled;
         });
@@ -2266,6 +2358,88 @@
       el.addEventListener('change', commit);
     });
   }
+
+  // ---- 0.5.4 §1.5.4 ----
+  // Slider ↔ number ↔ arrows, all three writing ONE value; the two segments are independent
+  // (§1.5.4's last bullet — `minOrdered + maxUnordered > 50` is NOT an error, the two thresholds
+  // describe different things and clamping one against the other would silently forbid settings
+  // the operator is allowed to make).
+  //
+  // The commit is debounced like `bindArchiveFilter`'s, and for the same reason: a drag fires
+  // `input` on every pixel. Only the COMMIT writes, and the repaint afterwards comes from the
+  // clamped result, so a box can never display a number storage did not accept.
+  function bindStorageFilter() {
+    var slider = $('sfSlider');
+    if (!slider) return;
+    var timer = null;
+
+    function readRow(row) {
+      var n = sfNumEl(row);
+      var v = n && n.value !== '' ? parseInt(n.value, 10) : NaN;
+      return isFinite(v) ? v : null;
+    }
+    function commit() {
+      if (timer) { clearTimeout(timer); timer = null; }
+      var raw = { enabled: !!($('sfEnabled') && $('sfEnabled').checked) };
+      SF_ROWS.forEach(function (row) { raw[row.key] = readRow(row); });
+      var next = G.normalizeStorageFilter(raw);
+      lastSelfWrite = Date.now();
+      G.saveSetting('storageFilter', next).then(function (s) {
+        S = s;
+        fillStorageFilterForm();
+        flashSaved();
+      });
+    }
+    function schedule() {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(commit, 400);
+    }
+    // The range is the authority for the number, and vice versa — §1.5.4 asks for both directions
+    // and they are genuinely different edits (a drag vs a typed digit), so each one updates the
+    // OTHER control immediately and only the commit goes to storage.
+    SF_ROWS.forEach(function (row) {
+      var r = sfRangeEl(row), n = sfNumEl(row);
+      if (r && n) {
+        r.addEventListener('input', function () {
+          n.value = r.value;
+          schedule();
+        });
+        // `change` fires on release/commit and skips the debounce: a drag that ends is a decision.
+        r.addEventListener('change', commit);
+        n.addEventListener('input', function () {
+          var v = parseInt(n.value, 10);
+          if (isFinite(v)) r.value = String(Math.max(0, Math.min(Number(r.max) || 50, v)));
+          schedule();
+        });
+        n.addEventListener('change', commit);
+      }
+    });
+    // ±1 on the arrows. §1.5.4's third bullet. They write the NUMBER and let the number's own
+    // handler move the slider, so there is one path from a value to the two controls.
+    // ONE delegated listener for all four arrows: they share a container, and the row is chosen
+    // by `data-target` rather than by which closure happened to be attached.
+    slider.addEventListener('click', function (e) {
+      var hit = e.target && e.target.closest ? e.target.closest('.ds-arrow') : null;
+      if (!hit || hit.disabled) return;
+      var row = null;
+      for (var k = 0; k < SF_ROWS.length; k++) {
+        if (SF_ROWS[k].key === hit.getAttribute('data-target')) { row = SF_ROWS[k]; break; }
+      }
+      if (!row) return;
+      var n = sfNumEl(row), r = sfRangeEl(row);
+      if (!n || !r) return;
+      var step = hit.getAttribute('data-act') === 'dec' ? -1 : 1;
+      var hi = Number(r.max) || 50;
+      var v = parseInt(n.value, 10);
+      if (!isFinite(v)) v = 0;
+      n.value = String(Math.max(0, Math.min(hi, v + step)));
+      r.value = n.value;
+      commit();
+    });
+    var en = $('sfEnabled');
+    if (en) en.addEventListener('change', commit);
+  }
+  bindStorageFilter();
   bindSetting($('setSuspect'), 'suspect', function (e) { return e.value; });
   bindSetting($('setMode'), 'mode', function (e) { return e.value; });
   bindSetting($('setThinkMs'), 'thinkMs', function (e) { return Math.max(500, parseInt(e.value, 10) || 2000); });
@@ -2900,6 +3074,26 @@
     // reason to throw the game away — the record and the per-move verdicts are still
     // worth replaying. Only a report with no verdicts at all is refused.
     if (!anyAggregate(report) && !(report.steps || []).length) return null;
+    // Read BEFORE the two gates rather than after them: §一.4's count filter is a question about
+    // the RECORD (how much of it has a move order), and it is asked first, so the record has to
+    // exist before the first early return. It used to be built at the bottom because nothing
+    // above it needed it.
+    var rec = currentRecord();
+    // 0.5.4 §一.4 — 存储过滤, judged BEFORE the AI-rate filter, exactly as the overlay does it:
+    // a game we barely captured says nothing about either player whatever its score came out as.
+    // `manual` exempts it for the same reason the risk filter is exempt (§2.2.5) — 「存为存档」
+    // is an explicit action and silently discarding it is worse than a prompt.
+    if (!manual) {
+      var countSkip = G.shouldSkipByCounts(rec, report, S.storageFilter);
+      if (countSkip) {
+        setStatus(countSkip.reason === 'ordered-too-few'
+          ? T('viewer|有序手仅 {n} 手（低于 {min} 手），未存档。',
+              { n: countSkip.ordered, min: countSkip.min })
+          : T('viewer|无序手 {n} 手（高于 {max} 手），未存档。',
+              { n: countSkip.unordered, max: countSkip.max }));
+        return null;
+      }
+    }
     // §2.2.2 — the filter is judged on the HIGHER of the two sides, so a game where only one
     // side is suspicious is filtered on that side rather than on the average.
     if (!manual && G.shouldSkipArchive(report, S.archiveFilter)) {
@@ -2916,7 +3110,6 @@
         { r: skipRisk, min: f.minRisk, max: f.maxRisk }));
       return null;
     }
-    var rec = currentRecord();
     var minMoves = G.clampMinMoves(S.minArchiveMoves);
     // 0.3.4: this test must use the length of the RECORD, not the number of hands that happened
     // to get scored. app.js is explicit that `totalMoves` is "only the hands we actually scored"
@@ -4593,21 +4786,40 @@
   }
 
   // ---- modal ----
+  // 0.5.4 §5.1.2 turned this into a STACK. Before, `openModal` began with `closeModal()`, so the
+  // one flow that opens a dialog FROM a dialog — clicking a card inside 标签百科 — destroyed the
+  // list behind it: the operator read one entry and had nowhere to go but reopen the wiki. The
+  // stack is the smallest shape that fixes it; every other caller opens at depth 1 and therefore
+  // behaves exactly as before, because `closeModal()` on a one-deep stack is the old code.
+  var maskStack = [];
   var maskEl = null;
-  function openModal(title, bodyHtml, onMount) {
-    closeModal();
+  function openModal(title, bodyHtml, onMount, opts) {
+    var o = opts || {};
+    if (!o.stack) closeAllModals();
     maskEl = document.createElement('div');
     maskEl.className = 'mask';
-    maskEl.innerHTML = '<div class="modal"><h3>' + esc(title) + '</h3>' +
+    maskEl.innerHTML = '<div class="modal' + (o.size === 'large' ? ' modal-lg' : '') +
+      '"><h3>' + esc(title) + '</h3>' +
       '<div class="bd"></div><div class="ft"><button class="sec" data-close="1">' + T('viewer|关闭') + '</button></div></div>';
     maskEl.querySelector('.bd').innerHTML = bodyHtml;
     maskEl.querySelector('[data-close]').onclick = closeModal;
     maskEl.addEventListener('click', function (e) { if (e.target === maskEl) closeModal(); });
+    maskStack.push(maskEl);
     document.body.appendChild(maskEl);
     if (onMount) onMount(maskEl.querySelector('.bd'));
   }
+  // Pops the TOP layer only. Escape and the per-dialog 关闭 button both land here, which is what
+  // makes the detail window return to the list instead of closing everything.
   function closeModal() {
-    if (maskEl && maskEl.parentNode) maskEl.parentNode.removeChild(maskEl);
+    var el = maskStack.pop();
+    if (el && el.parentNode) el.parentNode.removeChild(el);
+    maskEl = maskStack.length ? maskStack[maskStack.length - 1] : null;
+  }
+  function closeAllModals() {
+    while (maskStack.length) {
+      var el = maskStack.pop();
+      if (el && el.parentNode) el.parentNode.removeChild(el);
+    }
     maskEl = null;
   }
 
@@ -4884,7 +5096,7 @@
       // §1.4.3's card: name, category, then 意义 / 用法 / 影响. The 「仅记录」 chip appears only
       // on the entries whose effect the code does not implement — see the header of tagWiki.js
       // for why three of them say so.
-      return '<div class="tw-item"><h4>' + esc(twNameOf(entry)) +
+      return '<div class="tw-item" data-id="' + esc(entry.id) + '"><h4>' + esc(twNameOf(entry)) +
         '<span class="tw-cat-chip">' + esc(twCatLabel(entry.cat)) + '</span>' +
         (body.applied ? '' : '<span class="tw-rec">' + esc(T('viewer|仅记录')) + '</span>') +
         '</h4><dl>' +
@@ -4927,11 +5139,73 @@
       }
       bd.addEventListener('click', function (e) {
         var chip = e.target && e.target.closest ? e.target.closest('.tw-cat') : null;
-        if (!chip) return;
-        twState.cat = chip.getAttribute('data-cat') || 'all';
-        repaint();
+        if (chip) {
+          twState.cat = chip.getAttribute('data-cat') || 'all';
+          repaint();
+          return;
+        }
+        // 0.5.4 §5.1.1 — a card opens the 大字详情 window. The two hits are checked in one
+        // delegated listener rather than two, because `repaint()` replaces the cards' DOM on
+        // every keystroke: per-card listeners would have to be re-bound on each paint, and the
+        // one that is forgotten is the one that stops working.
+        var item = e.target && e.target.closest ? e.target.closest('.tw-item') : null;
+        if (item) openTagDetail(item.getAttribute('data-id'));
       });
     });
+  }
+
+  // 0.5.4 §5.1.2 — 「数值影响」 with the figures in it.
+  //
+  // The spec calls `renderImpactTable(t.impactValues)`. tagWiki.js has no `impactValues`, and
+  // that is on purpose: its header explains that no entry stores a figure, only the KEY one can
+  // be read from (`weightKey` / `bandLo` / `bandHi`), so the wiki cannot drift away from
+  // `BASE_WEIGHTS` / `BASE_THRESHOLDS`. This renders those live figures instead, which is the
+  // same table the spec wants, minus the second copy of the numbers.
+  //
+  // A key that cannot be read prints an em dash and never a zero — `tagWiki.js:fill()`'s rule, and
+  // the reason `weight()` returns null instead of a default.
+  function tagImpactTable(entry) {
+    var rows = [];
+    if (entry.weightKey) {
+      var w = GM_TAG_WIKI.weight(entry.weightKey);
+      rows.push([T('viewer|权重'), w == null ? GM_TAG_WIKI.DASH : String(w)]);
+    }
+    if (entry.bandLo || entry.bandHi) {
+      // `bandLo: null` means 0 and `bandHi: null` means 100 (tagWiki.js's own table comment) —
+      // unlike `weight()`, which returns null to mean "unreachable". Absent and unreadable are
+      // different answers, so only the absent side gets the documented default.
+      var lo = entry.bandLo ? GM_TAG_WIKI.band(entry.bandLo) : 0;
+      var hi = entry.bandHi ? GM_TAG_WIKI.band(entry.bandHi) : 100;
+      var d = GM_TAG_WIKI.DASH;
+      rows.push([T('viewer|区间'),
+        (lo == null ? d : String(Math.round(lo))) + ' \u2013 ' + (hi == null ? d : String(Math.round(hi)))]);
+    }
+    if (!rows.length) return '';
+    return '<table class="impact-table">' + rows.map(function (r) {
+      return '<tr><td>' + esc(r[0]) + '</td><td>' + esc(r[1]) + '</td></tr>';
+    }).join('') + '</table>';
+  }
+
+  function openTagDetail(tagId) {
+    var entry = GM_TAG_WIKI.byId(tagId);
+    if (!entry) return;
+    var body = GM_TAG_WIKI.resolve(entry, LANG);
+    function section(title, text) {
+      return '<div class="tag-detail-section"><h3>' + esc(title) + '</h3>' +
+        '<p>' + esc(text) + '</p></div>';
+    }
+    var html = '<div class="tag-detail">' +
+      '<h2 class="tag-detail-title">' + esc(twNameOf(entry)) +
+      (body.applied ? '' : '<span class="tag-detail-rec">' + esc(T('viewer|仅记录')) + '</span>') +
+      '</h2>' +
+      '<div class="tag-detail-category">' + esc(T('viewer|分类：') + twCatLabel(entry.cat)) + '</div>' +
+      section(T('viewer|意义'), body.meaning) +
+      section(T('viewer|用法'), body.usage) +
+      '<div class="tag-detail-section"><h3>' + esc(T('viewer|数值影响')) + '</h3>' +
+      '<p>' + esc(body.impact) + '</p>' + tagImpactTable(entry) + '</div>' +
+      '</div>';
+    // `{stack:true}` so 关闭 returns to the list the card came from — see the modal section.
+    openModal(T('viewer|标签详情'), html, null, { size: 'large', stack: true });
   }
 
   // =====================================================================
@@ -7218,6 +7492,9 @@
     // exist before fillSettingsForm paints it. Rebuilt on a language switch too: its labels are
     // JS-built and carry no `__gmKey` for the static pass to reach.
     buildTransparencyPanel();
+    // 0.5.4 §1.5 — the four labels and the two `max` attributes, before fillSettingsForm paints
+    // the values. Rebuilt on a language switch too (see repaintForLang).
+    buildStorageFilter();
     // 0.5.1 §2.1.4 — the custom models live in IndexedDB, so the registry has to be filled before
     // the three dropdowns can name them. Reads only; the engine status line is deliberately NOT
     // asked for here (see renderSettings).

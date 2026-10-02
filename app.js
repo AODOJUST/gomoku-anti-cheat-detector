@@ -24,8 +24,21 @@ const SIZE = 15;
 const COL = 'abcdefghijklmno'; // 15 columns
 
 // ---------- coordinate helpers ----------
+// 0.5.4 §4.1.2 — the mapping itself lives in `storage.js` (see the note there). It moved because
+// the OVERLAY needs `coordToShare` for 复制棋谱代码 and a content script does not load this file,
+// while storage.js is loaded by all three realms. These two names are kept — app.js is where
+// they have always been called from, and `module.exports` at the bottom still offers them.
+//
+// ⚠ The inline fallback is deliberate and is the 0.5.0 precedent (learn.js / viewer.js each keep
+// a `typeof` fallback for `isExemptUnique`): the test suites `require` this file on its own —
+// `t-data047` requires app.js BEFORE storage.js — so `GMStorage` really can be absent at the
+// moment the first call arrives. It is one expression, and `verify-057` proves the two agree
+// over all 225 points rather than trusting the comment.
 function shareToCoord(token) {
   // "h8" -> {x:7, y:7}  (x:0=left 'a', y:0=top -> number = SIZE - y)
+  if (typeof GMStorage !== 'undefined' && GMStorage && GMStorage.shareToCoord) {
+    return GMStorage.shareToCoord(token);
+  }
   const m = token.match(/([a-z])(\d+)/i);
   if (!m) return null;
   const x = m[1].toLowerCase().charCodeAt(0) - 'a'.charCodeAt(0);
@@ -34,6 +47,9 @@ function shareToCoord(token) {
   return [x, y];
 }
 function coordToShare(p) {
+  if (typeof GMStorage !== 'undefined' && GMStorage && GMStorage.coordToShare) {
+    return GMStorage.coordToShare(p);
+  }
   return COL[p[0]] + (SIZE - p[1]);
 }
 function eqCoord(a, b) { return a && b && a[0] === b[0] && a[1] === b[1]; }

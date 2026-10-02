@@ -127,26 +127,38 @@
     //   cssOpacity = 1 - transparencyPercent / 100
     //
     // Five INDEPENDENT parts, each with its own ceiling — the ceilings are the requirement's
-    // 「最高为 X%」 values and they are enforced here (see clampTransparency), not merely
+    // 「最高为 X%」 values and they are enforced here (see clampTransparencyNum), not merely
     // suggested by a slider's `max`, because the profile is the one input the UI never
     // validates:
     //
-    //              transparency   css opacity
-    //   viewer     element  0–95   1.00–0.05
+    //              transparency   background alpha
+    //   viewer     element  0–95   1.00–0.05        + elementBlur 0–8px
     //              button   0–80   1.00–0.20
-    //   overlay    background 0–95 1.00–0.05
-    //              element  0–90   1.00–0.10
+    //   overlay    background 0–95 1.00–0.05        + backgroundBlur 0–12px
+    //              element  0–90   1.00–0.10        + elementBlur 0–8px
     //              button   0–80   1.00–0.20
     //
-    // It applies to the UI LAYER only — elements, buttons, and the panel's own background.
-    // The background PICTURE (§5.1) is never faded: it is the bottom layer, and making the
-    // bottom layer translucent just shows the page through it. `enabled: false` means every
-    // derived value is exactly 1, so an untouched profile renders byte-identically to 0.5.2.
+    // It applies to the UI LAYER only — containers and buttons. The background PICTURE (§5.1) is
+    // never faded: it is the bottom layer, and making the bottom layer translucent just shows the
+    // page through it. `enabled: false` means every derived value is exactly 1, so an untouched
+    // profile renders byte-identically to the previous release.
+    //
+    // 0.5.4 §二.1 — the SCOPE is narrowed and the button blur is gone. Two changes, one cause:
+    // 0.5.3 faded a whole container with CSS `opacity`, which fades its text, its inputs and its
+    // progress bars along with its fill — 「元素透明度 60%」 made a panel unreadable rather than
+    // letting it become glass. §2.1.1 asks for the fill to carry the alpha and nothing else, so
+    // every part below is now a BACKGROUND alpha (`rgba(var(--x-rgb), alpha)`), and the type
+    // inside keeps opacity 1 by construction rather than by a rule someone has to remember.
+    //
+    // 按钮模糊度 is deleted outright (§2.1.2): a blurred backdrop behind a 41px button is not a
+    // look, it is a button you cannot read. The blur axis stays on containers, where §2.1.3 says
+    // it means 毛玻璃 — it blurs what is BEHIND the element, and it does nothing visible unless
+    // that element's own background is translucent, which is why the settings page says so.
     transparency: {
-      viewer: { enabled: false, element: 0, elementBlur: 0, button: 0, buttonBlur: 0 },
+      viewer: { enabled: false, element: 0, elementBlur: 0, button: 0 },
       overlay: {
         enabled: false, background: 0, backgroundBlur: 0,
-        element: 0, elementBlur: 0, button: 0, buttonBlur: 0,
+        element: 0, elementBlur: 0, button: 0,
       },
     },
     // 0.5.3 §2.1 — 回放过滤. A game whose risk lands inside [minRisk, maxRisk] is analysed and
@@ -155,6 +167,16 @@
     // a low-risk game is the one they are least likely to come back to. `enabled: false` means
     // every game is archived, which is exactly 0.5.2's behaviour.
     archiveFilter: { enabled: false, minRisk: 0, maxRisk: 54 },
+    // 0.5.4 §一.3 — 存储过滤. The same "do not keep this game" decision as `archiveFilter`
+    // above, asked about the SHAPE of the capture rather than about its score, and the two
+    // compose (their judgement functions are both consulted; either one can refuse).
+    //
+    //   有序手 < minOrdered   ⇒ 不存档   (too little to say anything about)
+    //   无序手 > maxUnordered ⇒ 不存档   (too much of the board arrived without an order)
+    //
+    // Both default to the values §1.3 names. `enabled: false` means every game is archived,
+    // which is exactly 0.5.3's behaviour — an untouched profile cannot notice this release.
+    storageFilter: { enabled: false, minOrdered: 14, maxUnordered: 5 },
     // 0.4.4 §十六 — the LLM panel. The DEFAULTS live in llm.js (GMLLM.DEFAULTS) because the
     // service worker loads that file too; a second literal here would drift. `llm.js` is loaded
     // before this file (manifest order), so the reference resolves. `{}` in a broken build is
@@ -245,8 +267,8 @@
   // 「最高为 X%」; the value is the TRANSPARENCY percentage, so it is also the CSS-opacity FLOOR
   // (transparency 95 ⇒ opacity 0.05). A part with no ceiling of its own is not configurable.
   var TRANSPARENCY_LIMITS = {
-    viewer: { element: 95, button: 80, elementBlur: 8, buttonBlur: 4 },
-    overlay: { background: 95, element: 90, button: 80, backgroundBlur: 12, elementBlur: 8, buttonBlur: 4 },
+    viewer: { element: 95, button: 80, elementBlur: 8 },
+    overlay: { background: 95, element: 90, button: 80, backgroundBlur: 12, elementBlur: 8 },
   };
 
   /** One numeric field of one part, clamped to its own ceiling. */
@@ -262,9 +284,14 @@
    * Rebuild `transparency` field by field rather than trusting it, like every other setting:
    * the profile is the one input the UI never validates. Two things a hand-edited profile must
    * not be able to do — push a part past its ceiling, and reach the DOM as a non-number (a
-   * `--viewer-elem-opacity` of `"abc"` makes the whole `opacity:` declaration
-   * invalid-at-computed-value-time, so the panel silently keeps opacity 1 and the operator
-   * reports the slider as broken).
+   * `--viewer-elem-bg-alpha` of `"abc"` makes the whole `rgba()` declaration
+   * invalid-at-computed-value-time, so the fill silently stays opaque and the operator reports
+   * the slider as broken).
+   *
+   * `buttonBlur` is NOT among the fields any more (0.5.4 §2.1.2) and that is also why an old
+   * profile cannot keep it: this function rebuilds the object, so the field is dropped the next
+   * time anything is saved rather than being migrated forward into a control that no longer
+   * exists.
    *
    * A FRESH object every time is deliberate: callers hold the result, and handing back a
    * reference into DEFAULTS would let one file's edit change every other caller's "default".
@@ -280,7 +307,6 @@
         element: clampTransparencyNum('viewer', 'element', vw.element, d.viewer.element),
         elementBlur: clampTransparencyNum('viewer', 'elementBlur', vw.elementBlur, d.viewer.elementBlur),
         button: clampTransparencyNum('viewer', 'button', vw.button, d.viewer.button),
-        buttonBlur: clampTransparencyNum('viewer', 'buttonBlur', vw.buttonBlur, d.viewer.buttonBlur),
       },
       overlay: {
         enabled: !!ov.enabled,
@@ -289,7 +315,6 @@
         element: clampTransparencyNum('overlay', 'element', ov.element, d.overlay.element),
         elementBlur: clampTransparencyNum('overlay', 'elementBlur', ov.elementBlur, d.overlay.elementBlur),
         button: clampTransparencyNum('overlay', 'button', ov.button, d.overlay.button),
-        buttonBlur: clampTransparencyNum('overlay', 'buttonBlur', ov.buttonBlur, d.overlay.buttonBlur),
       },
     };
   }
@@ -345,6 +370,72 @@
   function archiveFilterInvalid(filter) {
     var f = normalizeArchiveFilter(filter);
     return !!f.enabled && f.minRisk > f.maxRisk;
+  }
+
+  // ---------- 0.5.4 §一.3 存储过滤 ----------
+  // Two independent thresholds over the SHAPE of the capture, both slidered 0–50 (§1.1). The
+  // ceilings live here rather than in the markup for the reason every other bound does: the
+  // stored profile is the one input the UI never validates, and a hand-edited `minOrdered: 9000`
+  // would refuse every game while the panel showed a slider that could not have produced it.
+  var STORAGE_FILTER_LIMITS = { minOrdered: 50, maxUnordered: 50 };
+
+  function normalizeStorageFilter(v) {
+    var d = DEFAULTS.storageFilter;
+    var src = (v && typeof v === 'object') ? v : {};
+    var n = function (x, dflt, hi) {
+      var y = parseInt(x, 10);
+      if (!isFinite(y)) return dflt;
+      return Math.max(0, Math.min(hi, Math.round(y)));
+    };
+    return {
+      enabled: !!src.enabled,
+      minOrdered: n(src.minOrdered, d.minOrdered, STORAGE_FILTER_LIMITS.minOrdered),
+      maxUnordered: n(src.maxUnordered, d.maxUnordered, STORAGE_FILTER_LIMITS.maxUnordered),
+    };
+  }
+
+  /**
+   * Should this game be kept OUT of the archive on account of how much of it we actually have?
+   * §1.4. Returns `null` when the game passes, or a `{reason, …}` record naming which threshold
+   * was hit and by how much — the caller turns that into a sentence, and the reason code is what
+   * lets it say WHICH rule fired rather than a generic 「未存档」.
+   *
+   * The two counts, in the ONE reading §1.2's table allows here:
+   *
+   *   无序手 = record.meta.unorderedCount, or report.prejoinCount when the record has none
+   *   有序手 = record.moves.length - 无序手
+   *
+   * ⚠ §1.2 also offers `report.orderKnownCount` for 有序手, and it is deliberately NOT used.
+   * Two readings of one quantity is the failure mode this project has paid for four times: the
+   * overlay builds the record and the viewer builds the record, and if one of them subtracts
+   * while the other takes the report's own count, the same game is archived from one surface and
+   * refused from the other — silently, because both numbers look reasonable. The subtraction is
+   * the one that holds for BOTH builders, so it is the one that is implemented.
+   *
+   * ⚠ §1.4's signature is `(record, report)` and reads `S.storageFilter` out of a global. There
+   * is no live settings object in this file — it is loaded by three different pages and by none
+   * of them as the owner of `S` — so the filter is the THIRD argument, exactly as
+   * `shouldSkipArchive(report, filter)` above takes it. Same rule, same reason.
+   */
+  function shouldSkipByCounts(record, report, filter) {
+    var f = normalizeStorageFilter(filter);
+    if (!f.enabled) return null;
+    var moves = (record && record.moves) || [];
+    // `!= null` and not `||`: 0 is a real answer (an ordered game), and `||` would send it to the
+    // report — which for a prejoin-heavy game says something quite different from 0.
+    var meta = (record && record.meta) || {};
+    var unordered = meta.unorderedCount != null
+      ? meta.unorderedCount
+      : ((report && report.prejoinCount) || 0);
+    if (!isFinite(unordered) || unordered < 0) unordered = 0;
+    var ordered = Math.max(0, moves.length - unordered);
+    if (ordered < f.minOrdered) {
+      return { reason: 'ordered-too-few', ordered: ordered, min: f.minOrdered };
+    }
+    if (unordered > f.maxUnordered) {
+      return { reason: 'unordered-too-many', unordered: unordered, max: f.maxUnordered };
+    }
+    return null;
   }
 
   // ---------- storage shim ----------
@@ -411,6 +502,7 @@
     // so an old profile loses it on the first read, which is the honest outcome.
     out.transparency = normalizeTransparency(out.transparency);
     out.archiveFilter = normalizeArchiveFilter(out.archiveFilter);
+    out.storageFilter = normalizeStorageFilter(out.storageFilter);
     // 0.5.2 §4.1 — clamped on the way IN as well as out, like every other setting: the profile
     // is the one input the UI never validates, and a hand-edited list must not be able to put a
     // non-array (or a 200-row list, or a row with no English) in front of the send path.
@@ -429,6 +521,7 @@
       s.theme = clampTheme(s.theme);
       s.transparency = normalizeTransparency(s.transparency);
       s.archiveFilter = normalizeArchiveFilter(s.archiveFilter);
+      s.storageFilter = normalizeStorageFilter(s.storageFilter);
       s.customQuestions = clampCustomQuestions(s.customQuestions);
       var put = {}; put[SETTINGS_KEY] = s;
       try { await api().set(put); } catch (e) {}
@@ -455,6 +548,7 @@
     var out = Object.assign({}, DEFAULTS);
     out.transparency = normalizeTransparency(DEFAULTS.transparency);
     out.archiveFilter = normalizeArchiveFilter(DEFAULTS.archiveFilter);
+    out.storageFilter = normalizeStorageFilter(DEFAULTS.storageFilter);
     return out;
   }
 
@@ -2148,10 +2242,45 @@
     };
   }
 
-  var COL = 'abcdefghijklmno';
+  // ---------- share-string coordinates ----------
+  // §4.1.2 of 0.5.4 needs 棋谱代码 in the OVERLAY — a content script, which does not load
+  // app.js — and app.js has had `coordToShare()` since 0.1.0. Two readings of one mapping is
+  // the failure this project has paid for four times, and there were in fact already two: the
+  // `coordStr()` below is the same mapping with a `—` for a bad point. So the mapping moved
+  // HERE, into the one file loaded by every realm that needs it — the viewer (`viewer.html`),
+  // the engine host (`offscreen.html`) and the content script (`manifest.content_scripts`) —
+  // and app.js's two names are now thin aliases.
+  //
+  // The convention, spelled out once because it is the confusing part:
+  //   `(x, y)` in this codebase has x = column 0..14 left→right and y = ROW 0..14 TOP→BOTTOM;
+  //   a share token is `COL[x]` + a row number counted from the BOTTOM, i.e. `SIZE - y`.
+  //   So y = 0 (top) is row 15 and y = 14 (bottom) is row 1 — the same thing `shareToCoord`
+  //   inverts ("y:0=top -> number = SIZE - y"), and `verify-057` round-trips all 225 points.
+  var BOARD_SIZE = 15;
+  var SHARE_COL = 'abcdefghijklmno';
+
+  /** `[x, y]` -> "h8". Null (not a throw) for anything off the board or not a pair. */
+  function coordToShare(p) {
+    if (!p || p.length < 2) return null;
+    var x = p[0], y = p[1];
+    if (!isFinite(x) || !isFinite(y)) return null;
+    if (x < 0 || x >= BOARD_SIZE || y < 0 || y >= BOARD_SIZE) return null;
+    return SHARE_COL.charAt(Math.round(x)) + (BOARD_SIZE - Math.round(y));
+  }
+
+  /** "h8" -> `[x, y]`. Total: an unparsable token or an off-board number gives null. */
+  function shareToCoord(s) {
+    var m = String(s == null ? '' : s).match(/^([a-z])(\d+)$/i);
+    if (!m) return null;
+    var x = m[1].toLowerCase().charCodeAt(0) - 97;
+    var y = BOARD_SIZE - parseInt(m[2], 10);
+    if (x < 0 || x >= BOARD_SIZE || y < 0 || y >= BOARD_SIZE) return null;
+    return [x, y];
+  }
+
   function coordStr(p) {
-    if (!p || p.length < 2) return '—';
-    return COL[p[0]] + (15 - p[1]);
+    var t = coordToShare(p);
+    return t == null ? '—' : t;
   }
 
   // ---------- 0.4.3 §1.2/§1.4/§1.5: segments and AI types ----------
@@ -2651,6 +2780,17 @@
     normalizeArchiveFilter: normalizeArchiveFilter,
     shouldSkipArchive: shouldSkipArchive,
     archiveFilterInvalid: archiveFilterInvalid,
+    // 0.5.4 §一.3 — 存储过滤. The ceiling table is exported too: the settings page builds its two
+    // sliders' `max` from it, and a slider whose max disagreed with the clamp would snap back on
+    // release with no visible cause (the reason `TRANSPARENCY_LIMITS` is on this list).
+    STORAGE_FILTER_LIMITS: STORAGE_FILTER_LIMITS,
+    normalizeStorageFilter: normalizeStorageFilter,
+    shouldSkipByCounts: shouldSkipByCounts,
+    // 0.5.4 §4.1.2 — the share-string mapping, owned here because this is the only module the
+    // viewer, the engine host AND the overlay all load (see the block that defines them).
+    BOARD_SIZE: BOARD_SIZE,
+    coordToShare: coordToShare,
+    shareToCoord: shareToCoord,
     DEFAULT_OVERLAY: DEFAULT_OVERLAY,
     loadOverlay: loadOverlay,
     saveOverlay: saveOverlay,

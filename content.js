@@ -94,12 +94,16 @@
     var host = root.host;
     var o = t.overlay.enabled ? t.overlay : null;
     var set = function (name, val) { host.style.setProperty(name, val); };
+    // 0.5.4 §2.1 — every one of these is a BACKGROUND ALPHA now (`rgba(var(--gm-*-rgb), α)`),
+    // never a CSS `opacity`: 0.5.3 faded `.sec` / `.card` with `opacity`, which took their text
+    // and their figures with it. The conversion is still `cssOpacity(percent)`; only the channel
+    // it lands in changed. `--ov-btn-blur` is GONE with 按钮模糊度 (§2.1.2) — this was the only
+    // writer of the variable it fed.
     set('--ov-bg-opacity', String(GMStorage.cssOpacity(o ? o.background : 0)));
     set('--ov-bg-blur', (o ? o.backgroundBlur : 0) + 'px');
-    set('--ov-elem-opacity', String(GMStorage.cssOpacity(o ? o.element : 0)));
+    set('--ov-elem-bg-alpha', String(GMStorage.cssOpacity(o ? o.element : 0)));
     set('--ov-elem-blur', (o ? o.elementBlur : 0) + 'px');
-    set('--ov-btn-opacity', String(GMStorage.cssOpacity(o ? o.button : 0)));
-    set('--ov-btn-blur', (o ? o.buttonBlur : 0) + 'px');
+    set('--ov-btn-bg-alpha', String(GMStorage.cssOpacity(o ? o.button : 0)));
     return t;
   }
 
@@ -221,6 +225,11 @@
   // filter record written into that slot would render 「仅 undefined 手」. Two reasons, two
   // messages, two variables.
   var lastFilterSkip = null;   // { risk, min, max }
+  // 0.5.4 §一.4 — the third reason, and its own variable for the same reason as the second:
+  // this one prints two numbers that are neither `moves`/`min` nor `risk`/`min`/`max`.
+  // `reason` is the code `shouldSkipByCounts` returned, so the renderer names the rule that
+  // actually fired instead of guessing which of the two thresholds it must have been.
+  var lastStorageSkip = null;  // { reason: 'ordered-too-few'|'unordered-too-many', n, lim }
   // Engine status as the offscreen document reports it: which build won, and whether it is
   // a pthread build. Shown as a note only when something is worth saying (degraded to
   // single-thread, or an explicit thread count on a multi build).
@@ -494,6 +503,23 @@
       sides.push(mv[i].stone === 1 ? 'B' : (mv[i].stone === 2 ? 'W' : null));
     }
     return GMOpening.detectOpening(pts, { unorderedCount: inferred, stones: sides });
+  }
+
+  // 0.5.4 §4.2.2 — the ONE place the copy text asks "what is this opening called", and the
+  // reason it exists at all is that the previous version asked two questions that both had the
+  // same empty answer (see the call site). Two sources, in the order §4.2.2 gives:
+  //
+  //   1. a record's own `meta.opening` — `toRecord` computes it from the first three stones, so
+  //      a snapshot taken when the analysis started is the verdict for THAT game even if the
+  //      live board has moved on or been reset;
+  //   2. `currentOpening()` — the live collector, which is the only source there is before the
+  //      first job exists (the operator can copy mid-game).
+  //
+  // `record` is reached through `job._snap` rather than by rebuilding one: `toRecord()` is not
+  // cheap and calling it here would be a third reading of the same three stones.
+  function resolveOpening(record) {
+    if (record && record.meta && record.meta.opening) return record.meta.opening;
+    return currentOpening();
   }
 
   // Adjacent same-colour moves: impossible in gomoku (black starts, play alternates), so
@@ -1091,6 +1117,32 @@
       if (root) paintStatus();
       return null;
     }
+    // 0.5.4 §一.4 — 存储过滤, judged BEFORE the AI-rate filter. §1.4 says so, and the order is
+    // also the honest one: a game we barely captured says nothing about either player no matter
+    // what its score came out as, so 「有序手不足」 is the more fundamental of the two
+    // explanations. The same manual exemption as below applies — this is the AUTOMATIC path.
+    var countSkip = GMStorage.shouldSkipByCounts(record, report, S.storageFilter);
+    if (countSkip) {
+      job.note = countSkip.reason === 'ordered-too-few'
+        ? T('panel|有序手仅 {n} 手（低于 {min} 手），未存档。', { n: countSkip.ordered, min: countSkip.min })
+        : T('panel|无序手 {n} 手（高于 {max} 手），未存档。', { n: countSkip.unordered, max: countSkip.max });
+      lastStorageSkip = {
+        reason: countSkip.reason,
+        n: countSkip.reason === 'ordered-too-few' ? countSkip.ordered : countSkip.unordered,
+        lim: countSkip.reason === 'ordered-too-few' ? countSkip.min : countSkip.max,
+      };
+      lastSkip = null;
+      lastFilterSkip = null;
+      lastArchive = null;
+      // Marked handled for the same reason the other two gates are: the finalize path
+      // re-evaluates on every later signal, and a game the operator's own rule already excluded
+      // would otherwise be re-decided on every move.
+      if (job._epoch != null) markEpochArchived(job._epoch);
+      console.log('[detector] ' + job.note);
+      if (root) paintStatus();
+      return null;
+    }
+    lastStorageSkip = null;
     // 0.5.3 §2.2.2/§2.2.3 — the operator's own AI-rate filter. AFTER the length gate above,
     // because a game that is both short and in range would not have been kept with the filter
     // off either, so 「对局过短」 is the more fundamental of the two explanations.
@@ -2173,9 +2225,13 @@
     // from the media query below. Both are declared AFTER the `:host` block above for the same
     // reason the two `dir` rules are: these are `:host([...])` selectors, and putting them
     // inside the split `:host{` block would make them bogus declarations.
-    ':host{--gm-bg:#161b22;--gm-bg-rgb:22,27,34;--gm-panel:#1a2029;--gm-head:#1a2029;--gm-line:#2a3441;--gm-line-soft:#22303c;',
+    ':host{--gm-bg:#161b22;--gm-bg-rgb:22,27,34;--gm-panel:#1a2029;--gm-panel-rgb:26,32,41;--gm-head:#1a2029;--gm-line:#2a3441;--gm-line-rgb:42,52,65;--gm-line-soft:#22303c;',
     '--gm-txt:#e6edf3;--gm-txt-2:#c8d2dc;--gm-mut:#9aa7b4;--gm-dim:#6e7b8a;--gm-off:#4a5563;',
-    '--gm-lk:#7aa2ff;--gm-in:#0d1117;--gm-bar:#0d1117;',
+    // 0.5.4 §2.1.5 — `--gm-in-rgb` / `--gm-lk-rgb` are new alongside the hexes they mirror; the
+    // two above are restated on the same line as theirs. A surface that can be made translucent
+    // needs its channels (there is no alpha for a hex `var()`), and keeping the pair adjacent is
+    // the only cheap defence against the two spellings drifting.
+    '--gm-lk:#7aa2ff;--gm-lk-rgb:122,162,255;--gm-in:#0d1117;--gm-in-rgb:13,17,23;--gm-bar:#0d1117;',
     // 0.4.8 §一 — the second tier. Same defect the viewer had: these were inline, so the light
     // panel went pale and left its banner, hover washes and dividers dark. `--gm-hov` is the
     // row/menu hover, `--gm-btn-hov` the neutral button hover, `--gm-info-*` the blue banner
@@ -2197,15 +2253,15 @@
     // moment this was introduced. Declared once here because a glow is data ink — it is the
     // same in both themes (the state colours are).
     '--gm-glow:0 0 0 rgba(0,0,0,0)}',
-    ':host([data-theme="light"]){--gm-bg:#ffffff;--gm-bg-rgb:255,255,255;--gm-panel:#f5f5f5;--gm-head:#ececec;--gm-line:#d0d0d0;',
+    ':host([data-theme="light"]){--gm-bg:#ffffff;--gm-bg-rgb:255,255,255;--gm-panel:#f5f5f5;--gm-panel-rgb:245,245,245;--gm-head:#ececec;--gm-line:#d0d0d0;--gm-line-rgb:208,208,208;',
     '--gm-line-soft:#e0e0e0;--gm-txt:#1a1a1a;--gm-txt-2:#333333;--gm-mut:#555555;--gm-dim:#6b6b6b;',
-    '--gm-off:#aaaaaa;--gm-lk:#2a4bd7;--gm-in:#f0f0f0;--gm-bar:#e2e2e2;',
+    '--gm-off:#aaaaaa;--gm-lk:#2a4bd7;--gm-lk-rgb:42,75,215;--gm-in:#f0f0f0;--gm-in-rgb:240,240,240;--gm-bar:#e2e2e2;',
     '--gm-hov:#ececec;--gm-btn-hov:#d8d8d8;--gm-pri-hov:#3d5fd8;--gm-div:#e0e0e0;',
     '--gm-info-bg:#e8f0fe;--gm-info-line:#a8c4f0;--gm-info-fg:#1f3f7a;',
     '--gm-warn:#b8860b;--gm-warn-bg:rgba(184,134,11,.14)}',
-    '@media (prefers-color-scheme: light){:host([data-theme="auto"]){--gm-bg:#ffffff;--gm-bg-rgb:255,255,255;--gm-panel:#f5f5f5;',
-    '--gm-head:#ececec;--gm-line:#d0d0d0;--gm-line-soft:#e0e0e0;--gm-txt:#1a1a1a;--gm-txt-2:#333333;',
-    '--gm-mut:#555555;--gm-dim:#6b6b6b;--gm-off:#aaaaaa;--gm-lk:#2a4bd7;--gm-in:#f0f0f0;--gm-bar:#e2e2e2;',
+    '@media (prefers-color-scheme: light){:host([data-theme="auto"]){--gm-bg:#ffffff;--gm-bg-rgb:255,255,255;--gm-panel:#f5f5f5;--gm-panel-rgb:245,245,245;',
+    '--gm-head:#ececec;--gm-line:#d0d0d0;--gm-line-rgb:208,208,208;--gm-line-soft:#e0e0e0;--gm-txt:#1a1a1a;--gm-txt-2:#333333;',
+    '--gm-mut:#555555;--gm-dim:#6b6b6b;--gm-off:#aaaaaa;--gm-lk:#2a4bd7;--gm-lk-rgb:42,75,215;--gm-in:#f0f0f0;--gm-in-rgb:240,240,240;--gm-bar:#e2e2e2;',
     '--gm-hov:#ececec;--gm-btn-hov:#d8d8d8;--gm-pri-hov:#3d5fd8;--gm-div:#e0e0e0;',
     '--gm-info-bg:#e8f0fe;--gm-info-line:#a8c4f0;--gm-info-fg:#1f3f7a;',
     '--gm-warn:#b8860b;--gm-warn-bg:rgba(184,134,11,.14)}}',
@@ -2260,10 +2316,16 @@
     // `.gmcp` (缩略) is the other face the panel can wear and it takes the same fill; `.mface`
     // (图标) does not, because it is a 48px icon with no background of its own.
     '.gmcp{background:rgba(var(--gm-bg-rgb),var(--ov-bg-opacity,1))}',
-    ':is(.sec,.card,.qi){opacity:var(--ov-elem-opacity,1);',
+    // 0.5.4 §2.1 — BLUR only, on the element group. §2.1.3 defines 模糊度 as 毛玻璃: it blurs
+    // what is BEHIND the element, so it needs the element's own fill to be translucent to be
+    // visible at all (which is why the settings panel says so next to the control). The fill
+    // alpha itself is applied at the END of this stylesheet — see the note there.
+    //
+    // `.qi` is in this list but not in the fill list: it has no background of its own (only
+    // `:hover` and `.on` do), so there is nothing of its to make translucent, but there is
+    // something behind it to blur.
+    ':is(.sec,.card,.qi){',
     'backdrop-filter:blur(var(--ov-elem-blur,0px));-webkit-backdrop-filter:blur(var(--ov-elem-blur,0px))}',
-    ':is(button,.lk,.mn,.x){opacity:var(--ov-btn-opacity,1);',
-    'backdrop-filter:blur(var(--ov-btn-blur,0px));-webkit-backdrop-filter:blur(var(--ov-btn-blur,0px))}',
     // ---- 0.5.3 §1.2 Toast 通知（浮层）----
     // The same block as viewer.html's, and it has to be duplicated: a shadow root's stylesheet
     // cannot be shared with the document's without a constructed-stylesheet dance that MV3's
@@ -2539,6 +2601,21 @@
     '.hd .lk[data-lk-state=na]:hover{text-decoration:none}',
     '.ok{color:#4ec97b;font-size:11px;margin-top:6px}',
     '.err{color:#e74c3c;font-size:11px;margin-top:6px;word-break:break-all}',
+
+    // ---- 0.5.4 §2.1 the overlay's fills ----
+    // LAST in the array, and that placement is load-bearing exactly as it is in viewer.html: the
+    // rules above use the `background` SHORTHAND (`background:var(--gm-panel)`), which resets
+    // `background-color`. At equal specificity the later rule wins, so a block placed beside the
+    // other transparency rules (120 lines up) would be silently undone by `.sec{...}` below it.
+    //
+    // ⚠ `.gm` / `.gmcp` are NOT here: their fill already carries `--ov-bg-opacity` inside
+    // `rgba(var(--gm-bg-rgb), …)` (0.5.3 §一.4), which is the same idea done once already.
+    // Hover / `.on` states keep their own solid fills, the same deliberate hole as the viewer's:
+    // a state exists to be noticed.
+    ':is(.sec){background-color:rgba(var(--gm-panel-rgb),var(--ov-elem-bg-alpha,1))}',
+    ':is(.card){background-color:rgba(var(--gm-in-rgb),var(--ov-elem-bg-alpha,1))}',
+    'button{background-color:rgba(var(--gm-line-rgb),var(--ov-btn-bg-alpha,1))}',
+    'button.p{background-color:rgba(var(--gm-lk-rgb),var(--ov-btn-bg-alpha,1))}',
   ].join('');
 
   // The static shell, as a FUNCTION rather than a one-shot string: a language change has to
@@ -2568,8 +2645,10 @@
           // decode, and none of the three has a settled meaning (📋 reads as "notes", 🌐 as
           // "browser"); the labels say what they do. 🚫 below stays a glyph: it is the one that
           // DOES read unambiguously, and it has to stay narrow so the header does not wrap.
+          // 0.5.4 §4.1 — 复制数据 opens a DRAWER now instead of copying straight away. The
+          // label changed because the button no longer names one of the two things it can do.
           '<span class="lk" data-act="copy" data-copy-state="off" title="' +
-            esc(T('copy.title')) + '">' + esc(T('panel|复制对局数据')) + '</span>' +
+            esc(T('copy.title')) + '">' + esc(T('panel|复制数据')) + '</span>' +
           // 0.4.9 §一.6 — the blacklist toggle. It ships as `na` (greyed) and is painted properly
           // by paintBlacklistButton() on the first status pass; starting grey rather than blue
           // means the one frame before the first paint cannot advertise a click that would fail.
@@ -2623,10 +2702,16 @@
       // 0.4.10 §二.1 — the 提问 picker. It reuses `.ctx` (one dropdown implementation, two
       // levels: this box shows the language list, then the question list, and only then sends).
       '<div class="ctx" data-slot="askmenu" role="menu"></div>' +
+      // 0.5.4 §4.1.3 — the copy drawer. Same `.ctx` implementation as the other four, and it is
+      // a two-item list rather than a picker: neither row carries `data-v`/`aria-checked`, which
+      // is why `paintMenus` builds it in its own branch instead of the generic one.
+      '<div class="ctx" data-slot="copymenu" role="menu"></div>' +
       '<div class="gmcp" data-act="restore" title="' + esc(T('panel|点击恢复完整面板')) + '">' +
-        '<div class="cprow"><span class="cpk">' + esc(T('panel|黑')) +
+        // 0.5.4 §3.2.3 — the labels carry a `data-slot` because they are `#seq + 黑/白` and the
+        // seq changes with the job. The initial text is only what the first frame shows.
+        '<div class="cprow"><span class="cpk" data-slot="cpkb">' + esc(T('panel|黑')) +
           '</span><span class="cpv" data-cp="b">—</span></div>' +
-        '<div class="cprow"><span class="cpk">' + esc(T('panel|白')) +
+        '<div class="cprow"><span class="cpk" data-slot="cpkw">' + esc(T('panel|白')) +
           '</span><span class="cpv" data-cp="w">—</span></div>' +
         '<div class="cpbar"><i></i></div>' +
       '</div>';
@@ -2648,6 +2733,8 @@
     els.foot = root.querySelector('[data-slot=foot]');
     els.cpB = root.querySelector('[data-cp=b]');
     els.cpW = root.querySelector('[data-cp=w]');
+    els.cpKB = root.querySelector('[data-slot=cpkb]');
+    els.cpKW = root.querySelector('[data-slot=cpkw]');
     els.cpBar = root.querySelector('.cpbar>i');
     els.copy = root.querySelector('[data-act=copy]');
     els.lk = root.querySelector('[data-act=blacklist]');
@@ -2914,11 +3001,20 @@
     });
     var askBox = root.querySelector('[data-slot=askmenu]');
     if (askBox) askBox.innerHTML = askMenuHtml();
+    // 0.5.4 §4.1.3 — the copy drawer. It is a plain list, not a radio picker: no `data-v`, no
+    // ✓, no `aria-checked`. Built here so every menu is painted from one place (a language
+    // change rebuilds the shell and this is what refills the text).
+    var copyBox = root.querySelector('[data-slot=copymenu]');
+    if (copyBox) {
+      copyBox.innerHTML =
+        '<div class="it" data-act="copy-code">' + esc(T('panel|复制棋谱代码')) + '</div>' +
+        '<div class="it" data-act="copy-data">' + esc(T('panel|复制对局数据')) + '</div>';
+    }
   }
 
   function closeMenus() {
     if (!root) return;
-    ['lang', 'rule', 'engine', 'ask'].forEach(function (which) {
+    ['lang', 'rule', 'engine', 'ask', 'copy'].forEach(function (which) {
       var box = root.querySelector('[data-slot=' + menuSlot(which) + ']');
       if (box) box.classList.remove('show');
       var btn = root.querySelector('[data-act=' + menuBtn(which) + ']');
@@ -3156,7 +3252,10 @@
       if (act === 'upd-now') { oneClickUpdate(); return; }
       if (act === 'upd-open') { openUpdatePage(); return; }
       if (act === 'upd-dismiss') { dismissBanner(); return; }
-      if (act === 'copy') { copyResult(); return; }
+      if (act === 'copy') { toggleMenu('copy'); return; }
+      // 0.5.4 §4.1.2/§4.1.3 — the two rows of the drawer.
+      if (act === 'copy-code') { closeMenus(); copyBoardCode(); return; }
+      if (act === 'copy-data') { closeMenus(); copyResult(); return; }
       // ---- 0.4.9 §一.6 ----
       if (act === 'blacklist') { toggleBlacklist(); return; }
       // ---- 0.4.10 §二.1/§二.3 ----
@@ -3968,6 +4067,16 @@
       h += '<div class="note">' + T('panel|AI 率 {r}% 在过滤范围内（{min}%–{max}%），未存档。',
         { r: lastFilterSkip.risk, min: lastFilterSkip.min, max: lastFilterSkip.max }) + '</div>';
     }
+    // 0.5.4 §一.4 — the third reason. Its own slot and its own sentence for the reason spelled
+    // out above the `lastFilterSkip` line: the numbers differ, and one variable cannot print
+    // both. `reason` picks the wording, so the message names the threshold that actually fired.
+    if (!running() && !lastArchive && lastStorageSkip) {
+      h += '<div class="note">' + (lastStorageSkip.reason === 'ordered-too-few'
+        ? T('panel|有序手仅 {n} 手（低于 {min} 手），未存档。',
+            { n: lastStorageSkip.n, min: lastStorageSkip.lim })
+        : T('panel|无序手 {n} 手（高于 {max} 手），未存档。',
+            { n: lastStorageSkip.n, max: lastStorageSkip.lim })) + '</div>';
+    }
 
     els.top.innerHTML = h;
 
@@ -4130,6 +4239,46 @@
     paintCopyButton();
   }
 
+  // A job is "stopped" when it has nothing left to report as progress: `_terminal` (this session
+  // hit a live four / 四三杀), '已完成', or '已中止' / '失败'. Named once because `pickCompactJob`
+  // and `paintCompact` below both have to agree about it — two copies of this test would let the
+  // face decide "this one is finished, show its number" while the painter still thought it was
+  // running, which is exactly the 0.4.7 §2.2 defect in a new coat.
+  function jobStopped(j) {
+    return !!(j && (j._terminal || j.status === '已完成' ||
+                    j.status === '已中止' || j.status === '失败'));
+  }
+
+  // 0.5.4 §3.2.1 — WHICH job the compact face describes.
+  //
+  // ⚠ This is deliberately NOT `currentJob()`. `currentJob()` answers "what is the operator
+  // looking at" and ranks `selectedId` above everything, which is right for the detail pane: they
+  // clicked a row and want that row. §3.1.1 gives the three ways that ranking is wrong for a
+  // 48px summary — an old row left selected makes it describe a game that finished ten minutes
+  // ago, which is precisely the "数据不准确" report. The compact face is a glanceable "latest
+  // result" readout, so it ranks the NEWEST over the SELECTED.
+  //
+  // The order is §3.2.1's, and the reasoning behind each step:
+  //   1. a running job — it is happening now, nothing outranks that;
+  //   2. the most recently FINISHED job by `seq` — the last thing that actually produced a
+  //      number. Skipping non-finished jobs matters: a job that was aborted half-way has a
+  //      partial report, and showing its score as "the latest" is the §3.1.3 complaint;
+  //   3. the selected one — better than nothing when nothing has finished yet;
+  //   4. the last in the queue.
+  function pickCompactJob() {
+    var run = running();
+    if (run) return run;
+    var sorted = jobs.slice().sort(function (a, b) { return (b.seq || 0) - (a.seq || 0); });
+    for (var i = 0; i < sorted.length; i++) {
+      if (sorted[i].status === '已完成') return sorted[i];
+    }
+    if (selectedId) {
+      var sel = findJob(selectedId);
+      if (sel) return sel;
+    }
+    return jobs.length ? jobs[jobs.length - 1] : null;
+  }
+
   // 0.3.1: the eval-only (compact) panel shows just the two risk numbers, updating live.
   // While a job runs it shows the progress percentage instead; otherwise the black/white risk
   // to one decimal (via `chatAdjusted` → `fmtRisk`), or "—" before the first analysis.
@@ -4141,23 +4290,27 @@
   // `progress` is whatever the last scored hand left it at (99, or lower), so the compact face
   // showed a percentage for a job that had already stopped. A stopped job is checked FIRST now.
   //
-  // The three stop states are tested rather than one: `_terminal` (this session hit a live
-  // four / 四三杀), '已完成', and '已中止' / '失败'. A job in any of them has nothing left to
-  // report as progress, and the operator wants the number it produced instead.
+  // 0.5.4 §3.2.2 adds the other half of §3.1's report: a two-sided analysis can legitimately have
+  // only ONE aggregate (the operator analysed one side, or the other side had nothing to score),
+  // and the old code printed `—` for the missing half — which is exactly what "未检测" looks like
+  // when it is wrong. The missing side says 未检测 now, and `—` is reserved for "nothing at all".
   function paintCompact() {
     if (!root || !els.cpB) return;
-    var cur = currentJob();
+    var cur = pickCompactJob();
     var rep = cur && (cur.report || cur.summary);
-    var stopped = !!(cur && (cur._terminal || cur.status === '已完成' ||
-                             cur.status === '已中止' || cur.status === '失败'));
-    if (running() && !stopped) {
+    // §3.2.3 — the seq is shown only when there is more than one job to confuse it with.
+    // `#3 黑` on a one-job session is noise; on a queue it is the answer to "which game is this".
+    var prefix = (jobs.length > 1 && cur && cur.seq) ? ('#' + cur.seq + ' ') : '';
+    if (els.cpKB) els.cpKB.textContent = prefix + T('panel|黑');
+    if (els.cpKW) els.cpKW.textContent = prefix + T('panel|白');
+    if (running() && !jobStopped(cur)) {
       var p = Math.round((running().progress || 0));
       els.cpB.textContent = p + '%';
       els.cpW.textContent = T('panel|分析中');
       if (els.cpBar) els.cpBar.style.width = p + '%';
     } else if (rep) {
-      els.cpB.textContent = rep.black ? chatAdjusted('B', rep.black.risk) : '—';
-      els.cpW.textContent = rep.white ? chatAdjusted('W', rep.white.risk) : '—';
+      els.cpB.textContent = rep.black ? chatAdjusted('B', rep.black.risk) : T('panel|未检测');
+      els.cpW.textContent = rep.white ? chatAdjusted('W', rep.white.risk) : T('panel|未检测');
       if (els.cpBar) els.cpBar.style.width = '100%';
     } else {
       els.cpB.textContent = '—';
@@ -5217,11 +5370,15 @@
     if (!els.copy) return;
     var rep = currentReport();
     var busy = !!running();
-    els.copy.setAttribute('data-copy-state', rep ? (busy ? 'partial' : 'on') : 'off');
-    // §2.1: usable while a job runs (it copies the part that is done) but says so.
+    // 0.5.4 §4.1 — usable as soon as there is a BOARD, not only once there is a report: 复制棋谱
+    // 代码 needs no analysis at all, so a button greyed out through the first ten minutes of a
+    // game would be advertising a restriction that does not exist. 复制对局数据 still needs the
+    // report and says so through the same `partial`/`off` states it always did.
+    var hasBoard = activeMoves().length > 0;
+    els.copy.setAttribute('data-copy-state', (rep || hasBoard) ? (busy ? 'partial' : 'on') : 'off');
     els.copy.setAttribute('title', rep
       ? (busy ? T('copy.partial') : T('copy.title'))
-      : T('copy.noData'));
+      : (hasBoard ? T('copy.codeOnly') : T('copy.noData')));
   }
 
   // §2.2 template:
@@ -5251,7 +5408,14 @@
       ? T('copy.hands.withScored', { total: total, scored: scored })
       : T('copy.hands.simple', { total: total });
 
-    var opening = rep.opening || (rep.record && rep.record.meta && rep.record.meta.opening);
+    // 0.5.4 §4.2 — 「开局未识别」 on every single copy. The line below used to read
+    //   `rep.opening || (rep.record && rep.record.meta && rep.record.meta.opening)`
+    // and BOTH branches are empty by construction: `buildReport` never puts an `opening` on the
+    // report, and the report never carries a `record` (the record is a separate argument to
+    // `buildArchive`, not a field of the report). So the expression could only ever produce the
+    // fallback — the operator saw 「开局未识别」 for a game the panel had just named.
+    var opening = resolveOpening(
+      (function () { var c = currentJob(); return c && c._snap ? c._snap.record : null; })());
     var openingStr = opening ? (GMOpening.label(opening, LANG) || T('copy.opening.unknown'))
                              : T('copy.opening.unknown');
 
@@ -5281,9 +5445,12 @@
     return head + sideStr('B', blackName) + T('copy.sides.sep') + sideStr('W', whiteName);
   }
 
-  function copyResult() {
-    var text = buildCopyText();
-    if (!text) { flashFoot(T('copy.noData')); return; }
+  // The clipboard write, in ONE place: §4.1.3 gives the button two outputs and both go through
+  // here. `copyResult` used to carry this inline, and a second copy for 棋谱代码 would have had
+  // to reproduce the execCommand fallback as well — the deprecated-but-necessary path a
+  // chromium refusal needs (gomoku.com is https so the async API exists, but a clipboard write
+  // is still refused when the document is not focused).
+  function copyText(text) {
     var done = function () { flashFoot(T('copy.done')); };
     var fail = function (e) {
       flashFoot(T('copy.fail') + ': ' + ((e && e.message) || e));
@@ -5294,9 +5461,6 @@
         return;
       }
     } catch (e) { /* fall through to the legacy path */ }
-    // gomoku.com is https so the async API exists, but a clipboard write can still be refused
-    // (document not focused). execCommand is deprecated yet remains the only fallback that
-    // works without the Clipboard API permission.
     try {
       var ta = document.createElement('textarea');
       ta.value = text;
@@ -5307,6 +5471,26 @@
       document.body.removeChild(ta);
       if (ok) done(); else fail(new Error('execCommand rejected'));
     } catch (e) { fail(e); }
+  }
+
+  function copyResult() {
+    var text = buildCopyText();
+    if (!text) { flashFoot(T('copy.noData')); return; }
+    copyText(text);
+  }
+
+  // 0.5.4 §4.1.2 — 复制棋谱代码: the bare move list, in the exact form the viewer's 棋谱代码 box
+  // reads back (`parseRecord` accepts a share string). Built from the LIVE collector rather than
+  // from a report: it is the board on screen, so it needs no analysis and works before the first
+  // job has produced anything.
+  //
+  // `movePoint()` is the collector→app conversion (it is also what `currentOpening()` uses), and
+  // `coordToShare` is the app→share-string one; chaining them is §4.1.2's formula exactly rather
+  // than a second transcription of it.
+  function copyBoardCode() {
+    var mv = activeMoves();
+    if (!mv.length) { flashFoot(T('copy.noData')); return; }
+    copyText(mv.map(function (m) { return GMStorage.coordToShare(movePoint(m)); }).join(''));
   }
 
   // ---------- actions ----------

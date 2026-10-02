@@ -46,6 +46,15 @@
        --dim      : a third text step below --mut, for the 人工标记 placeholder on a white row
        --txt-2    : a second text step above --mut (badge text that must not be --mut grey) */
     --inset:#f0f0f0; --btn:#e4e4e4; --btn-hover:#d8d8d8; --line-soft:#e0e0e0;
+    /* 0.5.4 §2.1.5 — the RGB twins of the surface colours, for the three fills the transparency
+       sliders have to be able to make translucent. There is no way to put an alpha on a hex
+       `var()` — `rgba(var(--panel), .5)` is not valid CSS — so a surface that can fade needs its
+       channels. They are declared ON THE SAME LINE as the hex they mirror, which is the only
+       cheap way to keep two spellings of one colour from drifting, and `probe-057-alpha` asserts
+       the two agree by reading both out of `getComputedStyle`.
+       --blue-rgb is palette-independent (`--blue` is #3c5ee7 in every theme) but lives here so
+       the rule is uniform. */
+    --inset-rgb:240,240,240; --btn-rgb:228,228,228; --blue-rgb:60,94,231;
     --hover:#ececec; --float:#ffffff;
     --info-bg:#e8f0fe; --info-line:#a8c4f0; --info-fg:#1f3f7a; --info-strong:#2c4a7a;
     --chip-fg:#2a4bd7; --chip-line:#a8c0ea;
@@ -112,6 +121,7 @@
     --line:#2a3441; --txt:#e6edf3; --mut:#8b98a5;
     /* The 0.4.6 values exactly — see the light block above for what each name means. */
     --inset:#0d1117; --btn:#2a3441; --btn-hover:#38455a; --line-soft:#22303c;
+    --inset-rgb:13,17,23; --btn-rgb:42,52,65;
     --hover:#202834; --float:#1f2733;
     --info-bg:#16233d; --info-line:#2f4b8f; --info-fg:#cfe0ff; --info-strong:#7fb0ff;
     --chip-fg:#8fb6ff; --chip-line:#3d5a80;
@@ -132,6 +142,7 @@
       --panel:#1a2029; --panel-rgb:26,32,41;
       --line:#2a3441; --txt:#e6edf3; --mut:#8b98a5;
       --inset:#0d1117; --btn:#2a3441; --btn-hover:#38455a; --line-soft:#22303c;
+      --inset-rgb:13,17,23; --btn-rgb:42,52,65;
       --hover:#202834; --float:#1f2733;
       --info-bg:#16233d; --info-line:#2f4b8f; --info-fg:#cfe0ff; --info-strong:#7fb0ff;
       --chip-fg:#8fb6ff; --chip-line:#3d5a80;
@@ -143,40 +154,45 @@
       --badge-sim-bg:rgba(176,90,160,.85); --badge-sim-fg:#fff;
     }
   }
-  /* ---- 0.5.3 §1.1 透明度与模糊 ----
+  /* ---- 透明度与模糊 ----
      ⚠ 0.4.7 read this setting the way CSS `opacity` reads it — 100 = fully opaque — which is
      the OPPOSITE of what the requirement asks for. §1.1 states the semantic plainly: 0% =
      完全不透明, 100% = 全透明, i.e. the number is a TRANSPARENCY percentage and converts with
      `cssOpacity = 1 - t/100`. `applyTransparency()` in viewer.js does that conversion; the
-     variables below therefore already hold a CSS opacity, and are named after what they PAINT
-     rather than after the slider that fed them (the same rule `--gm-bg-dim` follows).
-
-     Two parts, each with its own ceiling (元素 95 / 按钮 80 — §1.1.2), each with its own blur.
-     The ceiling lives in `normalizeTransparency`, not just in the slider's `max`: the stored
-     profile is an input this page never validates, and an out-of-range number written straight
-     into `opacity:` would be discarded at computed-value time, silently leaving the element
-     fully opaque.
-
-     Why `opacity` and not an alpha on the fill: §1.1.7 asks for the background picture to show
-     THROUGH the panels, and only `opacity` fades the element's borders, text and children along
-     with its fill. The picture itself is untouched — it is painted on `html::before`, which is
-     below all of this and carries no variable from here.
+     variables below therefore already hold a background ALPHA (0.5.4) and are named after what
+     they PAINT rather than after the slider that fed them.
 
      `html{background:transparent}` is unconditional and is what makes the root see-through;
      `body` paints the opaque `--bg` instead, and gives it up under `has-bg` (see the background
-     block below). With transparency off both variables are written as 1 / 0px, so this block is
-     a byte-for-byte no-op. */
+     block below).
+
+     ⚠ 0.5.4 §二.1 — THE FILL CARRIES THE ALPHA. 0.5.3 faded a whole container with CSS
+     `opacity`, which fades the element's text, inputs and progress bars along with its fill:
+     「元素透明度 60%」 turned a panel into a pale rectangle whose content was unreadable, which
+     is the opposite of the glass §2.1.1 asks for. Everything below is now
+     `background-color:rgba(<the surface's own rgb>, <alpha>)`, so the type inside keeps
+     opacity 1 BY CONSTRUCTION rather than by a rule someone has to remember to write.
+
+     Two consequences worth stating, because both were decisions:
+
+       1. **The block lives at the END of the stylesheet, not next to the palette.** The rules
+          it overrides use the `background` SHORTHAND (`background:var(--panel)`), which resets
+          `background-color`; at equal specificity the later rule wins, so a block placed with
+          the palette would simply be undone 150 lines further down. Listing every selector
+          here with an extra `html` prefix would work too, and it is exactly the sort of thing
+          that silently rots the next time a selector is renamed.
+       2. **Hover and selected states are NOT included.** `.pager button.on`, `.ann-btn.on`,
+          `.navbtn.active`, `button:hover`, `.tw-cat.on` … all keep their own solid fills. A
+          state exists to be noticed; a state as faint as the rest of the row communicates
+          nothing. This is the one deliberate hole in the coverage, and it is deliberate.
+
+     The ceilings (元素 95 / 按钮 80 — §1.1.2) live in `normalizeTransparency`, not just in the
+     sliders' `max`: the stored profile is an input this page never validates. */
+  /* (see the end of this stylesheet for the two rules that consume the variables) */
+
+  /* unconditional: the root must be see-through so the backdrop picture on `html::before` is
+     visible, and `body` paints the opaque `--bg` instead (giving it up under `has-bg`). */
   html{background:transparent}
-  header, .panel, .card, .acard, .facts, .scroll, .archive-grid, .set-group{
-    opacity:var(--viewer-elem-opacity,1);
-    backdrop-filter:blur(var(--viewer-elem-blur,0px));
-  }
-  /* Buttons carry their own, LOWER ceiling: at 元素 95% a panel is a ghost, but a ghost button
-     is one you cannot find. §1.1.2 caps this part at 80% for exactly that reason. */
-  button, .navbtn, .tab{
-    opacity:var(--viewer-btn-opacity,1);
-    backdrop-filter:blur(var(--viewer-btn-blur,0px));
-  }
 
   /* ---- 0.5.2 §5.1 自定义背景（查看器）----
      ⚠ The spec's version of this block hangs the picture on `body.has-bg` and its scrim on
@@ -260,14 +276,39 @@
   .tw-cat:hover{border-color:var(--blue)}
   .tw-cat.on{background:var(--blue);color:#fff;border-color:var(--blue)}
   .tw-list{display:flex;flex-direction:column;gap:10px}
-  .tw-item{border:1px solid var(--line);border-radius:var(--ui-detail-radius);padding:12px 14px;background:rgba(var(--panel-rgb),.45)}
-  .tw-item h4{margin:0 0 6px;font-size:var(--ui-detail-font);font-weight:600}
+  .tw-item{border:1px solid var(--line);border-radius:var(--ui-detail-radius);padding:12px 14px;background:rgba(var(--panel-rgb),.45);cursor:pointer}
+  .tw-item:hover{border-color:var(--blue)}
+  /* §5.1.3 — 14px (--ui-detail-font) → a literal 18px. The size step IS the affordance: a card
+     that opens a window has to look like it opens something, and this list is otherwise a wall
+     of identically-styled blocks. */
+  .tw-item h4{margin:0 0 6px;font-size:18px;font-weight:600}
   .tw-cat-chip{display:inline-block;margin-inline-start:8px;padding:1px 8px;border-radius:999px;font-size:11px;font-weight:400;background:rgba(var(--panel-rgb),.9);border:1px solid var(--line);color:var(--mut);vertical-align:2px}
   .tw-rec{display:inline-block;margin-inline-start:6px;padding:1px 8px;border-radius:999px;font-size:11px;font-weight:400;background:rgba(230,126,34,.18);border:1px solid rgba(230,126,34,.45);color:#e0c060;vertical-align:2px}
   .tw-item dl{margin:0;display:grid;grid-template-columns:auto 1fr;gap:2px 10px;font-size:var(--ui-detail-small)}
   .tw-item dt{color:var(--mut);white-space:nowrap}
   .tw-item dd{margin:0}
   .tw-empty{color:var(--mut);padding:24px 0;text-align:center}
+  /* §5.1.1/§5.1.2 — the 大字详情 window. 32px is §5.1.2's number and it is deliberately much
+     larger than the modal's own h3 (--ui-detail-large = 17px): the whole point of the window is
+     that the operator reads ONE entry instead of scanning 36. `--line` for the rules and
+     `--blue` for the section headings, so it follows the theme like everything else. */
+  .tag-detail{max-width:720px}
+  .tag-detail-title{font-size:32px;font-weight:700;margin:0 0 8px;line-height:1.25}
+  .tag-detail-category{font-size:var(--ui-detail-font);color:var(--mut);margin-bottom:20px}
+  .tag-detail-section{margin:20px 0}
+  .tag-detail-section h3{font-size:20px;margin:0 0 8px;color:var(--blue);font-weight:600}
+  .tag-detail-section p{margin:0;font-size:16px;line-height:1.8;color:var(--txt)}
+  /* The figures, when the entry carries a key to read them from. Same rule as tagWiki.js's
+     `fill()`: a figure that cannot be read prints an em dash, never a zero. `--line` for the
+     rules so it follows the theme. */
+  .impact-table{width:100%;border-collapse:collapse;margin-top:8px;font-size:16px}
+  .impact-table td{padding:6px 12px;border-bottom:1px solid var(--line)}
+  .impact-table td:first-child{color:var(--mut);width:38%;white-space:nowrap}
+  /* the 「仅记录」 chip, same meaning as in the list — kept so the detail window cannot claim an
+     effect the list already says is not implemented. */
+  .tag-detail-rec{display:inline-block;margin-inline-start:10px;padding:2px 10px;border-radius:999px;
+                  font-size:13px;font-weight:400;vertical-align:4px;
+                  background:rgba(230,126,34,.18);border:1px solid rgba(230,126,34,.45);color:#e0c060}
 
   *{box-sizing:border-box}
   /* ---- 0.4.6 §二.2: RTL ----
@@ -531,6 +572,40 @@
   .tp-head input{flex:0 0 auto;min-width:0}
   .tp-parts{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,260px),1fr));
             gap:14px 20px;margin-top:10px;padding-inline-start:4px}
+  /* ---- 0.5.4 §1.5 存储过滤的双段滑条 ----
+     Two sliders that must read as ONE bar: a 有序手 lower bound on the left (bigger = stricter,
+     so it grows rightwards) and a 无序手 upper bound on the right (bigger = more permissive, so
+     it grows LEFT, into the gap). The mirroring is done with the `dir` attribute on the range
+     input — see `syncStorageFilterDir()` in viewer.js for why it cannot be a static `dir="rtl"`.
+
+     ⚠ The spec's sketch wrote `.ds-arrow{background:#2a3441}` — the DARK theme's inset, which on
+     the light page is a black chip with black text. Every colour here is a token, the same rule
+     0.4.8 §一 wrote down for the rest of the surfaces (`rgba(42,52,65,…)` in the settings hint
+     above is the one deliberate exception and it is explained there).
+     ⚠ NOT ONE physical direction property in this block: `verify-046 §7` scans the stylesheet for
+     them (its regex matches the bare word followed by a colon, anywhere in the CSS — including a
+     COMMENT), and the right-hand segment genuinely does swap sides in an RTL locale, so the
+     logical properties are the ones that are correct here rather than merely policed. That is
+     also why this note does not spell the two forbidden words out: quoting them was enough to
+     turn the check red, which is the third time this project has paid for "count the comments
+     too". */
+  .dual-slider{display:flex;align-items:center;gap:6px;font-size:var(--ui-detail-small);
+               width:100%;min-width:0}
+  .ds-side{display:flex;align-items:center;gap:4px;flex:0 0 auto}
+  .ds-arrow{min-height:0;padding:0;width:26px;height:26px;line-height:1;font-size:11px;
+            background:var(--btn);color:var(--txt);border:1px solid var(--line);
+            border-radius:4px;cursor:pointer}
+  .ds-arrow:hover{background:var(--blue);color:#fff}
+  .ds-arrow:disabled{opacity:.5;cursor:not-allowed}
+  .ds-side input[type=number]{flex:0 0 62px;width:62px;text-align:center}
+  .ds-track{flex:1 1 60px;min-width:40px}
+  .ds-track input[type=range]{width:100%;min-width:0}
+  /* The decorative middle: a dashed rule, no interaction, and it cannot be crossed because the
+     two segments are separate elements — §1.5.1's 「不可突破」 is structural, not a guard. */
+  .ds-gap{flex:0 0 40px;width:40px;height:6px;border-radius:3px;
+          background:repeating-linear-gradient(90deg,transparent 0,transparent 4px,
+            var(--line) 4px,var(--line) 8px)}
+  .set-wide{grid-column:1/-1;min-width:0}
   /* 0.5.2 §5.2 — the sub-heading inside a merged panel (「自定义检测模型」 under 引擎与自定义引擎,
      and 「自定义背景」 under 自定义UI与背景). Smaller than the panel's own h2 and separated by a
      rule, so the nesting is legible without another border: two stacked bordered panels would
@@ -769,6 +844,10 @@
   /* ---- modal ---- */
   .mask{position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9998;display:flex;align-items:center;justify-content:center}
   .modal{background:var(--panel);border:1px solid var(--line);border-radius:var(--ui-shell-radius);min-width:560px;max-width:860px;max-height:82vh;overflow:auto;box-shadow:0 16px 48px rgba(0,0,0,.7)}
+  /* 0.5.4 §5.1.2 — the 大字详情 window asks for `{size:'large'}`. Widening only: the base modal
+     already has `min-width:560px`, so shrinking it for the small dialogs would be the actual
+     regression. */
+  .modal.modal-lg{max-width:960px}
   .modal h3{margin:0;padding:16px 24px;font-size:var(--ui-detail-large);border-bottom:1px solid var(--line);font-weight:500}
   .modal .bd{padding:24px}
   .modal .ft{padding:16px 24px;border-top:1px solid var(--line);display:flex;gap:14px;justify-content:flex-end}
@@ -806,6 +885,34 @@
   .dinfo{flex:1 1 340px;min-width:340px;display:flex;flex-direction:column;gap:var(--ui-shell-gap)}
   /* the board's own legend, doubling as the hover readout under the canvas */
   #dBoardTip{min-height:1.6em}
+
+  /* ---- 0.5.4 §二.1 the two rules that consume the transparency variables ----
+     See the long note next to the palette for WHY this sits here rather than beside the colours
+     (the surfaces above use the `background` shorthand, which resets `background-color`, and a
+     block with equal specificity that comes earlier simply loses).
+
+     ELEMENT: the container's own fill becomes translucent; its text, inputs and progress bars
+     are untouched because nothing here writes `opacity` any more. The first group's fill is
+     `--panel`, the second's is `--inset` — that pairing is the whole reason the block is written
+     as two `background-color` groups rather than one selector list.
+     BLUR: `backdrop-filter` still covers the wider list (§2.1.2's 元素 row names .acard, .facts,
+     .scroll too): several of those have no fill of their own, so they have nothing to make
+     translucent, but they DO have something behind them to blur.
+     BUTTON: its own, LOWER ceiling (80% — a ghost panel is glass, a ghost button is a button you
+     cannot find), and no blur at all: §2.1.2 deleted 按钮模糊度 because a frosted backdrop behind
+     a 41px control is not a look, it is a control you cannot read. Hover / `.on` / `.active`
+     states are deliberately absent — see reason (2) above. */
+  header, .panel{background-color:rgba(var(--panel-rgb),var(--viewer-elem-bg-alpha,1))}
+  .card, .archive-grid .acard{background-color:rgba(var(--inset-rgb),var(--viewer-elem-bg-alpha,1))}
+  header, .panel, .card, .acard, .facts, .scroll, .archive-grid, .set-group{
+    backdrop-filter:blur(var(--viewer-elem-blur,0px));
+  }
+  button{background-color:rgba(var(--blue-rgb),var(--viewer-btn-bg-alpha,1))}
+  button.sec, .colmenu .cmft button, .pager button, .model-toggle, .ann-btn, .ds-arrow{
+    background-color:rgba(var(--btn-rgb),var(--viewer-btn-bg-alpha,1));
+  }
+  button.danger{background-color:rgba(122,42,42,var(--viewer-btn-bg-alpha,1))}
+  .code-btn, .tw-cat{background-color:rgba(var(--panel-rgb),var(--viewer-btn-bg-alpha,1))}
 
   /* Printing the replay detail: the shell scale overflows a page, the sticky-header scroll
      boxes clip the table, the nav buttons are noise on paper, and the light-on-dark palette
@@ -1865,6 +1972,50 @@
       </div>
       <div class="btn-row" style="margin-top:10px">
         <span class="hint" id="afHint"></span>
+      </div>
+    </div>
+
+    <!-- 0.5.4 §1.5 — 存储过滤. The twin of 回放过滤 above: that one refuses a game by its SCORE,
+         this one by the SHAPE of what we captured. Both are consulted; either can refuse.
+         The markup is static (not built by JS like 透明度's panel) because every number here is
+         a literal of the design — the 0–50 range is a product decision, not a table the clamp
+         owns — while the ceiling still comes from `STORAGE_FILTER_LIMITS` at runtime via
+         `buildStorageFilter()` so the slider and the clamp cannot disagree. -->
+    <div class="panel set-panel">
+      <h2 id="sfTitle">存储过滤</h2>
+      <div class="set-grid">
+        <div class="set-item set-wide">
+          <label id="sfEnabledLabel">启用</label>
+          <div class="fx">
+            <input type="checkbox" id="sfEnabled">
+            <span class="hint" id="sfEnabledHint"></span>
+          </div>
+        </div>
+        <div class="set-item set-wide">
+          <label id="sfRangeLabel">有序手下限 / 无序手上限</label>
+          <div class="dual-slider" id="sfSlider">
+            <div class="ds-side ds-left">
+              <button type="button" class="ds-arrow" data-act="dec" data-target="minOrdered">◀</button>
+              <input type="number" min="0" max="50" step="1" id="setMinOrdered" value="14">
+              <button type="button" class="ds-arrow" data-act="inc" data-target="minOrdered">▶</button>
+            </div>
+            <div class="ds-track ds-left">
+              <input type="range" min="0" max="50" step="1" id="slMinOrdered" value="14">
+            </div>
+            <div class="ds-gap" aria-hidden="true"></div>
+            <div class="ds-track ds-right">
+              <input type="range" min="0" max="50" step="1" id="slMaxUnordered" value="5">
+            </div>
+            <div class="ds-side ds-right">
+              <button type="button" class="ds-arrow" data-act="dec" data-target="maxUnordered">◀</button>
+              <input type="number" min="0" max="50" step="1" id="setMaxUnordered" value="5">
+              <button type="button" class="ds-arrow" data-act="inc" data-target="maxUnordered">▶</button>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="btn-row" style="margin-top:10px">
+        <span class="hint" id="sfHint"></span>
       </div>
     </div>
 
