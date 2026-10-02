@@ -1,4 +1,4 @@
-﻿/* Gomoku Anti-Cheat Detector — MVP
+/* Gomoku Anti-Cheat Detector — MVP
  * Engine: Rapfi (WASM, from dhbloo/gomoku-calculator / gomocalc.com)
  */
 'use strict';
@@ -1739,6 +1739,11 @@ async function analyzeStepwise(record, opts, onProgress, onStep) {
   // 0.3.3 §3.5: same rule as analyzeGame — read learnedParams once per run unless the caller
   // pinned them (opts.learned === null forces defaults).
   const learned = (opts.learned !== undefined) ? opts.learned : await loadLearnedParams();
+  // 0.5.6 补增 §三 — the operator's pins are folded in ONCE, here, so every consumer below
+  // (sideAggregate, the report meta, analyzeStep's re-score) reads the same table. Doing it at
+  // each call site instead would be a dozen chances to forget one.
+  const params = applySignalPins(learned,
+    (opts.signalWeights !== undefined) ? opts.signalWeights : await loadSignalPins());
   onProgress && onProgress(3, i18nErr('progress.ready'));
 
   const moves = record.moves;
@@ -1840,7 +1845,12 @@ async function analyzeStepwise(record, opts, onProgress, onStep) {
     GMLearn.matchFeatures(steps, learned.features, learned.simThreshold);
   }
   onProgress && onProgress(99, i18nErr('progress.risk'));
-  return buildReport(steps, record, Object.assign({}, opts, { learned: learned }));
+  // 0.5.6 补增 §三 — `params`, not `learned`: the pins are applied to the table the score is built
+  // from, and buildReport is where the score is built (sideAggregate reads `opts.learned`). Passing
+  // the pre-pin object here was the whole feature not working: the pins resolved, the steps were
+  // scored, and then the aggregate was computed from the table the operator had just overridden.
+  // The object is still `learned`-shaped, so the feature library and the report's own meta survive.
+  return buildReport(steps, record, Object.assign({}, opts, { learned: params }));
 }
 
 // A compact live summary, used while 实时逐步分析 is still accumulating steps.
@@ -1933,40 +1943,63 @@ function rampDown(v, lo, hi) {
 // same phenomenon (did the player stay inside the engine's own recommendations) from different
 // angles, and that goodPool covers the widest version of it.
 //
-// So the invariant this table protects is now 「the whole table sums to 1.00」 — NOT 「the six sum to
-// 1.00 and everything else rides on top」. verify-048's assertion was moved with it (the property it
+// So the invariant 0.5.5 §1.3 established here was 「the whole table sums to 1.00」 — NOT 「the six sum
+// to 1.00 and everything else rides on top」. verify-048's assertion was moved with it (the property it
 // was protecting was always the total, and a corpus split is exactly what that assertion exists to
 // catch — which is why the reversal had to be an explicit decision rather than a silent edit).
+//
+// ⚠⚠ 0.5.6 补增 §三 REPLACES that invariant, and it is again an explicit operator decision rather
+// than a silent edit. The 补增 gives every signal a weight box and puts a 130% ceiling on the total
+// (SIGNAL_WEIGHT_SUM_MAX); the operator then tuned the table in that panel and confirmed that THE
+// TABLE THEY TUNED BECOMES THE FACTORY DEFAULT. So:
+//
+//   · the shipped table is no longer 1.00. It is exactly 1.30, and it is the operator's own numbers,
+//     entered as percentages (see the literals below);
+//   · the invariant is now 「0 < Σ ≤ SIGNAL_WEIGHT_SUM_MAX」, enforced by `resolveSignalWeights`
+//     for a profile's own pins and asserted for the shipped table by verify-059 §1;
+//   · an untouched install therefore scores 30% higher than 0.5.5's/0.5.6's, with the 70/40 cuts
+//     unmoved — a deliberately stricter detector out of the box, which is what the operator asked
+//     for. The panel prints the total next to the boxes so nobody has to infer it;
+//   · ⚠ THE SHIPPED TABLE USES THE WHOLE CEILING. There is no headroom left: a pin that raises any
+//     term is refused until another one is lowered. That is a consequence of the numbers the
+//     operator chose (they sum to exactly 130%), not a limit of the mechanism — the panel says so,
+//     and 「先降一项再抬另一项」 is the two-step the operator performs. A profile that wants room to
+//     raise must first take it out of a term it cares less about;
+//   · the learner's two budgets are read OFF this table (`learn.js:group`), so they moved with it:
+//     基础统计六项 0.58 and 行为信号七项 0.72, where 0.5.5 had 0.63/0.37 and 0.5.6 §2 had 0.30/0.70.
+//
+// The 0.5.6 §2 split (five terms named, the other eight shrunk ×0.4783 to close at exactly 1.00) is
+// therefore history: the numbers below superseded it in the same release. It is kept described above
+// because the comment is the record of WHY the earlier shape existed, and because a suite that still
+// re-derives 0.4783 is re-deriving a table this build no longer ships.
 const BASE_WEIGHTS = {
-  // 0.5.6 §2.3 — the operator named five terms and their targets (evasion 0.04→0.08,
-  // sharpStreak 0.03→0.14, sharpTotal 0.03→0.18, goodPool 0.18→0.21, liveThree 0.03→0.06;
-  // 0.67 together) and left the other eight to be rescaled. §2.2 fixes the method: the eight
-  // shrink PROPORTIONALLY from 0.69 to 0.33 (×0.4783) and each is rounded to two places.
+  // 补增 §三 — the operator's table, term for term, as percentages: 13% 7% 13% 11% 4% 10% for the six
+  // statistics, then 4% 3% 4% 14% 18% 19% 10% for the seven behaviour signals.
   //
   // Two things this table must be read with, both of which the suite pins:
-  //   · the eight rounded values do NOT sum to exactly 0.33 by themselves in every rounding
-  //     scheme — §2.3's own running total (verify-058's arithmetic) closes at exactly 1.00, and
-  //     that total, not any sub-total, is the invariant.
-  //   · the DIRECTION is the point: `sharpStreak + sharpTotal + goodPool` = 0.53, over half the
-  //     budget, where `top1 + acpl + sharp + out` = 0.23. The detector is now driven by behaviour
-  //     signals rather than by the raw accuracy terms, which is what §2.4 says out loud.
+  //   · the TOTAL is the invariant, and it is **1.30** — exactly the ceiling, and the reason
+  //     `verify-059` asserts `total <= SIGNAL_WEIGHT_SUM_MAX` on the shipped table rather than
+  //     leaving it to a pin.
+  //   · the DIRECTION survives from §2: the seven behaviour signals (0.72) still outweigh the six
+  //     statistics (0.58). 好点池 is no longer the largest single term — the operator's table gives
+  //     唯一手累计 0.18 and 好点池 0.19, so 好点池 is still the largest, but only by 0.01. The wiki's
+  //     「最大的一项」 claim is asserted against this table by verify-059 §3.
   //
-  // The two families the shrink acts on, and where each term came from:
-  //   · 基础六项 (top1/acpl/sharp/out/desperate/time) — the 0.4.2 statistics. They are the ones
-  //     §2.4 says 「各减半」; each is now roughly half its 0.5.5 value.
+  // The two families, and where each term came from:
+  //   · 基础六项 (top1/acpl/sharp/out/desperate/time) — the 0.4.2 statistics, 0.58 together.
   //   · 行为信号 (evasion/winBlunder/uselessFour/sharpStreak/sharpTotal/goodPool/liveThree) —
   //     0.4.2's evasion pair, 0.4.7's 无用冲四, 0.4.8's two 唯一手 runs, and 0.5.2/0.5.5's two
-  //     pools. These gain, and they are the seven `learn.js` optimises in their own budget.
-  top1: 0.06, acpl: 0.03, sharp: 0.07, out: 0.07, desperate: 0.02, time: 0.05,
-  evasion: 0.08, winBlunder: 0.01,
-  uselessFour: 0.02,
+  //     pools. These are the seven `learn.js` optimises in their own budget.
+  top1: 0.13, acpl: 0.07, sharp: 0.13, out: 0.11, desperate: 0.04, time: 0.10,
+  evasion: 0.04, winBlunder: 0.03,
+  uselessFour: 0.04,
   sharpStreak: 0.14,
   sharpTotal: 0.18,
   // 0.5.5 §1.1/§1.3.1 redefined the pool (Top5, share + streak) and made it first-class rather
-  // than a surcharge; 0.5.6 §2.1 nudges it 0.18→0.21. It is still the largest single term.
-  goodPool: 0.21,
-  // §1.2 — the 活三 pool, now doubled (0.03→0.06) along with the other behaviour signals.
-  liveThree: 0.06,
+  // than a surcharge. It is still the largest single term, but by 0.01 over 唯一手累计.
+  goodPool: 0.19,
+  // §1.2's 活三 pool, at the operator's 0.10.
+  liveThree: 0.10,
 };
 const BASE_THRESHOLDS = {
   // 0.4.3 §1.1: the ramp aTop1 now reads. `top1Lo`/`top1Hi` are kept because a pre-0.4.3
@@ -2023,6 +2056,163 @@ function riskParams(params) {
     if (pt) for (const k in t) if (isFinite(pt[k])) t[k] = pt[k];
   }
   return { w, t };
+}
+
+// ---------------------------------------------------------------------------------------------
+// 0.5.6 补增 §三 — the operator's own per-signal weights.
+//
+// The request is one sentence: every detection signal must be adjustable in the settings page, and
+// the table those settings build may sum to at most 130%. Both halves are about the risk score,
+// which is `clamp(Σ weight_i × a_i × 100, 0, 100)` compared against the 70/40 cuts — so the
+// ABSOLUTE size of the weights is what the score is made of, and the ceiling is a real limit
+// rather than a UI nicety. The operator went further than tuning their own profile: the table they
+// built in the panel IS the shipped default now (a table of exactly 1.30 — see BASE_WEIGHTS), so the
+// ceiling is also the invariant the release ships under, and there is no headroom left in it.
+//
+//   · The pins are absolute weights, NOT shares to be renormalised. Rescaling them back to 1.00
+//     would make the 130% ceiling unstatable — two tables with the same ratios would score
+//     identically whatever their totals — and it would mean an operator who lifted every signal
+//     by the same factor saw nothing at all happen.
+//   · 1.00 was what a profile that never opened the panel used to run at. Since 补增 §三 the
+//     SHIPPED table is the operator's own and totals exactly **1.30** — the whole ceiling — so an
+//     untouched install scores 30% higher than 0.5.5's while the 70/40 cuts stay where they are:
+//     deliberately stricter. The headroom above 1.00 is a SURCHARGE: a bigger table crosses the cuts
+//     more easily and reaches the clamp at 100 without every signal having to fire. A total below
+//     the shipped one is allowed too and means the opposite.
+//   · PRECEDENCE: pins > learned > compiled-in default. An automatic optimiser must never
+//     silently overrule an explicit human setting — the same rule that makes the engine singleton
+//     remember WHICH model it holds. 重新学习 still trains all thirteen terms (it has to, to keep
+//     its two family budgets), but a pinned term is simply not read afterwards.
+//
+// A set that cannot be honoured is refused WHOLE rather than trimmed: half a table is a table
+// nobody asked for, and storage.js (the write path), the import validator and the settings panel
+// all refuse it the same way, one level down and one level up.
+//
+// ⚠⚠ AND THE LEARNER'S WEIGHTS ARE NOT PART OF THIS TABLE (补增 §三·补). The chain used to be
+// `pins > learned > compiled-in default`, so 重新学习 re-wrote the weights the score was built from.
+// The operator's follow-up instruction was that 「留空」 — the number the panel prints beside every
+// box, and the weight an empty box actually uses — must be the SHIPPED table they had just
+// confirmed as the default (their words: 「现在留空显示的数值仍然是旧的且相似度高数值」). With a
+// learned table in the chain that is impossible by construction: the 留空 value would be whatever
+// the last training run produced — on their profile a 0.5.5-era table whose six statistics were all
+// 10.5%, i.e. the old numbers, for ever.
+//
+// Two tables cannot both be the baseline, and the operator's hand-tuned one is the shipped default
+// now, so it is the one that wins: **pins ⊕ BASE_WEIGHTS, and nothing else**. 重新学习 still trains
+// the thresholds, the ramp anchors, the risk cuts and the feature library — everything it did
+// except the weights — and it still RECORDS a weight proposal, which the 学习面板 prints labelled
+// as recorded-but-not-applied. Throwing that measurement away would lose information the operator
+// may want back; applying it silently is what they asked to stop.
+// ---------------------------------------------------------------------------------------------
+
+// The two ceilings. Read from storage.js when it is resident — it is, in both hosts that score a
+// game — and mirrored here for the harnesses that load app.js on its own: app.js must keep working
+// with no storage.js at all (that is why FALLBACK_WEIGHTS exists in learn.js, and why
+// loadLearnedParams is guarded). verify-059 pins the copies equal, because two spellings of one
+// limit is exactly the failure this project keeps paying for.
+const SIGNAL_WEIGHT_MAX =
+  (typeof GMStorage !== 'undefined' && GMStorage && GMStorage.SIGNAL_WEIGHT_MAX != null)
+    ? GMStorage.SIGNAL_WEIGHT_MAX : 1;
+const SIGNAL_WEIGHT_SUM_MAX =
+  (typeof GMStorage !== 'undefined' && GMStorage && GMStorage.SIGNAL_WEIGHT_SUM_MAX != null)
+    ? GMStorage.SIGNAL_WEIGHT_SUM_MAX : 1.30;
+// The comparison tolerance for that ceiling, and it is not cosmetic. The operator's numbers are
+// percentages with at most one decimal, summed in `effectiveSignalWeights`; in binary floating
+// point a table whose thirteen terms add up to exactly 1.30 by hand can sum to 1.3000000000000003,
+// and a strict `>` would then refuse a set the settings panel had just accepted — the two would
+// disagree about the one number the requirement names. 1e-9 is fifteen orders of magnitude below
+// the smallest real edit (0.1%) and far above the error it absorbs.
+const SIGNAL_WEIGHT_EPS = 1e-9;
+
+// The pins the detector can actually use: just the keys that were pinned, and just the values in
+// range. `null` means "follow the default", so it is ABSENT from the result rather than a 0 —
+// the two are different instructions (`0` = "this signal is worthless to me").
+function activeSignalPins(pins) {
+  const out = {};
+  if (!pins || typeof pins !== 'object') return out;
+  for (const k in BASE_WEIGHTS) {
+    const v = pins[k];
+    if (v == null) continue;
+    const n = Number(v);
+    if (isFinite(n) && n >= 0 && n <= SIGNAL_WEIGHT_MAX) out[k] = n;
+  }
+  return out;
+}
+
+// What a table sums to, which is the quantity the 130% ceiling is compared against.
+//
+// This is the MIRROR of storage.js's `signalWeightTableSum`: same formula, same thirteen terms,
+// deliberately two spellings because app.js runs in hosts where storage.js is absent. The two are
+// pinned equal by the suite (verify-059 drives both on one fixture), the same arrangement
+// BASE_WEIGHTS / DEFAULT_WEIGHTS / FALLBACK_WEIGHTS already has.
+function signalWeightSum(table) {
+  let sum = 0;
+  for (const k in table) if (isFinite(table[k]) && table[k] > 0) sum += table[k];
+  return sum;
+}
+
+// The thirteen weights the detector will actually run with: **the shipped table with the operator's
+// pins folded in**, plus whether any pin was used.
+//
+// ⚠ The learner's weights are deliberately NOT a parameter here (see the note above): the baseline
+// is BASE_WEIGHTS, always. That is what makes the panel's 留空 figure the truth — an empty box means
+// the shipped default, on every profile, whether or not 重新学习 has ever run.
+//
+// ONE implementation, read by three consumers that must never disagree: `applySignalPins` below
+// (what the score is built from), `effectiveSignalWeights` (the same table for display), and the
+// settings panel through that. The `applied` flag is what lets a refusal stay visible in the
+// numbers and still be exact about identity.
+function resolveSignalWeights(pins) {
+  const base = Object.assign({}, BASE_WEIGHTS);
+  const act = activeSignalPins(pins);
+  const keys = Object.keys(act);
+  if (!keys.length) return { weights: base, applied: false };   // no pins ⇒ the shipped table
+  const merged = Object.assign({}, base);
+  for (let i = 0; i < keys.length; i++) merged[keys[i]] = act[keys[i]];
+  const sum = signalWeightSum(merged);
+  // Both refusals keep the table that works. `sum > 0` covers the all-zero table — a detector
+  // whose every weight is zero reports 0 for every game, which is not a low score but a dead one;
+  // `sum <= 130%` is 补增 §三's ceiling. storage.js and the settings page both refuse to STORE
+  // such a set, so arriving here means a hand-edited profile or a caller passing pins directly,
+  // and the honest answer to a profile we cannot honour is to keep running — on the shipped table.
+  if (!(sum > 0) || sum > SIGNAL_WEIGHT_SUM_MAX + SIGNAL_WEIGHT_EPS) {
+    return { weights: base, applied: false };
+  }
+  return { weights: merged, applied: true };
+}
+
+// The table for DISPLAY (the settings panel's own fields, 标签百科's figures). Same function, so
+// the number on screen is the number the score was built with.
+function effectiveSignalWeights(pins) {
+  return resolveSignalWeights(pins).weights;
+}
+
+// The learnedParams-shaped object the analysis path threads around, with the weight table forced to
+// 「shipped ⊕ pins」. Everything else on it survives: the thresholds, the ramp anchors and the
+// feature library are still the learner's, and the report's own `learned` meta still describes the
+// training run that produced them.
+//
+// ⚠ It ALWAYS returns a NEW object, even when nothing is pinned — unlike the 0.5.6 reading of this
+// function, which returned `params` itself to keep an untouched profile bit-identical. That
+// shortcut is exactly what leaked the learner's stored weights back in: `riskParams()` merges
+// `params.weights` over BASE_WEIGHTS, so handing the blob straight through meant the score used
+// the learned table while the panel said 留空 = 出厂表. Forcing the table is the whole point.
+function applySignalPins(params, pins) {
+  return Object.assign({}, params, { weights: resolveSignalWeights(pins).weights });
+}
+
+// Same rule as loadLearnedParams: a caller that does not hand the pins over gets them read from
+// storage, rather than silently getting "no pins". That matters because the analysis runs in the
+// offscreen document, where three different callers build `opts` — a caller that forgot the pins
+// must not be the difference between a customised profile and a stock one.
+async function loadSignalPins() {
+  try {
+    if (typeof GMStorage !== 'undefined' && GMStorage && GMStorage.loadSettings) {
+      const s = await GMStorage.loadSettings();
+      return (s && s.signalWeights) || null;
+    }
+  } catch (e) { /* a corrupt profile must not stop a detection run */ }
+  return null;
 }
 
 // 0.3.3 §3.5: the detector reads learnedParams on every run. Guarded so app.js stays usable
@@ -2177,6 +2367,11 @@ async function analyzeGame(record, opts, onProgress) {
   // "ask storage"; an explicit null forces the defaults (used by tests that must not be at
   // the mercy of whatever is in the profile).
   const learned = (opts.learned !== undefined) ? opts.learned : await loadLearnedParams();
+  // 0.5.6 补增 §三 — same single application point as analyzeStepwise. Both paths must resolve
+  // the pins the same way, or a game analysed live and replayed afterwards would score two
+  // different ways with nothing on screen to explain it.
+  const params = applySignalPins(learned,
+    (opts.signalWeights !== undefined) ? opts.signalWeights : await loadSignalPins());
   onProgress && onProgress(5, i18nErr('progress.ready'));
 
   // Pause hook: opts.pauseCtrl = { paused: bool, _resume: fn|null }
@@ -2284,7 +2479,10 @@ async function analyzeGame(record, opts, onProgress) {
   }
 
   onProgress && onProgress(98, i18nErr('progress.risk'));
-  const report = buildReport(steps, record, Object.assign({}, opts, { learned: learned }));
+  // 0.5.6 补增 §三 — `params`, not `learned`, for the reason spelled out at the end of
+  // analyzeStepwise: sideAggregate builds the score out of `opts.learned`, so handing it the
+  // pre-pin object here left the operator's own weights resolved and then ignored.
+  const report = buildReport(steps, record, Object.assign({}, opts, { learned: params }));
   onProgress && onProgress(100, i18nErr('progress.done'));
   return report;
 }
@@ -2737,9 +2935,16 @@ function sideAggregate(steps, side, hasTime, params, opts) {
   const simW = hasLib ? clamp(t.simWeight != null ? t.simWeight : 0.10, 0, 0.5) : 0;
   const wEff = {};
   for (const k in w) wEff[k] = w[k] * (1 - simW);
-  // 0.5.5: the table now sums to 1.00 as a whole (see BASE_WEIGHTS), so scaling all of it by
-  // (1 − simW) and adding `simW * aSim` on top keeps the total at exactly 1.00 — the property the
-  // max possible score depends on. With no feature library `simW` is 0 and this is the identity.
+  // 0.5.5: the table became one budget rather than a base plus surcharges, so scaling all of it by
+  // (1 − simW) and adding `simW * aSim` on top preserves the RATIO between the terms and the
+  // auxiliary term. With no feature library `simW` is 0 and this is the identity.
+  //
+  // 0.5.6 补增 §三: the table's own total is no longer 1.00 — the shipped one is exactly 1.30 (see
+  // BASE_WEIGHTS) and an operator's may be anything up to SIGNAL_WEIGHT_SUM_MAX (130%). The clamp
+  // below is where that headroom is spent: the shipped table already crosses the 70/40 cuts more
+  // easily than 0.5.5's did, and the part of the score above 100 is clipped rather than shown. The
+  // sentence above still holds term-for-term, which is what keeps the sim term's share meaningful at
+  // any total.
   const risk = clamp(100 * (wEff.top1 * aTop1 + wEff.acpl * aAcpl + wEff.sharp * aSharp + wEff.out * aOut
                     + wEff.desperate * aDesperate + wEff.time * aTime + simW * aSim
                     + wEff.evasion * aEvasion + wEff.winBlunder * aWinBlunder
@@ -3066,6 +3271,12 @@ if (typeof module !== 'undefined' && module.exports) {
     // 0.3.3 risk-model plumbing, exported so the learner and the tests can reason about the
     // exact numbers the detector uses.
     riskParams, rampUp, rampDown, loadLearnedParams, BASE_WEIGHTS, BASE_THRESHOLDS,
+    // 0.5.6 补增 §三 — the operator's per-signal weights and the resolution that folds them in.
+    // Exported for the same reason as every line above: the settings panel and the suite drive
+    // THIS function rather than a copy of the merge, and the identity rule ("no pins ⇒ the very
+    // same object", "a refused set ⇒ nothing applied") is only observable through it.
+    activeSignalPins, resolveSignalWeights, effectiveSignalWeights, applySignalPins, loadSignalPins,
+    signalWeightSum, SIGNAL_WEIGHT_MAX, SIGNAL_WEIGHT_SUM_MAX, SIGNAL_WEIGHT_EPS,
     MAX_THREADS,
     // 0.5.1 §2.1.2/§2.1.3/§2.2 — the engine layer. `Engine`, the fallback chain, the two
     // coordinate alphabets and the wire-format functions are all exported so the suite can drive

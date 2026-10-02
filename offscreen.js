@@ -262,10 +262,38 @@
   }
 
   // ---- 实时逐步分析 ----
+  //
+  // 0.5.6 补增 §三 — the live session is the ONE analysis path that does not go through
+  // analyzeGame / analyzeStepwise, so it has to resolve the weight table on its own: `summarizeSteps`
+  // and `buildReport` both build the score out of `opts.learned`, and `msg.opts` arrives straight
+  // from a content script that has no idea the pins exist.
+  //
+  // Resolved ONCE, when the session starts — the same rule `learned` follows in app.js. A table
+  // that changed mid-game would make the live score and the score archived at the end of the same
+  // game disagree about the very same hands, and the archived one is written from these steps.
+  //
+  // ⚠ 补增 §三·补: `applySignalPins` now ALWAYS returns a fresh object whose `weights` are
+  // 「shipped ⊕ pins」 — the learner's stored weights never reach the score. So there is no
+  // "nothing pinned, hand the request straight through" shortcut any more, and that is the point:
+  // passing `opts` through unchanged would let `riskParams` merge the learner's table back in.
+  //
+  // `applySignalPins` / `loadSignalPins` are top-level declarations of a classic script, so they
+  // are reachable here as bare identifiers — the arrangement tagWiki.js uses for BASE_WEIGHTS.
+  // Guarded anyway, because harnesses inject a subset of these scripts.
+  async function resolveLiveOpts(opts) {
+    var o = opts || {};
+    try {
+      if (typeof applySignalPins !== 'function' || typeof loadSignalPins !== 'function') return o;
+      var learned = (o.learned !== undefined) ? o.learned : null;
+      var pins = (o.signalWeights !== undefined) ? o.signalWeights : await loadSignalPins();
+      return Object.assign({}, o, { learned: applySignalPins(learned, pins) });
+    } catch (e) { return o; }
+  }
+
   async function doStep(msg) {
     if (msg.reset) {
       sessions[msg.jobId] = {
-        jobId: msg.jobId, steps: [], times: [], opts: msg.opts, ended: false,
+        jobId: msg.jobId, steps: [], times: [], opts: await resolveLiveOpts(msg.opts), ended: false,
         prejoinCount: msg.prejoinCount || 0, seen: {},
       };
     }

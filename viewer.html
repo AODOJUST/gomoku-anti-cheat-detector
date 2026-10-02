@@ -620,6 +620,19 @@
           background:repeating-linear-gradient(90deg,transparent 0,transparent 4px,
             var(--line) 4px,var(--line) 8px)}
   .set-wide{grid-column:1/-1;min-width:0}
+  /* ---- 0.5.6 补增 §三 检测信号权重 ----
+     Thirteen boxes plus the number the requirement actually constrains: the TOTAL. It is printed
+     as its own line above the grid (a caption inside the grid would flow into the four-column
+     layout and end up beside 好点池 rather than over the table it describes), and it turns red the
+     moment the boxes would cross the ceiling — the commit refuses that edit, and a refusal the
+     operator cannot see is indistinguishable from a broken control. `.sw-in` keeps a fixed width:
+     the value is at most three digits, and a box that stretched to the whole cell would put the
+     留空 reference a hand's width away from the number it belongs to. */
+  .sw-total{margin:8px 0 4px;font-family:Consolas,monospace;font-size:var(--ui-detail-font);
+            color:var(--txt)}
+  .sw-total.over{color:var(--red);font-weight:600}
+  .sw-warn{color:var(--yellow)}
+  .set-item input[type=number].sw-in{flex:0 0 92px;width:92px;min-width:0;text-align:center}
   /* 0.5.5 — a checkbox is a switch, not a text field. `.set-item input{flex:1}` gave it
      `flex-basis:0` + grow, so the CONTROL became a wide invisible box whose glyph sat in the
      middle of the row: on the full-width rows (存储过滤's 启用, the widest of them) it drifted to
@@ -1805,6 +1818,26 @@
       </div>
       <div class="btn-row" style="margin-top:14px">
         <span class="hint" id="setHint">规则由 URL 判断（/renju/），不参与记忆。</span>
+      </div>
+    </div>
+
+    <!-- 0.5.6 补增 §三 — 检测信号权重. Thirteen number inputs and the running total above them:
+         the requirement is that EVERY signal is adjustable by the operator, and a table with a
+         ceiling of its own (130%) cannot be edited by feel. The rows are built in JS
+         (`buildSignalWeightsPanel`) for two reasons — their labels are semantic keys
+         (`learn.weight.*`, the same ones 标签百科 and the learner print, so no new translation
+         and no chance of the three surfaces disagreeing), and the family headings under which
+         they are grouped come from learn.js's own list. The title, hint, total and reset button
+         are static markup; the hint and the button's word are painted from JS like every other
+         panel's, because they are prose a translator rewrites as a whole. -->
+    <div class="panel set-panel">
+      <h2>检测信号权重</h2>
+      <div class="hint" id="swHint">—</div>
+      <div class="sw-total" id="swTotal">—</div>
+      <div class="set-grid" id="swGrid"></div>
+      <div class="btn-row" style="margin-top:14px">
+        <button class="sec" id="swReset">重置为默认</button>
+        <span class="hint" id="swStatus"></span>
       </div>
     </div>
 

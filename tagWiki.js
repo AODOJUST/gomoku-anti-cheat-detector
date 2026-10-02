@@ -411,11 +411,12 @@ var GM_TAG_WIKI = (function () {
     // The first six are the 基础统计 (0.4.2's top1/acpl/sharp/out/desperate/time); the remaining
     // seven are the 行为信号, each exactly 0 on a game that shows no such pattern. Through 0.5.4
     // the six were the whole budget and the seven rode on top as surcharges; 0.5.5 §1.3 made the
-    // WHOLE table one budget of 1.00 (see the note in app.js above BASE_WEIGHTS), and 0.5.6 §2
-    // shrank the six so the behaviour signals now carry the majority. So neither group is "the"
-    // budget any more — the total is, and the split between the two is a per-release decision.
-    // Each entry reads its own figure live from `weightKey`, which is the only reason this
-    // paragraph can describe the model without repeating a number that will move.
+    // WHOLE table one budget, and 0.5.6 补增 §三 replaced that budget with the operator's own table
+    // — exactly 1.30 as shipped, which is the whole 130% ceiling, and an operator may not go above
+    // it. So neither group is "the" budget, and the total is not 1.00 any more either: the split AND
+    // the total are per-release decisions, which is exactly why the figures below are read live.
+    // Each entry reads its own figure from `weightKey`, which is the only reason this paragraph can
+    // describe the model without repeating a number that will move.
     // =====================================================================================
     {
       id: 'signal-top1', cat: 'signal', nameNs: 'learn.weight', nameVal: 'top1',
@@ -637,8 +638,25 @@ var GM_TAG_WIKI = (function () {
   //
   // Returning null (rather than a default) when the table is unreachable is deliberate: see the
   // header. The caller renders an em dash.
+  // 0.5.6 补增 §三 — a weight the OPERATOR overrode cannot be read from BASE_WEIGHTS, because the
+  // override lives in `settings.signalWeights` and folding it in belongs to app.js. The viewer
+  // therefore hands this file the RESOLVED table (`setWeightTable`) before it paints, and every
+  // `{w}` below follows it.
+  //
+  // This carries NUMBERS, which is the one thing the entries above are forbidden to carry: they
+  // still store a `weightKey` and nothing else, and this override is a rendering-time input
+  // exactly like the locale — set from outside, read here, never stored. `null` means "no override
+  // was handed over", which is every surface that never opened the settings page.
+  var weightTable = null;
+  function setWeightTable(map) {
+    weightTable = (map && typeof map === 'object') ? map : null;
+  }
+
   function weight(key) {
     if (!key) return null;
+    try {
+      if (weightTable && typeof weightTable[key] === 'number') return weightTable[key];
+    } catch (e) { /* replaced by something hostile — fall through to the table below */ }
     try {
       /* global BASE_WEIGHTS */
       if (typeof BASE_WEIGHTS !== 'undefined' && BASE_WEIGHTS && typeof BASE_WEIGHTS[key] === 'number') {
@@ -744,6 +762,8 @@ var GM_TAG_WIKI = (function () {
     ENTRIES: ENTRIES,
     bodyLang: bodyLang,
     weight: weight,
+    // 0.5.6 补增 §三 — the operator's resolved table, handed in by the viewer before a paint.
+    setWeightTable: setWeightTable,
     band: band,
     fill: fill,
     resolve: resolve,

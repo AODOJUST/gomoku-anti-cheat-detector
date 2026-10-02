@@ -36,18 +36,20 @@
   'use strict';
   if (g.GMLearn) return;
 
-  // 0.5.6 §2.3 — same table as app.js BASE_WEIGHTS / storage.js DEFAULT_WEIGHTS. The two-group
-  // structure below (BASE_KEYS = the six statistics, EVASION_KEYS = the seven behaviour signals)
-  // is a separate question from the VALUES and is unchanged: `group()` reads both budgets off
-  // this table, so the split follows the numbers (0.30 / 0.70 in 0.5.6) without a second edit.
+  // 0.5.6 补增 §三 — same table as app.js BASE_WEIGHTS / storage.js DEFAULT_WEIGHTS: the operator's
+  // own numbers, total **1.30 — exactly the 130% ceiling** (six statistics 0.58 + seven behaviour
+  // signals 0.72) where 0.5.5 had 1.00 and 0.5.6 §2 kept it there. The two-group structure below
+  // (BASE_KEYS = the six statistics, EVASION_KEYS = the seven behaviour signals) is a separate
+  // question from the VALUES and is unchanged: `group()` reads both budgets off this table, so the
+  // split follows the numbers (0.58 / 0.72) without a second edit.
   var FALLBACK_WEIGHTS = {
-    top1: 0.06, acpl: 0.03, sharp: 0.07, out: 0.07, desperate: 0.02, time: 0.05,
-    evasion: 0.08, winBlunder: 0.01,
-    uselessFour: 0.02,
+    top1: 0.13, acpl: 0.07, sharp: 0.13, out: 0.11, desperate: 0.04, time: 0.10,
+    evasion: 0.04, winBlunder: 0.03,
+    uselessFour: 0.04,
     sharpStreak: 0.14,
     sharpTotal: 0.18,
-    goodPool: 0.21,
-    liveThree: 0.06,
+    goodPool: 0.19,
+    liveThree: 0.10,
   };
   var FALLBACK_THRESHOLDS = {
     // 0.4.3 §1.1: the ramp aTop1 reads. top1Lo/top1Hi stay for a pre-0.4.3 archive and for the
@@ -698,6 +700,18 @@
     return den ? num / den : 0.5;
   }
 
+  /**
+   * The learner's weight PROPOSAL — recorded, displayed by the 学习面板, and **not applied**.
+   *
+   * ⚠ 补增 §三·补: since the operator's hand-tuned table became the shipped default, the detector's
+   * weights are 「shipped ⊕ the operator's pins」 and nothing else (see `app.js:resolveSignalWeights`).
+   * So this function's output no longer reaches a score: it is kept because the measurement itself
+   * is worth having — it says which terms separate AI games from human ones on this corpus — and
+   * because the 学习面板 prints it as 「学习前 → 学习后」 with a note that it is not in force.
+   *
+   * Anything INSIDE the learner that needs "the table the detector will use" must therefore call
+   * `defaultWeights()`, not this result; `runLearning` does exactly that for the risk cuts.
+   */
   function optimizeWeights(samples, opts) {
     opts = opts || {};
     var th = mergeKnown(defaultThresholds(), opts.thresholds);
@@ -717,14 +731,15 @@
     // in the sum, so a weak dataset degrades to "roughly uniform", never to "one metric".
     //
     // 0.4.2 §2.3: TWO sums, not one — and 0.5.5 keeps the two-group STRUCTURE even though the
-    // whole table now sums to 1.00. The split is not about surcharges any more: it is about which
-    // terms the learner is willing to re-allocate against each other. The six are the base
+    // table has been one budget since then. The split is not about surcharges any more: it is about
+    // which terms the learner is willing to re-allocate against each other. The six are the base
     // statistic, and the seven special signals (each of which is exactly 0 on a game that never
     // fired it) are fitted inside their own budget, so a weak corpus cannot gut the base. Each
     // budget is read off the defaults, so changing a default weight moves its group's budget with
-    // it and no rebalancing release has to touch this code: 0.5.6 §2 left the six on 0.30 and the
-    // seven on 0.70, where 0.5.5 had them at 0.63 / 0.37 — the numbers are `defaultWeights()`'s,
-    // never this function's.
+    // it and no rebalancing release has to touch this code: 0.5.6 补增 §三 put the six on 0.58 and
+    // the seven on 0.72 (0.5.6 §2 had 0.30 / 0.70, 0.5.5 had 0.63 / 0.37) — the numbers are
+    // `defaultWeights()`'s, never this function's. ⚠ The two budgets now add up to 1.30 rather
+    // than 1.00, so a learned table does too; see `riskOfSub` below.
     var dw = defaultWeights();
     var group = function (keys) {
       var raw = {}, sum = 0, budget = 0, i;
@@ -784,10 +799,11 @@
   function riskOfSub(sub, weights) {
     var r = 0;
     WEIGHT_KEYS.forEach(function (k) { r += (weights[k] || 0) * sub[k]; });
-    // Clamped to mirror app.js sideAggregate() exactly. Since 0.5.5 §1.3.1 the table sums to 1.00
-    // as a whole, so a perfect subscore on every term reaches exactly 100; the clamp is kept
-    // because a learned set can still be nudged over by rounding, and because the risk cut search
-    // must never be able to place 高风险 above a line the real score cannot cross.
+    // Clamped to mirror app.js sideAggregate() exactly. The table is no longer normalised to 1.00
+    // (补增 §三: the shipped table is exactly 1.30 and an operator's may not exceed it), so a perfect
+    // subscore on every term would now reach 130 and the clamp is what the real score does with the
+    // excess — keeping it here is what makes this mirror the aggregate rather than merely resemble
+    // it.
     return clamp(100 * r, 0, 100);
   }
 
@@ -853,7 +869,13 @@
     var beforeW = (opts.current && opts.current.weights) ? mergeKnown(baseW, opts.current.weights) : baseW;
     var beforeT = (opts.current && opts.current.thresholds) ? mergeKnown(baseT, opts.current.thresholds) : baseT;
 
-    // B first: the risk cuts and the reported F1 both need the new weights.
+    // B first: the weight PROPOSAL is still computed and recorded (the 学习面板 prints it), but
+    // ⚠ 补增 §三·补 — it is no longer what the detector scores with, so the risk cuts below are
+    // searched on the table the detector ACTUALLY uses: `defaultWeights()`, i.e. the shipped table.
+    // Choosing cuts against a scoring function nothing runs would make the learned 70/40 lines
+    // wrong for every game the operator then analyses. (The operator's own `signalWeights` pins are
+    // not visible from here — learn.js has no storage — so the cuts are chosen on the unpinned
+    // table; that is the same base the panel starts from.)
     var wt = optimizeWeights(list, { thresholds: baseT });
     var weights = wt ? wt.weights : clone(beforeW);
 
@@ -862,7 +884,7 @@
     // them afterwards, then the risk cut is chosen on the final weights + thresholds.
     var ramp = optimizeRampThresholds(list, baseT) || {};
     var thresholds = mergeKnown(beforeT, ramp);
-    var cuts = optimizeRiskCuts(list, weights, thresholds);
+    var cuts = optimizeRiskCuts(list, baseW, thresholds);
     if (cuts) {
       thresholds.riskHigh = cuts.riskHigh;
       thresholds.riskMid = cuts.riskMid;

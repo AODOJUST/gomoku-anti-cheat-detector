@@ -554,6 +554,10 @@
     // 0.5.4 §1.5 — same reason again: these four labels are set from JS, and rebuilding the
     // controls resets their values, so this must come before `fillSettingsForm()` restores them.
     buildStorageFilter();
+    // 0.5.6 补增 §三 — same reason once more. The thirteen labels are semantic keys resolved at
+    // render time and the thirteen boxes are rebuilt with them, so the build has to come before
+    // `fillSettingsForm()` repaints the values.
+    buildSignalWeightsPanel();
     // 0.5.6 §1.3 — 导入与导出. Every label in the panel (and both category grids) is written by
     // JS, so the static pass above cannot reach them. Rebuilt rather than re-initialised: the
     // operator's export ticks survive, because buildIoPanel reads `ioChecked` instead of
@@ -644,6 +648,10 @@
     fillTransparencyForm();
     fillArchiveFilterForm();
     fillStorageFilterForm();
+    // 0.5.6 补增 §三 — the thirteen weight boxes. Filled from the RESOLVED table (app.js's
+    // `effectiveSignalWeights`), so a set storage refused shows up here as the numbers that are
+    // actually in force rather than as the ones that were typed.
+    fillSignalWeightsForm();
     fillLlmForm();
     // 0.5.1 §2.1.4/§2.2 — labels, dropdown contents, the address field and the status line. The
     // custom-model LIST is filled from whatever the registry holds right now; boot() and every
@@ -866,7 +874,238 @@
     for (var i = 0; i < arrows.length; i++) arrows[i].disabled = !f.enabled;
   }
 
+  // ---- 0.5.6 补增 §三: 检测信号权重 ----
+  //
+  // Thirteen numbers that are ONE table. The requirement is 「每种检测信号都可以由操作者在设置中
+  // 进行权重自定义」 with the custom total capped at 130%, and the two halves are inseparable: the
+  // risk score is Σ weight × sub-score, so the TOTAL decides how easily a game crosses the 70/40
+  // cuts, not any single term. Thirteen anonymous boxes would let an operator raise one weight
+  // five-fold and never learn why every game now reads 高风险 — hence the running total above the
+  // grid, and the refusal below it.
+  //
+  // Three things this panel deliberately does NOT own, each of which would otherwise be a second
+  // copy of one answer:
+  //   · the KEY LIST and the two families come from learn.js (BASE_KEYS / WEIGHT_KEYS), which
+  //     already owns that split for its two budgets;
+  //   · the NUMBERS come from app.js's `effectiveSignalWeights` — the same function the score is
+  //     built with, and the one that REFUSES a set which would take the total over the ceiling, so
+  //     a box can only ever show what the detector will actually use;
+  //   · the two CEILINGS come from GMStorage (SIGNAL_WEIGHT_MAX / SIGNAL_WEIGHT_SUM_MAX).
+  //
+  // Percent is the unit throughout: the requirement states the ceiling as 130%, the boxes are
+  // percentages, and the stored weight is that over 100.
+  function swKeys() {
+    if (typeof GMLearn !== 'undefined' && GMLearn && GMLearn.WEIGHT_KEYS && GMLearn.WEIGHT_KEYS.length) {
+      return GMLearn.WEIGHT_KEYS.slice();
+    }
+    // No learn.js (a stripped harness): the table itself still names every signal, so the grid is
+    // complete — only the two family headings are lost, which is why the builder asks for them
+    // separately instead of assuming they exist.
+    return Object.keys(G.DEFAULT_WEIGHTS);
+  }
+  function swBaseKeys() {
+    return (typeof GMLearn !== 'undefined' && GMLearn && GMLearn.BASE_KEYS) ? GMLearn.BASE_KEYS : null;
+  }
+  function swId(key) { return 'sw-' + key; }
+  function swMaxPct() { return Math.round(G.SIGNAL_WEIGHT_MAX * 100); }
+  function swCapPct() { return Math.round(G.SIGNAL_WEIGHT_SUM_MAX * 100); }
+  // What the SHIPPED table totals, read from the table rather than typed into the sentence: the
+  // hint has to state it (an operator is entitled to know what the factory default is before they
+  // change anything) and a literal would go stale the first time a release rebalances — which is
+  // exactly what happened here, one increment after the hint was written.
+  function swShippedPct() {
+    var def = G.DEFAULT_WEIGHTS || {}, sum = 0;
+    for (var k in def) if (def.hasOwnProperty(k)) sum += def[k];
+    return Math.round(sum * 1000) / 10;
+  }
+  // 0.21 -> 21, 0.5231 -> 52.3. One decimal is what the boxes carry, so every number on this
+  // screen — a box, the total, the 留空 reference — is rounded the same way and they add up.
+  function swPct(w) { return Math.round((Number(w) || 0) * 1000) / 10; }
+  function swFmt(n) { return String(Math.round(Number(n) * 10) / 10); }
+
+  // The table a signal falls back to when the operator has NOT pinned it: the SHIPPED default.
+  //
+  // ⚠ 补增 §三·补 — it used to be `effectiveSignalWeights(curLearned, null)`, i.e. the learner's
+  // table whenever 重新学习 had run, which is why this panel kept printing 10.5% / 3.4% / 16.6% (a
+  // 0.5.5-era training run) as the 留空 figure no matter what the release shipped. The operator's
+  // instruction was that 留空 must be the shipped table, and app.js's resolver now uses that as its
+  // baseline — so `effectiveSignalWeights(null)` and `G.DEFAULT_WEIGHTS` are the same table, and
+  // reading either one is correct. The resolver is preferred for the same reason as everywhere
+  // else: one implementation, never a copy.
+  function swInherited() {
+    try {
+      if (typeof effectiveSignalWeights === 'function') return effectiveSignalWeights(null);
+    } catch (e) { /* app.js absent — the shipped table is the answer either way */ }
+    return G.DEFAULT_WEIGHTS;
+  }
+  // What the detector will actually run with: the shipped table ⊕ the operator's pins. Reading it
+  // from app.js rather than rebuilding the merge here is what makes a REFUSED set visible on this
+  // screen — a set storage or the resolver would not honour renders as the inherited numbers, not
+  // as the numbers that were typed.
+  function swResolved() {
+    try {
+      if (typeof effectiveSignalWeights === 'function') return effectiveSignalWeights(S.signalWeights);
+    } catch (e) { /* same */ }
+    return G.DEFAULT_WEIGHTS;
+  }
+
+  // What the boxes say right now, in percent, plus the total the ceiling is compared against.
+  // ONE reading: the total, the refusal and the write all come from here, so the number printed on
+  // screen is the number that is checked.
+  function swReadForm() {
+    var inh = swInherited(), pct = {}, sum = 0;
+    swKeys().forEach(function (key) {
+      var el = $(swId(key));
+      var v = (el && String(el.value).trim() !== '') ? parseFloat(el.value) : NaN;
+      // An empty box means "not pinned" — the 留空 hint names the number that will be used — and
+      // so does anything unparsable. A `type=number` box reports junk as '', not as letters.
+      var p = isFinite(v) ? v : swPct(inh[key]);
+      pct[key] = p;
+      sum += p;
+    });
+    return { pct: pct, sum: sum };
+  }
+
+  function swPaintTotal(sum) {
+    var el = $('swTotal');
+    if (!el) return;
+    el.textContent = T('viewer|合计 {p}% · 上限 {c}%', { p: swFmt(sum), c: swCapPct() });
+    // Painting the over-limit state BEFORE the edit is committed is the point: the operator sees
+    // the ceiling coming while they type rather than after a box snaps back.
+    el.className = 'sw-total' + (sum > swCapPct() + 1e-9 ? ' over' : '');
+  }
+
+  function swStatus(msg, warn) {
+    var el = $('swStatus');
+    if (!el) return;
+    if (swStatus._t) { clearTimeout(swStatus._t); swStatus._t = null; }
+    el.textContent = msg || '';
+    el.className = 'hint' + (warn ? ' sw-warn' : '');
+    if (msg && !warn) swStatus._t = setTimeout(function () { el.textContent = ''; }, 2400);
+  }
+
+  function buildSignalWeightsPanel() {
+    var grid = $('swGrid');
+    if (!grid) return;
+    setTxt('swHint', T('viewer|每项都是风险分的百分比权重：0 = 该项不参与评分，100 = 该项独占满分。十三项合计不得超过 130%，而出厂表已正好是 {d}%——想抬高某一项，得先降低另一项（合计栏会实时显示）。合计越高，同一局的分越高，也就越容易越过 70 / 40 两条线（这是把检测调得更严，不是分数能到 130）；合计越低则相反。只记录你改动过的项，其余仍跟随出厂默认（清空某一项即为恢复默认）。',
+      { d: swShippedPct() }));
+    setTxt('swReset', T('viewer|重置为默认'));
+    var base = swBaseKeys(), group = null, html = '';
+    swKeys().forEach(function (key) {
+      var g = base ? (base.indexOf(key) >= 0 ? 'stat' : 'behav') : null;
+      if (g && g !== group) {
+        group = g;
+        html += '<div class="set-sub set-wide">' +
+          esc(g === 'stat' ? T('viewer|基础统计') : T('viewer|行为信号')) + '</div>';
+      }
+      // The label is a semantic key (`learn.weight.*`) — the same one the learner's table and
+      // 标签百科 print — so the thirteen names cost no new translation and cannot drift from the
+      // other two surfaces that show them.
+      html += '<div class="set-item"><label for="' + swId(key) + '">' +
+        esc(TO('learn.weight', key)) + '</label><div class="fx">' +
+        '<input type="number" class="sw-in" id="' + swId(key) + '" min="0" max="' + swMaxPct() +
+        '" step="1"><span class="hint">%</span>' +
+        '<span class="hint" id="' + swId(key) + '-inh"></span></div></div>';
+    });
+    grid.innerHTML = html;
+  }
+
+  // Paints every box from the table in force. The active element is left alone (the same guard
+  // `setField` and `fillStorageFilterForm` use): a save that landed between two keystrokes would
+  // otherwise move the caret and eat the rest of the number.
+  function fillSignalWeightsForm() {
+    var res = swResolved(), inh = swInherited();
+    var typing = (typeof document !== 'undefined') ? document.activeElement : null;
+    swKeys().forEach(function (key) {
+      if (typeof inh[key] !== 'number') return;      // a key the live table does not carry
+      var el = $(swId(key)), hint = $(swId(key) + '-inh');
+      if (el && el !== typing) el.value = swFmt(swPct(res[key]));
+      if (hint) hint.textContent = T('viewer|留空 = {p}%', { p: swFmt(swPct(inh[key])) });
+    });
+    swPaintTotal(swReadForm().sum);
+  }
+
+  function bindSignalWeights() {
+    var grid = $('swGrid');
+    if (grid) {
+      var timer = null;
+      // ONE delegated pair of listeners for all thirteen boxes: the grid's innerHTML is REPLACED on
+      // every language switch (buildSignalWeightsPanel), so per-input handlers would have to be
+      // rebound there — and the one that is forgotten is the one that stops working.
+      function keyOf(ev) {
+        var t = ev.target;
+        if (!t || !t.id || t.id.indexOf('sw-') !== 0) return null;
+        var key = t.id.slice(3);
+        return swKeys().indexOf(key) >= 0 ? key : null;
+      }
+      // `force` is the difference between typing and deciding. While the operator is still typing
+      // an over-limit table the total goes red and NOTHING is written and nothing is taken away —
+      // snapping the box back at the first digit of a larger number would fight the keystroke that
+      // was about to make it legal. On `change` (blur / Enter) the edit is a decision, so an
+      // over-limit one is refused out loud and the boxes go back to what the detector is running.
+      function commit(force) {
+        if (timer) { clearTimeout(timer); timer = null; }
+        var st = swReadForm();
+        var cap = swCapPct();
+        if (st.sum > cap + 1e-9) {
+          swPaintTotal(st.sum);
+          if (!force) return;
+          swStatus(T('viewer|未保存：合计将变成 {p}%，超过上限 {c}%', { p: swFmt(st.sum), c: cap }), true);
+          fillSignalWeightsForm();
+          return;
+        }
+        // SPARSE: only the terms that differ from what they INHERIT are written, so a later
+        // release's rebalance still reaches every signal the operator did not touch. The
+        // comparison is against `inh`, never against `res`: against the resolved table, retyping
+        // the value a signal already had would read as "unchanged" and silently drop its pin.
+        var inh = swInherited(), pins = {};
+        swKeys().forEach(function (key) {
+          if (Math.abs(st.pct[key] - swPct(inh[key])) > 1e-9) pins[key] = st.pct[key] / 100;
+        });
+        lastSelfWrite = Date.now();
+        G.saveSetting('signalWeights', pins).then(function (s) {
+          S = s;
+          // Read back from what storage ACCEPTED — it refuses a set it cannot honour as a whole,
+          // so a refusal one layer down still lands on this screen instead of vanishing.
+          fillSignalWeightsForm();
+          swStatus(T('viewer|已保存。'), false);
+        });
+      }
+      grid.addEventListener('input', function (ev) {
+        if (!keyOf(ev)) return;
+        swPaintTotal(swReadForm().sum);
+        if (timer) clearTimeout(timer);
+        timer = setTimeout(function () { commit(false); }, 400);
+      });
+      grid.addEventListener('change', function (ev) { if (keyOf(ev)) commit(true); });
+    }
+    var btn = $('swReset');
+    if (btn) btn.onclick = function () {
+      if (!confirm(T('viewer|重置全部检测信号权重为出厂默认？'))) return;
+      lastSelfWrite = Date.now();
+      G.saveSetting('signalWeights', {}).then(function (s) {
+        S = s;
+        fillSignalWeightsForm();
+        swStatus(T('viewer|已重置为默认权重'), false);
+      });
+    };
+  }
+  bindSignalWeights();
+
+  // 0.5.6 补增 §三 — 标签百科 prints each signal's weight by reading the LIVE table, so it has to
+  // be handed the resolved one before it renders: an operator who set 好点池 to 40% and then read
+  // 「权重 0.21」 in the wiki would be looking at a number the detector is not using. The override
+  // carries numbers; the wiki's ENTRIES still carry only keys (see tagWiki.js's header).
+  function syncTagWeightTable() {
+    try {
+      if (typeof GM_TAG_WIKI !== 'undefined' && GM_TAG_WIKI && GM_TAG_WIKI.setWeightTable) {
+        GM_TAG_WIKI.setWeightTable(swResolved());
+      }
+    } catch (e) { /* no wiki in this document */ }
+  }
+
   // ---- 0.5.3 §1.1.6: 透明度与模糊 ----
+  //
   // The panel is BUILT, not written into viewer.html, from the same table storage clamps
   // against. Two things have to agree for a slider to be usable — its `max` and the ceiling
   // `normalizeTransparency` applies — and a hand-written slider whose max disagreed would snap
@@ -2946,6 +3185,11 @@
           { v: v, cap: G.detectedThreads(), kept: kept });
       case 'out-of-range':
         return T('viewer|导入值 {v} 超出允许范围，已保持原值 {kept}', { v: v, kept: kept });
+      // 0.5.6 补增 §三 — the one refusal that is about a TABLE rather than about a value, so it
+      // gets a sentence that names the ceiling instead of the generic 「不是有效取值」.
+      case 'over-budget':
+        return T('viewer|导入的权重合计超过 {cap}% 上限，已保持原值 {kept}',
+          { cap: Math.round(G.SIGNAL_WEIGHT_SUM_MAX * 100), kept: kept });
       case 'unsupported':
         return T('viewer|导入值 {v} 不是支持的语言，已保持原值 {kept}', { v: v, kept: kept });
       case 'engine-not-found':
@@ -4461,11 +4705,31 @@
     renderAllSteps();
     renderBoardView();
   }
+  // 0.5.6 补增 §三 — the parameters THIS page must score with: the learner's table with the
+  // operator's pins folded in, exactly as the analysis path resolves it. One function, because the
+  // page re-aggregates in more than one place and a caller that forgot the pins would report a
+  // score the detector is not producing. `applySignalPins` returns its argument untouched when
+  // nothing is pinned (or when a set could not be honoured), so an unconfigured profile is
+  // bit-for-bit the previous release here as well.
+  function viewerSignalParams() {
+    try {
+      if (typeof applySignalPins === 'function') return applySignalPins(curLearned, S.signalWeights);
+    } catch (e) { /* app.js absent (a stripped harness): fall back to the learned table */ }
+    return curLearned;
+  }
+
   function renderReportIncremental() {
     // 0.3.3: recompute with the SAME learned parameters analyzeGame used, or the incremental
     // numbers would disagree with the final ones the moment a learned model is in play.
-    report.black = sideAggregate(report.steps, 'B', report.hasTime, curLearned);
-    report.white = sideAggregate(report.steps, 'W', report.hasTime, curLearned);
+    //
+    // 0.5.6 补增 §三 — "the same parameters" now includes the operator's signal pins: the analysis
+    // that produced these steps resolved `applySignalPins(curLearned, S.signalWeights)`, and a
+    // recompute that stopped at `curLearned` would re-score every hand with the table the operator
+    // just overrode. It is the third reading of one table in this file (the panel and 标签百科 are
+    // the other two) and all three go through app.js's own resolver.
+    var params = viewerSignalParams();
+    report.black = sideAggregate(report.steps, 'B', report.hasTime, params);
+    report.white = sideAggregate(report.steps, 'W', report.hasTime, params);
     // 0.4.3 §1.2/§1.3: the last boundary can move when a hand is added, and the rows already
     // on screen were classified against the previous segmentation — so the map is rebuilt and
     // every existing row re-striped before the new one is appended. `manualSegments` is not
@@ -5490,6 +5754,10 @@
   }
 
   function tagWikiHtml() {
+    // 0.5.6 补增 §三 — the figures are read from the live table while this HTML is built, and the
+    // operator's own weights are part of that table. Handed over once per paint rather than cached
+    // at boot: the panel may have changed since, and the wiki opens long after it.
+    syncTagWeightTable();
     var list = GM_TAG_WIKI.filter({ q: twState.q, cat: twState.cat, nameOf: twNameOf });
     if (!list.length) return '<div class="tw-empty">' + esc(T('viewer|没有匹配的标签')) + '</div>';
     return '<div class="tw-list">' + list.map(function (entry) {
@@ -5590,6 +5858,10 @@
   function openTagDetail(tagId) {
     var entry = GM_TAG_WIKI.byId(tagId);
     if (!entry) return;
+    // 0.5.6 补增 §三 — this window renders `resolve()`'s `{w}` figures and the impact table below,
+    // both straight off the live table. See tagWikiHtml for why the hand-over is here rather than
+    // at boot.
+    syncTagWeightTable();
     var body = GM_TAG_WIKI.resolve(entry, LANG);
     function section(title, text) {
       return '<div class="tag-detail-section"><h3>' + esc(title) + '</h3>' +
@@ -7561,6 +7833,12 @@
       '<div class="lcard"><div class="big">' + (lp.featureCount || 0) + '</div><div class="lab">' + T('viewer|特征库条目') + '</div></div>' +
       '</div>';
     h += '<div class="lbox"><b>' + T('viewer|B · 分项权重（学习前 → 学习后）') + '</b>' +
+      // 0.5.6 补增 §三·补 — the table below is a RECORD, not what the detector scores with. Saying so
+      // is not pedantry: the whole reason the panel's 留空 figure can be the shipped table now is
+      // that the learner stopped writing the score's weights, and a diff table with no note would
+      // read as "the score just moved".
+      '<div class="hint">' + T('viewer|学习器的权重只作记录，不参与评分：评分用的是「检测信号权重」面板里那张表（出厂默认 + 你的自定义）。') +
+      '</div>' +
       numTable(GMLearn.diffWeights(lp.before && lp.before.weights, lp.weights), 4) + '</div>';
     if (lp.aucs) {
       h += '<div class="lbox"><b>' + T('viewer|AUC 区分度') + '</b><div class="hint">' +
@@ -7811,6 +8089,10 @@
         G.loadLearnedParams().then(function (lp) {
           curLearned = lp;
           if ($('view-samples').classList.contains('active')) renderLearnStatus();
+          // 0.5.6 补增 §三 — every weight a pin does NOT cover comes from this blob, so the panel's
+          // boxes and their 留空 references are stale the moment it moves. 重新学习 happening in
+          // another tab is exactly the case this listener exists for.
+          fillSignalWeightsForm();
         });
       }
     });
@@ -7896,6 +8178,9 @@
     // 0.5.4 §1.5 — the four labels and the two `max` attributes, before fillSettingsForm paints
     // the values. Rebuilt on a language switch too (see repaintForLang).
     buildStorageFilter();
+    // 0.5.6 补增 §三 — the thirteen labels and their 留空 references, before fillSettingsForm
+    // paints the numbers. Rebuilt on a language switch too (see repaintForLang).
+    buildSignalWeightsPanel();
     // 0.5.6 §1.3 — the category grid and its labels. Built before fillSettingsForm like the two
     // panels above; the default ticks (§1.3.1: everything except 背景图片) are applied by
     // buildIoPanel's first call, which is this one.
@@ -7924,6 +8209,11 @@
     // 0.3.3: the learned parameter set is read once here and reused by every analysis this
     // page runs, so the detect tab and the sample editor can never disagree about it.
     curLearned = await G.loadLearnedParams();
+    // 0.5.6 补增 §三 — `fillSettingsForm()` above ran before this line, so every weight box that
+    // is NOT pinned was painted from the compiled defaults; the learner's table arrives only now.
+    // Without this second pass the panel shows numbers the detector is not using, which is the one
+    // thing it is not allowed to do.
+    fillSignalWeightsForm();
     samples = await G.loadSamples();
     fillSampleTagFilter();
     renderLearnStatus();

@@ -80,6 +80,30 @@
     // choice, which wins. papergames.io has no renju mode at all, so without this a 连珠 game
     // played there could never be analysed under 禁手.
     rule: null,
+    // 0.5.6 补增 §三 — the operator's own per-signal weights. A SPARSE override map: only the
+    // signals the operator actually changed appear, and anything absent (or null) follows the
+    // compiled-in default (through `learnedParams`, if the learner has run).
+    //
+    // Sparse rather than a full thirteen-key table for the reason tagWiki stores a `weightKey`
+    // and not a figure: a full table would freeze every untouched term at the default of the
+    // day, so a later release that rebalances `BASE_WEIGHTS` would leave this profile pinned to
+    // the old numbers while the panel still showed them as if they were the defaults.
+    //
+    // The values are ABSOLUTE weights (a fraction of the score, like every number in
+    // BASE_WEIGHTS), not shares to be renormalised: the operator's table is allowed to sum to
+    // anything up to SIGNAL_WEIGHT_SUM_MAX — and the SHIPPED table itself is now exactly 1.30, the
+    // whole ceiling, because the table the operator tuned in the panel became the factory default
+    // (补增 §三). A table that still summed to 1.00 by construction would make the 130% ceiling unstatable, and it would also
+    // mean an operator who lifted every signal by the same factor saw no change at all. The cost is
+    // the one 0.5.5 §1.3 wrote down: the score stops being comparable across releases. That is the
+    // operator's call here, and the panel says so next to the total.
+    //
+    // The DOMAIN is 0–SIGNAL_WEIGHT_MAX per signal and 0–SIGNAL_WEIGHT_SUM_MAX for the resolved
+    // table, enforced here as well as by the inputs' own `max` — the stored profile is the one
+    // input the UI never validates, and it is also the one input that arrives from a stranger's
+    // backup file. Out-of-range is DROPPED, not clamped: silently rewriting an operator's 0.21 to
+    // 1.00 is worse than ignoring it and saying so.
+    signalWeights: {},
     threadNum: 0,           // 引擎线程数；0 = 自动（clamp(floor(hardwareConcurrency/2), 1, 16)）
     // 0.5.1 §2.1.4 — which detection engine to use. 'rapfi' is the shipped WASM build;
     // 'katagomo' is an http server the operator runs (its address is `engineUrl` below);
@@ -395,6 +419,70 @@
   }
 
   /**
+   * 0.5.6 补增 §三 — the operator's per-signal pins, filtered down to things the detector can
+   * actually use.
+   *
+   * The key list is `DEFAULT_WEIGHTS`'s own, read at CALL time rather than copied: that table is
+   * already the one authority on which thirteen terms exist, and a second hard-coded list here
+   * would be one more thing a rebalancing release has to remember to update. (`var` is fine —
+   * this function only runs long after the whole file has been evaluated.)
+   *
+   * Absent/null means "not pinned" and is left out of the result, which is what makes this map
+   * sparse. A non-finite or out-of-range value is dropped too, for the reason in DEFAULTS: this
+   * is the one input the UI never validates. An empty result is a legitimate answer — it means
+   * "no pins", i.e. the previous behaviour exactly.
+   *
+   * The SUM rule arrives with the 130% ceiling, and it is refused as a set rather than repaired
+   * entry by entry: trimming a pin to make the total fit would store a table the operator never
+   * asked for, and the panel would then show numbers that are not the numbers they typed. The
+   * 0.5.6 §一.6.1 rule for the import path is the same rule — 「越界项退回原值，绝不 clamp」 — one
+   * level up. (The all-zero table is inside this check: its resolved total is 0, so it fails
+   * `sum > 0` before the ceiling is ever consulted.)
+   */
+  function normalizeSignalWeights(v) {
+    var src = (v && typeof v === 'object') ? v : {};
+    var out = {};
+    for (var k in DEFAULT_WEIGHTS) {
+      if (!DEFAULT_WEIGHTS.hasOwnProperty(k) || src[k] == null) continue;
+      var n = Number(src[k]);
+      if (!isFinite(n) || n < 0 || n > SIGNAL_WEIGHT_MAX) continue;
+      out[k] = n;
+    }
+    var sum = signalWeightTableSum(out);
+    if (!(sum > 0) || sum > SIGNAL_WEIGHT_SUM_MAX + SIGNAL_WEIGHT_EPS) return {};
+    return out;
+  }
+
+  /**
+   * What the table `pins` RESOLVES to would sum to, against `base` (the compiled defaults unless
+   * a caller has a better base in hand).
+   *
+   * ONE implementation of that sum, because the 130% ceiling is compared against it from three
+   * places — the write path above, the import validator below, and (through the same number on
+   * the same table) app.js's `effectiveSignalWeights` — and this project has paid five times for a
+   * quantity that existed in more than one spelling. app.js mirrors this arithmetic rather than
+   * calling it: the offscreen document and the unit harnesses load app.js with no storage.js at
+   * all, so app.js has to own its own copy of the formula. The two are pinned equal by the suite.
+   *
+   * ⚠ The BASE is the one place the two can disagree, and it is a real, documented limitation: a
+   * profile whose learner has run has a different table from the compiled defaults, so a set that
+   * fits against one can miss the other by the learner's own drift at the pinned keys. Storage can
+   * only see DEFAULT_WEIGHTS; app.js re-checks against the table it will actually score with and
+   * refuses a set that does not fit — the panel reads the same function, so what it shows is what
+   * the detector will use, in both directions.
+   */
+  function signalWeightTableSum(pins, base) {
+    var b = base || DEFAULT_WEIGHTS;
+    var sum = 0;
+    for (var k in b) {
+      if (!b.hasOwnProperty(k)) continue;
+      var v = (pins && pins[k] != null) ? Number(pins[k]) : b[k];
+      if (isFinite(v) && v > 0) sum += v;
+    }
+    return sum;
+  }
+
+  /**
    * Should this game be kept OUT of the archive on account of how much of it we actually have?
    * §1.4. Returns `null` when the game passes, or a `{reason, …}` record naming which threshold
    * was hit and by how much — the caller turns that into a sentence, and the reason code is what
@@ -503,6 +591,10 @@
     out.transparency = normalizeTransparency(out.transparency);
     out.archiveFilter = normalizeArchiveFilter(out.archiveFilter);
     out.storageFilter = normalizeStorageFilter(out.storageFilter);
+    // 0.5.6 补增 §三: the per-signal pins are filtered on the way IN as well as out, like every
+    // other setting — and here it matters twice over, because this is also the key a stranger's
+    // backup file lands in.
+    out.signalWeights = normalizeSignalWeights(out.signalWeights);
     // 0.5.2 §4.1 — clamped on the way IN as well as out, like every other setting: the profile
     // is the one input the UI never validates, and a hand-edited list must not be able to put a
     // non-array (or a 200-row list, or a row with no English) in front of the send path.
@@ -522,6 +614,7 @@
       s.transparency = normalizeTransparency(s.transparency);
       s.archiveFilter = normalizeArchiveFilter(s.archiveFilter);
       s.storageFilter = normalizeStorageFilter(s.storageFilter);
+      s.signalWeights = normalizeSignalWeights(s.signalWeights);
       s.customQuestions = clampCustomQuestions(s.customQuestions);
       var put = {}; put[SETTINGS_KEY] = s;
       try { await api().set(put); } catch (e) {}
@@ -1757,30 +1850,48 @@
   // ---------- 0.3.3 learned parameters ----------
   // The learner's output. `null` means "never trained" — the detector then uses the
   // 0.3.1 defaults, which is exactly the pre-0.3.3 behaviour.
-  // 0.3.3 §3.5 / 0.4.2 §2.3. Every term of the risk score lives in ONE table, and since 0.5.5 §1.3
-  // that table sums to 1.00 as a whole: `evasion`/`winBlunder`/`uselessFour`/`sharpStreak`/
-  // `sharpTotal`/`goodPool`/`liveThree` are no longer additive surcharges riding on top of a
-  // six-term base — 0.5.5's operator-confirmed 方案 A took the difference out of the existing terms
-  // so that 好点池 could become a first-class 0.18 term. See app.js BASE_WEIGHTS for the history
-  // (0.4.8 and 0.5.2 both refused this rescaling; 0.5.5 is an explicit decision to do it, and the
-  // corpus-splitting consequence is the reason it had to be explicit).
+  // 0.3.3 §3.5 / 0.4.2 §2.3. Every term of the risk score lives in ONE table. Through 0.5.5 §1.3 and
+  // 0.5.6 §2 that table summed to 1.00 as a whole (好点池 became a first-class term, and §2 moved the
+  // split without moving the total). **0.5.6 补增 §三 replaces that total**: the operator tunes the
+  // table in the new 检测信号权重 panel and confirmed that their own numbers become the shipped
+  // default, so this table is now **1.30 — exactly the 130% ceiling** (six statistics 0.58 + seven
+  // behaviour signals 0.72), and the invariant is 「0 < Σ ≤ SIGNAL_WEIGHT_SUM_MAX (1.30)」. See
+  // app.js BASE_WEIGHTS for the history and for what the change means for a score.
   //
   // This is the same literal set as app.js BASE_WEIGHTS and learn.js FALLBACK_WEIGHTS — the three
   // are one set of numbers. A value that is absent or non-numeric here is ignored by riskParams(),
   // so a profile written before this build simply keeps its own stored numbers.
-  // 0.5.6 §2.3 — the operator's five targets plus the proportional shrink of the other eight.
-  // Kept term-for-term identical to app.js BASE_WEIGHTS; the suite asserts the three copies
-  // (here, app.js, learn.js) agree, because a drift between them is a detector that scores one
-  // way in the viewer and another way offscreen.
   var DEFAULT_WEIGHTS = {
-    top1: 0.06, acpl: 0.03, sharp: 0.07, out: 0.07, desperate: 0.02, time: 0.05,
-    evasion: 0.08, winBlunder: 0.01,
-    uselessFour: 0.02,
+    top1: 0.13, acpl: 0.07, sharp: 0.13, out: 0.11, desperate: 0.04, time: 0.10,
+    evasion: 0.04, winBlunder: 0.03,
+    uselessFour: 0.04,
     sharpStreak: 0.14,
     sharpTotal: 0.18,
-    goodPool: 0.21,
-    liveThree: 0.06,
+    goodPool: 0.19,
+    liveThree: 0.10,
   };
+  // 0.5.6 补增 §三 — the two ceilings on the operator's own weight table (see DEFAULTS above).
+  //
+  // `SIGNAL_WEIGHT_MAX` is one signal as a fraction of the score: 1.00 means "this signal alone
+  // could carry a full 100-point score". `SIGNAL_WEIGHT_SUM_MAX` is the whole table: since
+  // 补增 §三 the SHIPPED default is **1.30, i.e. the entire ceiling** (the operator's own table —
+  // see DEFAULT_WEIGHTS) and an operator may not go above it. It is a ceiling and not a target: a
+  // profile that never opened the panel runs at the shipped 1.30, which is 0.5.5's 1.00 plus the 30%
+  // this release's default table deliberately adds.
+  //
+  // The sum is deliberately NOT a renormalisation budget. The risk score is
+  // `clamp(Σ weight_i × a_i × 100, 0, 100)` against the 70/40 cuts, so a table of 1.30 makes a
+  // game cross those cuts more easily and lets the clamp at 100 be reached without every signal
+  // firing —「更容易过线」, not「分数能到 130」. That is the whole meaning of the headroom, and the
+  // reason it is bounded at all: without a ceiling a stray profile is a detector that flags
+  // everything.
+  var SIGNAL_WEIGHT_MAX = 1;
+  var SIGNAL_WEIGHT_SUM_MAX = 1.30;
+  // See app.js's SIGNAL_WEIGHT_EPS: the operator's percentages sum in binary floating point, and a
+  // table that reaches exactly 130% by hand can land one ulp above it. Both files absorb that with
+  // the same tolerance, because a ceiling that refuses a set the other side accepted is two
+  // answers to one question.
+  var SIGNAL_WEIGHT_EPS = 1e-9;
   var DEFAULT_THRESHOLDS = {
     // 0.4.3 §1.1: the ramp aTop1 reads now that it is fed a graded proximity instead of a
     // top-1 rate. `top1Lo`/`top1Hi` below are kept — a pre-0.4.3 archive and the
@@ -2873,6 +2984,7 @@
     next.transparency = normalizeTransparency(current && current.transparency);
     next.archiveFilter = normalizeArchiveFilter(current && current.archiveFilter);
     next.storageFilter = normalizeStorageFilter(current && current.storageFilter);
+    next.signalWeights = normalizeSignalWeights(current && current.signalWeights);
     next.llm = Object.assign({}, (current && current.llm) || {});
     if (!raw || typeof raw !== 'object') return { next: next, errors: errors, applied: applied };
 
@@ -2917,7 +3029,45 @@
       if ([0, 1, 2].indexOf(raw.rule) < 0) bad('rule', raw.rule, 'invalid');
       else { next.rule = raw.rule; applied++; }
     }
-    // 7. transparency — every numeric field against its OWN ceiling, read from the same table the
+    // 7. signalWeights — the operator's per-signal pins (0.5.6 补增 §三). Per ENTRY, unlike the
+    //    two filter blocks below: thirteen independent numbers have no invariant tying them
+    //    together, so one bad pin must not cost the other twelve. A pin outside 0–SIGNAL_WEIGHT_MAX
+    //    is the file's problem and that one entry is dropped, leaving whatever this machine already
+    //    had (§1.6.1's reading of 退回). The map REPLACES rather than merges — §1.5.3 puts settings
+    //    in the 覆盖 column — which is why an empty object here is a meaningful instruction
+    //    ("no pins") and not a no-op.
+    //
+    //    Two whole-map refusals, both of them about the TABLE rather than about one entry, and both
+    //    keeping the current value (§1.6.1) rather than repairing the file:
+    //      · every surviving entry is zero — a detector with no weights is not a detector, and its
+    //        risk score would read 0 for every game rather than being wrong;
+    //      · the resolved table sums to more than SIGNAL_WEIGHT_SUM_MAX (130%) — the 补增 §三
+    //        ceiling, and the one number in this block that is not per-entry. Scaling the entries
+    //        down to fit would import a table the file's author never wrote.
+    var sw = raw.signalWeights;
+    if (sw && typeof sw === 'object') {
+      var clean = {}, valid = 0;
+      for (var wk in DEFAULT_WEIGHTS) {
+        if (!DEFAULT_WEIGHTS.hasOwnProperty(wk) || sw[wk] == null) continue;
+        var wv = sw[wk];
+        if (typeof wv !== 'number' || !isFinite(wv) || wv < 0 || wv > SIGNAL_WEIGHT_MAX) {
+          bad('signalWeights.' + wk, wv, 'out-of-range');
+          continue;
+        }
+        clean[wk] = wv; valid++;
+      }
+      var swSum = signalWeightTableSum(clean);
+      // A file with NO readable entry is two different instructions depending on which kind of
+      // emptiness it is: an empty map is 「no pins」 (§1.5.3 puts settings in the 覆盖 column, so
+      // that is a decision), while a map whose every entry was rejected is a file this build
+      // cannot read at all — and §1.6.1 keeps the current value for that. Collapsing the two
+      // wiped the operator's own pins on a file that merely used a future signal key.
+      if (valid === 0 && Object.keys(sw).length) bad('signalWeights', sw, 'unreadable');
+      else if (valid > 0 && !(swSum > 0)) bad('signalWeights', sw, 'invalid');
+      else if (swSum > SIGNAL_WEIGHT_SUM_MAX + SIGNAL_WEIGHT_EPS) bad('signalWeights', sw, 'over-budget');
+      else { next.signalWeights = clean; applied++; }
+    }
+    // 8. transparency — every numeric field against its OWN ceiling, read from the same table the
     //    clamp uses, so the validator and the clamps can never disagree about a maximum.
     var t = raw.transparency;
     if (t && typeof t === 'object') {
@@ -2940,7 +3090,7 @@
         }
       }
     }
-    // 8. archiveFilter — both ends in 0–100 AND min ≤ max (§1.6.2). All-or-nothing: a file with
+    // 9. archiveFilter — both ends in 0–100 AND min ≤ max (§1.6.2). All-or-nothing: a file with
     //    one bad end must not leave the pair half-applied, which would read as a valid range.
     var af = raw.archiveFilter;
     if (af && typeof af === 'object') {
@@ -2960,7 +3110,7 @@
         if (hasHi) { next.archiveFilter.maxRisk = Math.round(af.maxRisk); applied++; }
       }
     }
-    // 9. storageFilter — 0–50 on both ends (same shape as above).
+    // 10. storageFilter — 0–50 on both ends (same shape as above).
     var sf = raw.storageFilter;
     if (sf && typeof sf === 'object') {
       var sfErr = false;
@@ -2979,7 +3129,7 @@
         if (sHi) { next.storageFilter.maxUnordered = Math.round(sf.maxUnordered); applied++; }
       }
     }
-    // 10. engineId — must be in the LIVE registry. This is the one rule whose failure has a
+    // 11. engineId — must be in the LIVE registry. This is the one rule whose failure has a
     //     defined fallback rather than a rollback: §1.6.2 says fall back to Rapfi, because an
     //     engine id nothing answers to leaves the detector unable to run at all.
     if (raw.engineId != null) {
@@ -3158,6 +3308,17 @@
     MAX_NOTE_LEN: MAX_NOTE_LEN,
     DEFAULT_WEIGHTS: DEFAULT_WEIGHTS,
     DEFAULT_THRESHOLDS: DEFAULT_THRESHOLDS,
+    // 0.5.6 补增 §三 — the pin filter and its two ceilings, exported so the settings panel, the
+    // analysis path and the suite all go through ONE reading of "which pins can the detector
+    // use". The panel writes through it and the suite drives it directly, for the same reason
+    // every other pure helper here is exported. `SIGNAL_WEIGHT_SUM_MAX` is also what app.js reads
+    // (with a literal fallback for the harnesses that load app.js without storage.js), so the
+    // 130% is one number rather than one per file.
+    normalizeSignalWeights: normalizeSignalWeights,
+    signalWeightTableSum: signalWeightTableSum,
+    SIGNAL_WEIGHT_MAX: SIGNAL_WEIGHT_MAX,
+    SIGNAL_WEIGHT_SUM_MAX: SIGNAL_WEIGHT_SUM_MAX,
+    SIGNAL_WEIGHT_EPS: SIGNAL_WEIGHT_EPS,
     MIN_SAMPLES: MIN_SAMPLES,
     LOW_SAMPLES: LOW_SAMPLES,
     SAMPLE_DRIFT_RATIO: SAMPLE_DRIFT_RATIO,
