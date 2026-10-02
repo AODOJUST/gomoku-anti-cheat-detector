@@ -37,6 +37,10 @@
      IndexedDB belongs to the page. -->
 <script src="engines.js"></script>
 <script src="custom-engine.js"></script>
+<!-- 0.5.7 §1.3③ — the probe library must be resident before app.js is evaluated: scoreStep()
+     reaches for `GMProbes.matchProbe()` (guarded, so a harness without it degrades to two false
+     flags rather than throwing, but the real pipeline needs the library). -->
+<script src="probes.js"></script>
 <script src="app.js"></script>
 <script src="offscreen.js"></script>
 </body>

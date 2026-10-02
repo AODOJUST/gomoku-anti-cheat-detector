@@ -42,14 +42,27 @@
   // structure below (BASE_KEYS = the six statistics, EVASION_KEYS = the seven behaviour signals) is a
   // separate question from the VALUES and is unchanged: `group()` reads both budgets off this table,
   // so the split follows the numbers (1.00 / 0.30) without a second edit.
+  //
+  // ⚠ 0.5.7 §1 raises the ceiling to 1.50, puts `time` at **0**, and adds three low-end-AI signals
+  // (0.35 together). Two consequences reach INTO this file, and both are about the learner's own
+  // arithmetic rather than about the numbers:
+  //   · the base group's budget is now 0.85 (six statistics minus `time`'s 0.15) and the behaviour
+  //     group's is 0.65 — `group()` still reads them off this table, so nothing below needed a
+  //     second number;
+  //   · ⚠ `time` must never come back. `group()` floors every key's raw AUC at 0.02, so a key with
+  //     a ZERO default would still be handed a share of its group's budget and would score again
+  //     after the first training run. See the floor's own comment — it now reads the default.
   var FALLBACK_WEIGHTS = {
-    top1: 0.20, acpl: 0.08, sharp: 0.22, out: 0.27, desperate: 0.08, time: 0.15,
+    top1: 0.20, acpl: 0.08, sharp: 0.22, out: 0.27, desperate: 0.08, time: 0,
     evasion: 0.07, winBlunder: 0.04,
     uselessFour: 0.06,
     sharpStreak: 0.04,
     sharpTotal: 0.03,
     goodPool: 0.03,
     liveThree: 0.03,
+    // 0.5.7 §1.3 — the three low-end-AI signals. See app.js BASE_WEIGHTS for what they mean and
+    // why the thirteen could not describe a shallow web engine.
+    noBlunder: 0.15, steadyLost: 0.08, probeMatch: 0.12,
   };
   var FALLBACK_THRESHOLDS = {
     // 0.4.3 §1.1: the ramp aTop1 reads. top1Lo/top1Hi stay for a pre-0.4.3 archive and for the
@@ -86,11 +99,27 @@
   // normalised separately, to the budget each group's own defaults sum to — `group()` below reads
   // both off `defaultWeights()`, so adding a key here is the whole wiring and no number is written
   // down twice.
+  //
+  // ⚠ `time` stays IN this list although its default is 0 (0.5.7 §1.2). Removing it would take the
+  // panel's 时间规律 row and its `learn.weight.time` label away with it, and the operator is
+  // entitled to see that the term they used to tune is now off rather than gone. It contributes 0
+  // to the group's budget and — with the floor fixed below — 0 to the learned table.
   var EVASION_KEYS = ['evasion', 'winBlunder', 'uselessFour', 'sharpStreak', 'sharpTotal',
                       // 0.5.2 §1.1.4/§1.2.4 — the group budget is read off the defaults by
                       // `group()` below, so listing the two keys here is the whole wiring.
                       'goodPool', 'liveThree'];
-  var WEIGHT_KEYS = BASE_KEYS.concat(EVASION_KEYS);
+  // 0.5.7 §1.3 — the three low-end-AI signals. A separate LIST from EVASION_KEYS for one reason
+  // only: the settings panel gives them their own heading (§1.4's third 类别), and a reader asking
+  // "which keys are the new ones" should not have to diff two releases to find out. They are NOT a
+  // separate BUDGET — `group()` is called on the concatenation below, because these are the same
+  // kind of key as the seven above (each is exactly 0 on a game whose trigger never fired), and a
+  // third budget would be a third thing to tune with nothing measured to tune it against.
+  var LOWEND_KEYS = ['noBlunder', 'steadyLost', 'probeMatch'];
+  var WEIGHT_KEYS = BASE_KEYS.concat(EVASION_KEYS).concat(LOWEND_KEYS);
+  // The behaviour group as the learner and the panel both see it: the seven 0.4.x/0.5.x signals plus
+  // 0.5.7's three. One list so the normalisation and the panel's third heading cannot disagree about
+  // which keys are in the group.
+  var BEHAVIOUR_KEYS = EVASION_KEYS.concat(LOWEND_KEYS);
 
   // 0.5.2 §1.1/§1.2 — the 活三 pool's threshold, mirrored from app.js (LIVE_POOL_MIN). learn.js is
   // a separate module and cannot import app.js, so it is repeated here; the suite asserts the two
@@ -108,6 +137,24 @@
   var GOOD_W_RATIO = 0.7;
   var GOOD_W_STREAK = 0.3;
 
+  // 0.5.7 §1.3①② — the two low-end-AI terms' five curve constants, mirrored from app.js. Same
+  // reason as every line above, and the same suite assertion covers them: the learner has to move
+  // with the detector, or it fits weights against a curve the detector no longer runs.
+  var NO_BLUNDER_MIN = 3;
+  var STEADY_LOST_WR = 0.20;
+  var STEADY_LOST_MIN = 3;
+  var STEADY_LOST_LOSS = 0.01;
+  var STEADY_LOST_SPAN = 0.05;
+  // §1.3③'s curve, mirrored the same way. A function rather than two loose constants because the
+  // expression is the rule: 「连续匹配 >= 3 或 匹配率 >= 80% → 1，否则按匹配率」.
+  var PROBE_RUN_MIN = 3;
+  var PROBE_RATE_MIN = 0.80;
+  function probeMatchActivation(seen, hits, maxRun) {
+    if (!seen) return 0;
+    var rate = hits / seen;
+    return (maxRun >= PROBE_RUN_MIN || rate >= PROBE_RATE_MIN) ? 1 : clamp(rate, 0, 1);
+  }
+
   var WEIGHT_LABEL = {
     top1: 'Top1 吻合', acpl: 'ACPL 均损', sharp: '唯一手', out: 'Top5 之外',
     desperate: '将败冲四', time: '时间规律',
@@ -118,6 +165,9 @@
     sharpStreak: '唯一手连续', sharpTotal: '唯一手累计',
     // 0.5.2 §1.1.4/§1.2.4
     goodPool: '好点池', liveThree: '活三好手',
+    // 0.5.7 §1.3 — the three low-end-AI signals. The label is the same string the settings panel and
+    // 标签百科 print, reached as `learn.weight.<key>`; verify-053 asserts the two sets agree.
+    noBlunder: '不漏防', steadyLost: '败势不崩', probeMatch: '探针匹配',
   };
   var THRESHOLD_LABEL = {
     topProxLo: '接近度下界', topProxHi: '接近度上界',
@@ -567,11 +617,44 @@
     var ltMax = maxOf(steps, 'liveThreePool');
     var aLiveThree = ltMax >= LIVE_POOL_MIN
       ? clamp((Math.pow(1.3, ltMax - 1) - 1) / 4, 0, 1) : 0;
+    // 0.5.7 §1.3①②③, mirrored from app.js sideAggregate(). The population is NEITHER `steps` (the
+    // evasion-excluded six) NOR `all` (which also drops the forced-defence hands): §1.3 measures
+    // 「整局」, and the forced-defence hands are exactly the blocks 不漏防 counts. So it is this side's
+    // every analysed, non-opening hand — the same list app.js calls `played`.
+    var played = ((rep && rep.steps) || []).filter(function (x) {
+      return x.side === side && x.analyzed && !x.isOpening;
+    });
+    var threatCount = played.filter(function (x) { return x.oppThreat; }).length;
+    var missedBlocks = played.filter(function (x) { return x.oppThreat && x.missedBlock; }).length;
+    var aNoBlunder = threatCount === 0 ? 0
+      : clamp((1 - missedBlocks / threatCount) * Math.min(1, threatCount / NO_BLUNDER_MIN), 0, 1);
+    var losing = played.filter(function (x) { return x.bestWR != null && x.bestWR < STEADY_LOST_WR; });
+    var losingLosses = losing.map(function (x) { return x.loss; }).filter(function (v) { return v != null; });
+    var losingLoss = losingLosses.length ? mean(losingLosses) : null;
+    var steadyBase = losingLoss == null ? 0
+      : (losingLoss < STEADY_LOST_LOSS ? 1 : clamp(1 - losingLoss / STEADY_LOST_SPAN, 0, 1));
+    var aSteadyLost = losing.length === 0 ? 0
+      : clamp(steadyBase * Math.min(1, losing.length / STEADY_LOST_MIN), 0, 1);
+    // §1.3③ — the per-hand flags, so this mirrors the detector exactly rather than reading a number
+    // off the report. An archive written before 0.5.7 has neither flag, so both counts are 0 and the
+    // term is exactly 0 — the same "an old corpus trains the way it always did" rule as the two
+    // pools above.
+    var probeSeen = played.filter(function (x) { return x.probeSeen; }).length;
+    var probeHits = played.filter(function (x) { return x.probeSeen && x.probeHit; }).length;
+    var probeRun = 0, probeMaxRun = 0;
+    for (var pi = 0; pi < played.length; pi++) {
+      var px = played[pi];
+      if (px.probeSeen && px.probeHit) { probeRun++; if (probeRun > probeMaxRun) probeMaxRun = probeRun; }
+      else if (px.probeSeen) probeRun = 0;
+    }
+    var aProbeMatch = probeMatchActivation(probeSeen, probeHits, probeMaxRun);
     return {
       top1: aTop1, acpl: aAcpl, sharp: aSharp, out: aOut, desperate: aDesperate, time: aTime,
       evasion: aEvasion, winBlunder: aWinBlunder, uselessFour: aUselessFour,
       sharpStreak: aSharpStreak, sharpTotal: aSharpTotal,
       goodPool: aGoodPool, liveThree: aLiveThree,
+      // 0.5.7 §1.3
+      noBlunder: aNoBlunder, steadyLost: aSteadyLost, probeMatch: aProbeMatch,
       // raw, un-ramped aggregates — the ramp anchors are learned from these
       n: steps.length, rawTop1: top1, rawTopProx: topProx, rawLoss: meanLoss,
       rawSharpHit: sharpHit, rawOutTop5: outTop5,
@@ -586,6 +669,11 @@
       // any more: it was the SAME number as `goodStreak` under a second name, and one answer
       // printed twice is how the two copies start to drift.
       goodRatio: gp.ratio, goodStreak: gp.streak,
+      // 0.5.7 §1.3①②③ — the raw figures behind the three new activations, for the same reason the
+      // two lines above exist: the learner's own table prints them beside the subscore they made.
+      threatCount: threatCount, missedBlocks: missedBlocks,
+      losingCount: losing.length, losingLoss: losingLoss,
+      probeSeen: probeSeen, probeHits: probeHits, probeMaxRun: probeMaxRun,
     };
   }
 
@@ -733,18 +821,26 @@
     // 0.4.2 §2.3: TWO sums, not one — and 0.5.5 keeps the two-group STRUCTURE even though the
     // table has been one budget since then. The split is not about surcharges any more: it is about
     // which terms the learner is willing to re-allocate against each other. The six are the base
-    // statistic, and the seven special signals (each of which is exactly 0 on a game that never
+    // statistic, and the special signals (each of which is exactly 0 on a game that never
     // fired it) are fitted inside their own budget, so a weak corpus cannot gut the base. Each
     // budget is read off the defaults, so changing a default weight moves its group's budget with
     // it and no rebalancing release has to touch this code: 补增 §三 后续 put the six on 1.00 and
     // the seven on 0.30 (补增 §三 had 0.58 / 0.72, 0.5.6 §2 had 0.30 / 0.70, 0.5.5 had 0.63 / 0.37) —
-    // the numbers are `defaultWeights()`'s, never this function's. ⚠ The two budgets add up to 1.30
-    // rather than 1.00, so a learned table does too; see `riskOfSub` below.
+    // the numbers are `defaultWeights()`'s, never this function's. ⚠ The two budgets add up to the
+    // shipped total rather than to 1.00, so a learned table does too; see `riskOfSub` below.
+    // ⚠ 0.5.7 §1 moved both budgets without touching a line of this code, which is the point: the
+    // base is 0.85 (six statistics minus `time`'s 0.15) and the behaviour group is 0.65 (seven plus
+    // the three new low-end-AI signals).
     var dw = defaultWeights();
     var group = function (keys) {
       var raw = {}, sum = 0, budget = 0, i;
       for (i = 0; i < keys.length; i++) {
-        raw[keys[i]] = Math.max(0.02, aucs[keys[i]] - 0.5);
+        // ⚠ The 0.02 floor is for a key the AUC cannot separate (auc ≈ 0.5), NOT for a key the
+        // release has switched off. 0.5.7 §1.2 set `time`'s default to 0, and flooring it anyway
+        // would hand it a share of the base group's budget — so the FIRST training run after this
+        // release would switch 时间规律 back on, at a weight the panel would then show as learned.
+        // A zero default is an instruction, so it is read as one: no share, and `out[k]` is 0.
+        raw[keys[i]] = dw[keys[i]] > 0 ? Math.max(0.02, aucs[keys[i]] - 0.5) : 0;
         sum += raw[keys[i]];
         budget += (dw[keys[i]] || 0);
       }
@@ -752,8 +848,8 @@
       for (i = 0; i < keys.length; i++) out[keys[i]] = sum ? r4(raw[keys[i]] / sum * budget) : 0;
       return out;
     };
-    var weights = group(BASE_KEYS), evW = group(EVASION_KEYS);
-    EVASION_KEYS.forEach(function (k) { weights[k] = evW[k]; });
+    var weights = group(BASE_KEYS), evW = group(BEHAVIOUR_KEYS);
+    BEHAVIOUR_KEYS.forEach(function (k) { weights[k] = evW[k]; });
     return { weights: weights, aucs: aucs, pos: agg.pos.length, neg: agg.neg.length };
   }
 
@@ -800,9 +896,10 @@
     var r = 0;
     WEIGHT_KEYS.forEach(function (k) { r += (weights[k] || 0) * sub[k]; });
     // Clamped to mirror app.js sideAggregate() exactly. The table is no longer normalised to 1.00
-    // (补增 §三: the shipped table is exactly 1.30 and an operator's may not exceed it), so a perfect
-    // subscore on every term would now reach 130 and the clamp is what the real score does with the
-    // excess — keeping it here is what makes this mirror the aggregate rather than merely resemble
+    // (补增 §三: the shipped table is exactly the ceiling — 1.30 then, **1.50 since 0.5.7 §1** — and
+    // an operator's may not exceed it), so a perfect subscore on every term would now reach 150 and
+    // the clamp is what the real score does with the excess — keeping it here is what makes this
+    // mirror the aggregate rather than merely resemble
     // it.
     return clamp(100 * r, 0, 100);
   }
@@ -981,6 +1078,12 @@
     // wants to walk "every weight" wants WEIGHT_KEYS, not BASE_KEYS.
     EVASION_KEYS: EVASION_KEYS,
     WEIGHT_KEYS: WEIGHT_KEYS,
+    // 0.5.7 §1.3 — the three low-end-AI keys, and the behaviour group the learner and the panel both
+    // normalise/display: EVASION_KEYS + LOWEND_KEYS. Exported so the settings panel's third heading
+    // reads them from here rather than keeping a second copy of the list (see viewer.js
+    // buildSignalWeightsPanel — its own note forbids a copy for exactly this reason).
+    LOWEND_KEYS: LOWEND_KEYS,
+    BEHAVIOUR_KEYS: BEHAVIOUR_KEYS,
     METRIC_KEYS: METRIC_KEYS,
     SIM_KEYS: SIM_KEYS,
     SIM_LABEL: SIM_LABEL,

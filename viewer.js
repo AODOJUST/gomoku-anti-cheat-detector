@@ -121,12 +121,17 @@
   // uses, and the one that lets app.js (which runs offscreen, with no dictionary) name a class
   // at all. `type.*` therefore needs an entry in locale/zh-CN.js and in _tools/i18n-extra.js;
   // see the note there.
-  var TYPE_CODES = ['lowAi', 'evasiveAi', 'strongEvasiveAi', 'suspectAi', 'pro', 'expert', 'normal'];
+  // 0.5.7 §1.5 adds `lowEndAi` — the 低端AI downgrade. It is a code like the other seven: persisted
+  // in report.types, displayed through TO('type', code), so it needs its row in locale/zh-CN.js and
+  // in _tools/i18n-extra.js exactly as the comment above says.
+  var TYPE_CODES = ['lowAi', 'evasiveAi', 'strongEvasiveAi', 'lowEndAi', 'suspectAi', 'pro', 'expert', 'normal'];
   // Code -> CSS class. Kept as a map rather than string surgery (`lowAi` -> `low-ai`) because
   // a generated class name is exactly the kind of thing that silently produces an unstyled
   // badge when one code is renamed.
   var TYPE_CLASS = {
     lowAi: 'low-ai', evasiveAi: 'evasive-ai', strongEvasiveAi: 'strong-evasive-ai',
+    // 低端AI is an AI class, so it takes the AI badge's own colour — see the `.tbadge` rules.
+    lowEndAi: 'suspect-ai',
     suspectAi: 'suspect-ai', pro: 'pro', expert: 'expert', normal: 'normal',
   };
   // What a reader should show for one side: the operator's override wins, then the report's
@@ -876,12 +881,12 @@
 
   // ---- 0.5.6 补增 §三: 检测信号权重 ----
   //
-  // Thirteen numbers that are ONE table. The requirement is 「每种检测信号都可以由操作者在设置中
-  // 进行权重自定义」 with the custom total capped at 130%, and the two halves are inseparable: the
-  // risk score is Σ weight × sub-score, so the TOTAL decides how easily a game crosses the 70/40
-  // cuts, not any single term. Thirteen anonymous boxes would let an operator raise one weight
-  // five-fold and never learn why every game now reads 高风险 — hence the running total above the
-  // grid, and the refusal below it.
+  // Sixteen numbers that are ONE table (thirteen before 0.5.7 §1). The requirement is 「每种检测
+  // 信号都可以由操作者在设置中进行权重自定义」 with the custom total capped at 150%, and the two
+  // halves are inseparable: the risk score is Σ weight × sub-score, so the TOTAL decides how
+  // easily a game crosses the 70/40 cuts, not any single term. Sixteen anonymous boxes would let
+  // an operator raise one weight five-fold and never learn why every game now reads 高风险 —
+  // hence the running total above the grid, and the refusal below it.
   //
   // Three things this panel deliberately does NOT own, each of which would otherwise be a second
   // copy of one answer:
@@ -892,7 +897,7 @@
   //     a box can only ever show what the detector will actually use;
   //   · the two CEILINGS come from GMStorage (SIGNAL_WEIGHT_MAX / SIGNAL_WEIGHT_SUM_MAX).
   //
-  // Percent is the unit throughout: the requirement states the ceiling as 130%, the boxes are
+  // Percent is the unit throughout: the requirement states the ceiling as 150%, the boxes are
   // percentages, and the stored weight is that over 100.
   function swKeys() {
     if (typeof GMLearn !== 'undefined' && GMLearn && GMLearn.WEIGHT_KEYS && GMLearn.WEIGHT_KEYS.length) {
@@ -905,6 +910,12 @@
   }
   function swBaseKeys() {
     return (typeof GMLearn !== 'undefined' && GMLearn && GMLearn.BASE_KEYS) ? GMLearn.BASE_KEYS : null;
+  }
+  // 0.5.7 §1.3/§1.4 — the third 类别. Read from learn.js for the same reason as the two lists above:
+  // the panel must not keep a second copy of "which keys are the new ones", or the day the learner's
+  // group moves the panel keeps drawing a heading that no longer matches it.
+  function swLowKeys() {
+    return (typeof GMLearn !== 'undefined' && GMLearn && GMLearn.LOWEND_KEYS) ? GMLearn.LOWEND_KEYS : null;
   }
   function swId(key) { return 'sw-' + key; }
   function swMaxPct() { return Math.round(G.SIGNAL_WEIGHT_MAX * 100); }
@@ -987,16 +998,21 @@
   function buildSignalWeightsPanel() {
     var grid = $('swGrid');
     if (!grid) return;
-    setTxt('swHint', T('viewer|每项都是风险分的百分比权重：0 = 该项不参与评分，100 = 该项独占满分。十三项合计不得超过 130%，而出厂表已正好是 {d}%——想抬高某一项，得先降低另一项（合计栏会实时显示）。合计越高，同一局的分越高，也就越容易越过 70 / 40 两条线（这是把检测调得更严，不是分数能到 130）；合计越低则相反。只记录你改动过的项，其余仍跟随出厂默认（清空某一项即为恢复默认）。',
+    setTxt('swHint', T('viewer|每项都是风险分的百分比权重：0 = 该项不参与评分，100 = 该项独占满分。十六项合计不得超过 150%，而出厂表已正好是 {d}%——想抬高某一项，得先降低另一项（合计栏会实时显示）。合计越高，同一局的分越高，也就越容易越过 70 / 40 两条线（这是把检测调得更严，不是分数能到 150）；合计越低则相反。只记录你改动过的项，其余仍跟随出厂默认（清空某一项即为恢复默认）。',
       { d: swShippedPct() }));
     setTxt('swReset', T('viewer|重置为默认'));
-    var base = swBaseKeys(), group = null, html = '';
+    var base = swBaseKeys(), low = swLowKeys(), group = null, html = '';
     swKeys().forEach(function (key) {
-      var g = base ? (base.indexOf(key) >= 0 ? 'stat' : 'behav') : null;
+      // Three families since 0.5.7 §1.4. The test order is the list order (WEIGHT_KEYS is
+      // BASE_KEYS ++ EVASION_KEYS ++ LOWEND_KEYS), so the headings come out 基础统计 / 行为信号 /
+      // 低端AI 检测 without the builder sorting anything.
+      var g = base ? (base.indexOf(key) >= 0 ? 'stat'
+                   : (low && low.indexOf(key) >= 0 ? 'low' : 'behav')) : null;
       if (g && g !== group) {
         group = g;
         html += '<div class="set-sub set-wide">' +
-          esc(g === 'stat' ? T('viewer|基础统计') : T('viewer|行为信号')) + '</div>';
+          esc(g === 'stat' ? T('viewer|基础统计')
+            : (g === 'low' ? T('viewer|低端AI 检测') : T('viewer|行为信号'))) + '</div>';
       }
       // The label is a semantic key (`learn.weight.*`) — the same one the learner's table and
       // 标签百科 print — so the thirteen names cost no new translation and cannot drift from the

@@ -406,15 +406,18 @@ var GM_TAG_WIKI = (function () {
     },
 
     // =====================================================================================
-    // 检测信号 — app.js BASE_WEIGHTS. The thirteen terms the risk score is summed from.
+    // 检测信号 — app.js BASE_WEIGHTS. The sixteen terms the risk score is summed from.
     //
-    // The first six are the 基础统计 (0.4.2's top1/acpl/sharp/out/desperate/time); the remaining
-    // seven are the 行为信号, each exactly 0 on a game that shows no such pattern. Through 0.5.4
-    // the six were the whole budget and the seven rode on top as surcharges; 0.5.5 §1.3 made the
-    // WHOLE table one budget, and 0.5.6 补增 §三 replaced that budget with the operator's own table
-    // — exactly 1.30 as shipped, which is the whole 130% ceiling, and an operator may not go above
-    // it. So neither group is "the" budget, and the total is not 1.00 any more either: the split AND
-    // the total are per-release decisions, which is exactly why the figures below are read live.
+    // The first six are the 基础统计 (0.4.2's top1/acpl/sharp/out/desperate/time, with `time` at 0
+    // since 0.5.7); the remaining ten are the 行为信号, each exactly 0 on a game that shows no such
+    // pattern — seven from 0.4.2/0.5.2 and three from 0.5.7 §1.3, the last three being the first
+    // whose figures do not come from the engine's candidate list at all. Through 0.5.4 the six were
+    // the whole budget and the seven rode on top as surcharges; 0.5.5 §1.3 made the WHOLE table one
+    // budget, 0.5.6 补增 §三 replaced that budget with the operator's own table, and 0.5.7 §1 raised
+    // the ceiling from 130% to 150% and spent the difference on the three new signals — so as
+    // shipped the table is exactly 1.50, which IS the whole ceiling, and an operator may not go
+    // above it. Neither group is "the" budget, and the total is not 1.00 any more either: the split
+    // AND the total are per-release decisions, which is exactly why the figures below are read live.
     // Each entry reads its own figure from `weightKey`, which is the only reason this paragraph can
     // describe the model without repeating a number that will move.
     // =====================================================================================
@@ -496,13 +499,15 @@ var GM_TAG_WIKI = (function () {
       zh: {
         meaning: '落子间隔的规律性：60% 看间隔是否稳定，40% 看间隔与胜率损失是否不相关。',
         usage: '引擎的耗时由搜索量决定，与局面难度无关；人的思考时间会跟着局面走。'
-             + '没有计时数据时该分项固定为 0.5。',
-        impact: '权重 {w}，基础统计六项之一。',
+             + '没有计时数据时该分项固定为 0.5。**0.5.7 起本项权重为 0，不再计分**：'
+             + '本版针对的作弊者是把每一步转发给浅层网页引擎的人肉中转，两手之间的间隔是'
+             + '两次点击之间的间隔，规律性不再说明问题。字段与分项都留着，老档案还要靠它自我描述。',
+        impact: '权重 {w}，基础统计六项之一 —— 0.5.7 起为 0，即不参与评分。',
       },
       en: {
         meaning: 'The regularity of move intervals: 60% whether the gaps are steady, 40% whether they are uncorrelated with win-rate loss.',
-        usage: 'An engine\'s time is set by search volume, not by how hard the position is; a human\'s thinking time follows the position. With no timing data the term is fixed at 0.5.',
-        impact: 'Weight {w}, one of the six base statistics.',
+        usage: 'An engine\'s time is set by search volume, not by how hard the position is; a human\'s thinking time follows the position. With no timing data the term is fixed at 0.5. **From 0.5.7 this term carries weight 0 and no longer scores**: the cheater this release is about relays each move to a shallow web engine by hand, so the interval between two moves is the interval between two clicks and its regularity says nothing. The field and the sub-score both stay, because a pre-0.5.7 archive still describes itself with them.',
+        impact: 'Weight {w}, one of the six base statistics — 0 since 0.5.7, i.e. it does not score.',
       },
     },
     {
@@ -613,6 +618,60 @@ var GM_TAG_WIKI = (function () {
         meaning: 'Live-three defence played as the engine\'s first choice, longest run (counted from 2), on an exponential curve.',
         usage: 'Added in 0.5.2. Blocking a live three with the top choice once is ordinary — there are usually only one or two candidate points. Doing it twice in a row, with two directions to choose from, is not luck.',
         impact: 'Weight {w}, one of the behaviour signals. Zero with no such pool.',
+      },
+    },
+    // ---- 0.5.7 §1.3: the three low-end-AI signals -------------------------------------------
+    //
+    // These are the first entries in this table whose signal is NOT derived from the engine's
+    // candidate list at all: the first two read the board and the stored win rate, the third reads
+    // the board against probes.js. That is why their prose talks about what a SHALLOW engine can and
+    // cannot do, rather than about how close a move came to a strong engine's own choice.
+    {
+      id: 'signal-no-blunder', cat: 'signal', nameNs: 'learn.weight', nameVal: 'noBlunder',
+      applied: true, weightKey: 'noBlunder',
+      zh: {
+        meaning: '不漏防：被迫防守手里「挡住了唯一防点」的比例。被迫防守手 = 对手留下唯一一个'
+               + '能解冲四（或一端已堵的活三）的点，由棋盘枚举，不看引擎。',
+        usage: '0.5.7 引入。一层浅搜索按构造就能找到挡点，人不能：所以从不漏防不是「想过」，'
+             + '而是「不需要想」。威胁数不足 3 时按比例折算，不会因为只遇到一次就吃满分。',
+        impact: '权重 {w}，低端AI 检测三项之一。没有被迫防守手时为 0。',
+      },
+      en: {
+        meaning: 'Never misses a block: the share of forced-defence hands where the block was played. A forced-defence hand is one where the opponent left exactly one point that answers a 冲四 (or a live three with one end already blocked), enumerated from the board rather than from the engine.',
+        usage: 'Added in 0.5.7. A one-ply search finds the block by construction; a human does not. So never missing one is not "thought about it" but "did not need to think". Fewer than three threats scale the figure rather than granting it in full.',
+        impact: 'Weight {w}, one of the three low-end-AI signals. Zero with no forced-defence hands.',
+      },
+    },
+    {
+      id: 'signal-steady-lost', cat: 'signal', nameNs: 'learn.weight', nameVal: 'steadyLost',
+      applied: true, weightKey: 'steadyLost',
+      zh: {
+        meaning: '败势不崩：败势手（已存胜率 < 20%）上「没有大亏」的程度 —— 看这些手的平均损失。',
+        usage: '0.5.7 引入。浅层引擎的评估稳定，败势也败得有条理；人一旦认定要输，容易乱下'
+             + '（那正是「将胜乱下」的镜像）。败势手不足 3 时按比例折算。',
+        impact: '权重 {w}，低端AI 检测三项之一。没有败势手时为 0。',
+      },
+      en: {
+        meaning: 'Steady when losing: how little was lost on the hands already in a lost position (stored win rate below 20%) — read from those hands\' average loss.',
+        usage: 'Added in 0.5.7. A shallow engine\'s evaluation is stable, so it loses in an orderly way; a human who has decided the game is gone tends to flail, which is the mirror image of 将胜乱下. Fewer than three lost hands scale the figure rather than granting it in full.',
+        impact: 'Weight {w}, one of the three low-end-AI signals. Zero with no lost hands.',
+      },
+    },
+    {
+      id: 'signal-probe-match', cat: 'signal', nameNs: 'learn.weight', nameVal: 'probeMatch',
+      applied: true, weightKey: 'probeMatch',
+      zh: {
+        meaning: '探针匹配：出现内置探针局面时，实际落子与「浅层搜索会选的挡点」一致的比例；'
+               + '连续 3 次或匹配率 ≥ 80% 即满值。探针库见 probes.js（10 个标准形状 × 8 对称 = 80）。',
+        usage: '0.5.7 引入。⚠ 本项与「不漏防」落在同一个测量上：每个冲四恰好只有一个挡点，'
+             + '所以探针命中手与不漏防统计的手是同一批 —— 0.12 与 0.15 这两份权重坐在一件事上。'
+             + '另外两个探针家族（双威胁选择、败势顽抗）依赖具体网页引擎的行为，未编码。',
+        impact: '权重 {w}，低端AI 检测三项之一。没有探针局面时为 0。',
+      },
+      en: {
+        meaning: 'Probe match: where a built-in probe position occurs, the share of hands that played the point a shallow search would block; three in a row or an 80% hit rate reaches full value. The library is probes.js (10 canonical shapes × 8 symmetries = 80).',
+        usage: 'Added in 0.5.7. ⚠ This term sits on the SAME measurement as 不漏防: every 冲四 has exactly one blocking point, so the hands a probe fires on are the hands 不漏防 counts — the 0.12 and the 0.15 are spent on one thing. The other two probe families (双威胁选择, 败势顽抗) depend on a specific web engine\'s behaviour and are not encoded.',
+        impact: 'Weight {w}, one of the three low-end-AI signals. Zero with no probe positions.',
       },
     },
   ];

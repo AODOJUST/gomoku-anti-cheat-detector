@@ -2434,6 +2434,36 @@
     '@keyframes gm-flash-blacklist{0%,100%{border-color:var(--gm-line)}50%{border-color:#ff3b30}}',
     ':host([data-bs=blacklist]){--gm-glow:0 0 28px rgba(255,59,48,.9)}',
     ':host([data-bs=blacklist]) :is(.gm,.gmcp,.mface){animation:gm-flash-blacklist .3s ease-in-out 3}',
+    // 0.5.7 §2 — the blacklist alert's BACKGROUND wash, in sync with the border flash above.
+    //
+    // Two corrections to §2.2's CSS, both needed for the flash to be visible at all:
+    //   · the wash's alpha lives in the BACKGROUND, not in the animation. §2.2 gives BOTH
+    //     `background: rgba(255,59,48,.22)` AND a keyframe ramping `opacity` to 0.22 — the two
+    //     multiply, so the brightest frame composites to 1-(1-0.22×0.22) ≈ 4.8% and the "flash" is
+    //     invisible on a dark panel. The colour is opaque here and the keyframe carries the whole
+    //     0.22; `#ff3b30` is the same red the border keyframe above pulses to, so there is one
+    //     source for the colour.
+    //   · §2.2's second `:host(.has-bg) .gm::after{z-index:0}` rule is redundant (the base rule
+    //     already sits at 0) and its `:host(.has-bg) .gm > *{position:relative;z-index:1}` must NOT be
+    //     added: `.gm > *` already carries the z-index (see the 0.5.4 note on the .has-bg block
+    //     above), and the `position` half would turn `.rz` — the resize handle, `position:absolute` —
+    //     into a static box.
+    //
+    // `::after`, not `::before`: `::before` is the background image's scrim and must keep its own
+    // stacking. `.gm` is `position:relative; overflow:hidden`, so an `inset:0` pseudo-element is
+    // clipped to the panel's rounded corners and needs no `position` of its own. It paints above the
+    // image (both are z-index 0, and `::after` comes later in paint order) and below the content
+    // (`:host(.has-bg) .gm > *{z-index:1}`), which is exactly §2.1's requirement: the picture is
+    // washed red for the duration of the alert and is untouched the moment the opacity returns to 0.
+    //
+    // The cleanup is the state, not a second removal: the animation is scoped to
+    // `:host([data-bs=blacklist])`, so the moment playFlash()'s onDone hands the border back
+    // (setBorderState(nextState)) the pseudo-element loses its animation AND its background and
+    // disappears. The 1s FLASH_MS['blacklist'] timer is the belt for a lost `animationend` — see
+    // playFlash.
+    '@keyframes gm-bg-flash-blacklist{0%,100%{opacity:0}50%{opacity:.22}}',
+    ':host([data-bs=blacklist]) .gm::after{content:"";position:absolute;inset:0;pointer-events:none;',
+    'z-index:0;background:#ff3b30;animation:gm-bg-flash-blacklist .3s ease-in-out 3}',
     // Every state is a `border-color` change and nothing else — the glow shadows this used to
     // set would have REPLACED the panel's own drop shadow (`.gm`'s `0 10px 34px rgba(0,0,0,.55)`)
     // rather than adding to it, so a state would double as "the panel lost its shadow".
@@ -3941,6 +3971,13 @@
    *
    * `nextState` is computed BEFORE `blacklistAlertActive` goes up, precisely so the hand-back is
    * the state that would have been shown without the alert, rather than the alert itself.
+   *
+   * 0.5.7 §2.2 — this one state now paints TWO things: the border flash (above) and the panel's
+   * whole background (`:host([data-bs=blacklist]) .gm::after`). Both are driven by the same
+   * `data-bs` attribute and both stop when it leaves, so §2.2's 「`onDone` 中移除 data-bs="blacklist"」
+   * needs no second removal step: `playFlash` already calls `setBorderState(nextState)` in its
+   * `done`, which is what drops the attribute, and the pseudo-element's animation and background
+   * are both scoped to it. The 1s `FLASH_MS['blacklist']` timer is §2.2's 「1 秒定时器兜底」.
    */
   function triggerBlacklistAlert(entry) {
     var next = borderStateFromPanel(currentJob());

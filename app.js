@@ -1018,6 +1018,31 @@ function scoreStep(step, res, actual, board, prevBoard, budgetMs) {
   const fourBefore = prevBoard ? scanThreats(prevBoard) : null;
   const had = (t) => !!(t && mySide && t[mySide] && t[mySide].four);
   step.four = had(fourAfter) && !had(fourBefore);
+  // 0.5.7 §1.3① 不漏防 — this hand's half of the `noBlunder` term. Two flags, because the
+  // aggregate needs both counts and neither is recoverable from the other:
+  //   · `oppThreat` — the opponent held a threat on `prevBoard` whose answer was FORCED (exactly
+  //     one point clears it). A threat with several answers is not evidence about the player, so
+  //     it is not counted at all; see uniqueDefences() for why a bare 活三 therefore never counts.
+  //   · `missedBlock` — such a threat existed and this hand did not play that one point.
+  //
+  // Stamped HERE for the same reason `four` is: `scoreStep` is the one function both analysis
+  // paths call, and it is handed `prevBoard`. ⚠ The enumeration behind `uniqueDefences` is up to
+  // 225 `scanThreats` calls, so it must not run on an ordinary hand — its early return (no
+  // opponent threat ⇒ no points) is what keeps that cost to the hands that actually had one.
+  const threat = (prevBoard && mySide) ? uniqueDefences(prevBoard, mySide) : null;
+  const forcedBlock = !!(threat && threat.kind && threat.points.length === 1);
+  step.oppThreat = forcedBlock;
+  step.missedBlock = forcedBlock &&
+    !(actual && threat.points[0][0] === actual[0] && threat.points[0][1] === actual[1]);
+  // 0.5.7 §1.3③ 探针匹配 — the built-in probe library, matched against the position BEFORE this
+  // hand. `probeSeen` is "a probe motif occurred here", `probeHit` is "…and the move played was the
+  // one the shallow search would make". Guarded on `GMProbes` so a harness that loads app.js on its
+  // own (which is how every suite before 0.5.7 works) simply gets two false flags rather than a
+  // ReferenceError — the same guard style as `GMStorage`/`GMLearn` above.
+  const probe = (prevBoard && mySide && typeof GMProbes !== 'undefined' && GMProbes)
+    ? GMProbes.matchProbe(prevBoard, mySide, actual) : null;
+  step.probeSeen = !!(probe && probe.seen);
+  step.probeHit = !!(probe && probe.hit);
   return step;
 }
 
@@ -1183,29 +1208,59 @@ function scanThreats(board) {
 // the four: a point that does not answer it leaves the four standing. Exactly one such point,
 // equal to the move actually played, is a forced defence by definition — no threshold, no
 // engine, nothing to jitter.
-function uniqueBlocksForFour(board, side) {
-  if (!board || !board.length || (side !== 'B' && side !== 'W')) return [];
+// ---------- 0.5.7 §1.3① — which points answer the opponent's threat ----------
+//
+// `uniqueBlocksForFour(board, side)` has answered the FOUR half of this since 0.4.8, and 0.5.7
+// §1.3① needs the 活三 half with the SAME test (「对手存在冲四或活三，且…返回唯一防守点」). So the
+// walk moved here, once, and the old name delegates to it — a second enumeration of "which points
+// answer a four" is exactly the drift this project keeps paying for, and the two readers
+// (`forcedDefenseByShape` and `noBlunder`) must not be able to disagree about what a defence is.
+//
+// The test is deliberately identical for both kinds: play `side` at the candidate point, re-scan,
+// and ask whether the flag that was set BEFORE the push is still set. A point that does not clear
+// the threat is not a defence. `kind` is the threat being judged, 冲四 first — a position holding
+// both is judged on the four, because clearing the three would not save it.
+//
+// ⚠ The 活三 half is not a formality. Blocking ONE end of `_XXX_` removes the open three (the
+// remaining `OXXX_` has no 6-cell window with both outer ends empty), so a bare 活三 has TWO
+// defences and is therefore NOT a forced hand — which is right, and is why `noBlunder` counts a
+// threat only when the defence is unique. A 活三 with one end already blocked, or a broken three
+// with a single completion point, does have exactly one.
+function uniqueDefences(board, side) {
+  if (!board || !board.length || (side !== 'B' && side !== 'W')) return { kind: null, points: [] };
   const opp = side === 'B' ? 'W' : 'B';
+  const before = scanThreats(board);
+  if (!before || !before[opp]) return { kind: null, points: [] };
+  const kind = before[opp].four ? 'four' : (before[opp].openThree ? 'openThree' : null);
+  if (!kind) return { kind: null, points: [] };
   const occ = {};
   for (let i = 0; i < board.length; i++) {
     const s = board[i];
     if (!s || s.x == null || s.y == null) continue;
     occ[s.x + ',' + s.y] = s.side;
   }
-  const out = [];
+  const points = [];
   for (let x = 0; x < SIZE; x++) {
     for (let y = 0; y < SIZE; y++) {
       if (occ[x + ',' + y]) continue;
-      const nb = board.concat([{ x: x, y: y, side: side }]);
-      const t = scanThreats(nb);
-      // `!t` means the pushed position cannot be reasoned about at all (scanThreats refuses
+      const after = scanThreats(board.concat([{ x: x, y: y, side: side }]));
+      // `!after` means the pushed position cannot be reasoned about at all (scanThreats refuses
       // below three known stones). Treating that as "this point blocks" would hand back every
-      // empty square as a defence and the `length === 1` test below would then never fire —
-      // the conservative direction, which is the right one for a verdict of "forced".
-      if (!t || !t[opp].four) out.push([x, y]);
+      // empty square as a defence and the `length === 1` test would then never fire — the
+      // conservative direction, which is the right one for a verdict of "forced".
+      if (!after || !after[opp] || !after[opp][kind]) points.push([x, y]);
     }
   }
-  return out;
+  return { kind, points };
+}
+
+// The four-only view, kept because 0.4.8's callers and its suite ask exactly this question.
+// `kind !== 'four'` ⇒ no opponent four ⇒ no blocking points, which is the reading the old body
+// already produced for an open four (`live4` in verify-048) — a four that every point leaves
+// standing has no single answer.
+function uniqueBlocksForFour(board, side) {
+  const d = uniqueDefences(board, side);
+  return d.kind === 'four' ? d.points : [];
 }
 
 // `prevBoard` is the position BEFORE the hand being judged: the four we are answering must
@@ -1214,10 +1269,9 @@ function uniqueBlocksForFour(board, side) {
 function forcedDefenseByShape(board, side, actual, prevBoard) {
   if (!prevBoard) return null;
   if (!actual || actual[0] == null || actual[1] == null) return null;
-  const opp = side === 'B' ? 'W' : 'B';
-  const t = scanThreats(prevBoard);
-  if (!t || !t[opp] || !t[opp].four) return null;
-  const unique = uniqueBlocksForFour(prevBoard, side);
+  const d = uniqueDefences(prevBoard, side);
+  if (d.kind !== 'four') return null;
+  const unique = d.points;
   if (unique.length === 1 && unique[0][0] === actual[0] && unique[0][1] === actual[1]) {
     return { forced: true, reason: 'shape-unique-block' };
   }
@@ -1726,6 +1780,10 @@ async function analyzeStep(eng, allMoves, playerIdx, actual, opts, budgetMs, rec
     // 开局 early return below (an unanalysed hand is never a member of a four run). scoreStep()
     // is what turns it true, from the board after the hand.
     four: false,
+    // 0.5.7 §1.3① — the same arrangement as `four`: declared on every step shape, written only by
+    // scoreStep(), false on a hand the engine was never asked about (an unanalysed hand faced no
+    // measured threat). §1.3③'s probe pair rides along with it.
+    oppThreat: false, missedBlock: false, probeSeen: false, probeHit: false,
   };
   // 0.4.8 §1.1: the position before this hand, for the shape-first forced-defence test. `board`
   // is the position AFTER the hand (what applyTerminal reads); slicing off the last stone gives
@@ -1847,6 +1905,9 @@ async function analyzeStepwise(record, opts, onProgress, onStep) {
         // 0.4.7 §1.1 — never a member of a four run: markFourRuns() requires `analyzed`. Kept so
         // every step in the array has the field rather than some having it and some not.
         four: false,
+        // 0.5.7 §1.3① — same rule, same reason: this hand was never analysed, so it faced no
+        // measured threat. Declared so the array's shape is uniform (see the 0.4.7 note above).
+        oppThreat: false, missedBlock: false, probeSeen: false, probeHit: false,
       };
       // 0.4.5 §三/§3.4 — the step we just stopped analysing as an opening hand is exactly the
       // step that still has to be shape-tested. Only for scorable hands: a prejoin or
@@ -2024,6 +2085,31 @@ function rampDown(v, lo, hi) {
 // 补增 §三's own numbers (13% 7% 13% 11% 4% 10% / 4% 3% 4% 14% 18% 19% 10%) are therefore history
 // too. Both tables are the operator's; this one is their revert, and the reason it is written down
 // twice is that a future reader will otherwise re-derive the 13/18/19 table from the §三 spec.
+//
+// ⚠⚠ 0.5.7 §1 raises the CEILING to 150% and rebuilds the table on it, for a reason the 130% shape
+// could not answer: the cheater 0.5.7 targets does not run Rapfi or KataGo. They open a web page
+// whose 「最强档」 is a shallow Minimax and relay its moves by hand. That engine is far weaker than
+// a real one — so `top1`/`sharp`/`goodPool` stay LOW — but it searches at least one ply, so it
+// never blunders a 冲四/活三, and its evaluation is stable, so a lost position does not collapse
+// into random moves. Three signals describe exactly that, and none of the thirteen could: they are
+// all "how engine-like was this move", and a weak engine is not engine-like. So:
+//
+//   · `noBlunder` 15% — did the side answer every 冲四/活三 it was forced to answer;
+//   · `steadyLost` 8% — over the hands it was already losing (bestWR < 0.20), was the mean loss
+//     still near zero;
+//   · `probeMatch` 12% — on a hand-built probe position, did it play the shallow search's move
+//     rather than the beginner's mistake. The three are the FIRST terms in this table that are not
+//     a function of the engine's candidate list; see each one's own note in sideAggregate().
+//
+// `time` goes to **0** in the same release (§1.2), and that is not a rebalance: a 人肉中转 cheater
+// picks the interval themselves, so the distribution carries no evidence at all. The field, the
+// `aTime` computation and the panel row all stay — an archive that already has `thinkMs` still
+// describes itself with them — but the weight is 0, so it can never move a score again. ⚠ 0.5.7
+// also had to stop the LEARNER from switching it back on: see `group()` in learn.js.
+//
+// The table now totals **1.50 — exactly the new ceiling**, the same 「用满上限」 strategy 补增 §三
+// chose at 1.30: no headroom, so raising one term means lowering another. The three new terms are
+// 0.35 and they are paid for by the 0.15 `time` gave up plus the 0.20 the ceiling gained.
 const BASE_WEIGHTS = {
   // 补增 §三 后续 — the 0.5.3 table, restored, as percentages: 20% 8% 22% 27% 8% 15% for the six
   // statistics (0.5.3's own numbers, term for term) and 7% 4% 6% 4% 3% 3% 3% for the seven behaviour
@@ -2044,7 +2130,11 @@ const BASE_WEIGHTS = {
   //     0.4.2's evasion pair, 0.4.7's 无用冲四, 0.4.8's two 唯一手 runs, and 0.5.2/0.5.5's two
   //     pools. 0.30 together — the headroom under the ceiling, where 补增 §三 put 0.72. These are
   //     the seven `learn.js` optimises in their own budget.
-  top1: 0.20, acpl: 0.08, sharp: 0.22, out: 0.27, desperate: 0.08, time: 0.15,
+  // 0.5.7 §1.2 — `time` is 0 and stays 0. The key is KEPT rather than deleted: `WEIGHT_KEYS`
+  // drives the panel's row list, `riskOfSub`/`sideAggregate` both read the table by key, and an
+  // archive written by an older build still carries `thinkMs`. A missing key and a zero key are
+  // not the same thing anywhere in this codebase — see the ⚠ in the block above about the learner.
+  top1: 0.20, acpl: 0.08, sharp: 0.22, out: 0.27, desperate: 0.08, time: 0,
   evasion: 0.07, winBlunder: 0.04,
   uselessFour: 0.06,
   sharpStreak: 0.04,
@@ -2055,6 +2145,12 @@ const BASE_WEIGHTS = {
   goodPool: 0.03,
   // §1.2's 活三 pool, back at 0.5.3's 0.03.
   liveThree: 0.03,
+  // 0.5.7 §1.3 — the three low-end-AI signals. 0.35 together, which is the 0.15 `time` gave up plus
+  // the 0.20 the raised ceiling gained, so the total lands on exactly 1.50. Each is 0 on a game
+  // whose trigger never occurred (no forced block to make / no lost position to hold / no probe
+  // hit), which is the same construction as every term above and the reason a game that never met
+  // the situation scores what it always did.
+  noBlunder: 0.15, steadyLost: 0.08, probeMatch: 0.12,
 };
 const BASE_THRESHOLDS = {
   // 0.4.3 §1.1: the ramp aTop1 now reads. `top1Lo`/`top1Hi` are kept because a pre-0.4.3
@@ -2170,10 +2266,10 @@ const SIGNAL_WEIGHT_MAX =
     ? GMStorage.SIGNAL_WEIGHT_MAX : 1;
 const SIGNAL_WEIGHT_SUM_MAX =
   (typeof GMStorage !== 'undefined' && GMStorage && GMStorage.SIGNAL_WEIGHT_SUM_MAX != null)
-    ? GMStorage.SIGNAL_WEIGHT_SUM_MAX : 1.30;
+    ? GMStorage.SIGNAL_WEIGHT_SUM_MAX : 1.50;
 // The comparison tolerance for that ceiling, and it is not cosmetic. The operator's numbers are
 // percentages with at most one decimal, summed in `effectiveSignalWeights`; in binary floating
-// point a table whose thirteen terms add up to exactly 1.30 by hand can sum to 1.3000000000000003,
+// point a table whose sixteen terms add up to exactly 1.50 by hand can sum to 1.5000000000000002,
 // and a strict `>` would then refuse a set the settings panel had just accepted — the two would
 // disagree about the one number the requirement names. 1e-9 is fifteen orders of magnitude below
 // the smallest real edit (0.1%) and far above the error it absorbs.
@@ -2194,9 +2290,9 @@ function activeSignalPins(pins) {
   return out;
 }
 
-// What a table sums to, which is the quantity the 130% ceiling is compared against.
+// What a table sums to, which is the quantity the 150% ceiling is compared against.
 //
-// This is the MIRROR of storage.js's `signalWeightTableSum`: same formula, same thirteen terms,
+// This is the MIRROR of storage.js's `signalWeightTableSum`: same formula, same sixteen terms,
 // deliberately two spellings because app.js runs in hosts where storage.js is absent. The two are
 // pinned equal by the suite (verify-059 drives both on one fixture), the same arrangement
 // BASE_WEIGHTS / DEFAULT_WEIGHTS / FALLBACK_WEIGHTS already has.
@@ -2206,7 +2302,7 @@ function signalWeightSum(table) {
   return sum;
 }
 
-// The thirteen weights the detector will actually run with: **the shipped table with the operator's
+// The sixteen weights the detector will actually run with: **the shipped table with the operator's
 // pins folded in**, plus whether any pin was used.
 //
 // ⚠ The learner's weights are deliberately NOT a parameter here (see the note above): the baseline
@@ -2227,7 +2323,8 @@ function resolveSignalWeights(pins) {
   const sum = signalWeightSum(merged);
   // Both refusals keep the table that works. `sum > 0` covers the all-zero table — a detector
   // whose every weight is zero reports 0 for every game, which is not a low score but a dead one;
-  // `sum <= 130%` is 补增 §三's ceiling. storage.js and the settings page both refuse to STORE
+  // `sum <= 150%` is 补增 §三's ceiling, raised by 0.5.7 §1. storage.js and the settings page both
+  // refuse to STORE
   // such a set, so arriving here means a hand-edited profile or a caller passing pins directly,
   // and the honest answer to a profile we cannot honour is to keep running — on the shipped table.
   if (!(sum > 0) || sum > SIGNAL_WEIGHT_SUM_MAX + SIGNAL_WEIGHT_EPS) {
@@ -2481,6 +2578,9 @@ async function analyzeGame(record, opts, onProgress) {
       // a game analysed 全局 and the same game replayed 逐步 would carry two different step
       // records for one hand.
       four: false,
+      // 0.5.7 §1.3① — the same three-way agreement (field, writer, rule) for the 不漏防 pair, plus
+      // §1.3③'s probe pair.
+      oppThreat: false, missedBlock: false, probeSeen: false, probeHit: false,
     };
     const needEngine = scorable(source) && !step.isOpening &&
                        (suspect === 'both' || side === suspect);
@@ -2852,6 +2952,41 @@ function markPoolSignals(steps) {
   return steps;
 }
 
+// ---------- 0.5.7 §1.3①/② — the two low-end-AI terms' curve constants ----------
+//
+// Constants rather than `BASE_THRESHOLDS` keys, and deliberately: these five shape a CURVE (a
+// sample floor, a cut, a span), which is the same kind of number as 0.5.2's `LIVE_POOL_MIN` and
+// 0.5.5's `GOOD_RATIO_LO` — both of which live here and are mirrored into learn.js. The
+// `BASE_THRESHOLDS` keys are the ones the learner's grid search and the settings panel both
+// address; nothing tunes these, and giving them a panel row would be five more translations for
+// five numbers the operator has no basis to move. learn.js repeats them and a suite asserts the
+// two files agree, so an edit to one cannot move without the other being reported.
+const NO_BLUNDER_MIN = 3;       // forced threats a side must have faced for full 不漏防 credit
+const STEADY_LOST_WR = 0.20;    // "already losing" — the bestWR cut §1.3② names
+const STEADY_LOST_MIN = 3;      // lost hands a side must have for full 败势不崩 credit
+const STEADY_LOST_LOSS = 0.01;  // mean loss under this counts as "did not collapse"
+const STEADY_LOST_SPAN = 0.05;  // the linear decay's denominator above it
+
+// ---------- 0.5.7 §1.3③ — the probe term's curve ----------
+//
+// §1.3③ gives the rule directly: 「连续匹配 >= 3 或 匹配率 >= 80% 判定为机器」, otherwise the rate
+// itself. Two constants and one expression, and both callers (sideAggregate, and learn.js's
+// subscoresForSide through its own copy) read it — see THE MIRROR RULE.
+//
+// ⚠ The term is fed per-HAND flags (`probeSeen` / `probeHit`), stamped by scoreStep() exactly the
+// way `oppThreat`/`missedBlock` are, NOT a per-side number computed in buildReport(). That is a
+// deliberate departure from §1.3③'s 「实现位置：在 buildReport 阶段计算」: a per-side figure computed
+// from the record cannot be re-derived from `report.steps`, so the learner could not mirror it, the
+// archive could not be rescored, and `slimStep` would have to carry an opaque number. The per-hand
+// flags keep the whole term inside the one pipeline every other term uses.
+const PROBE_RUN_MIN = 3;        // consecutive hits that settle it
+const PROBE_RATE_MIN = 0.80;    // …or this hit rate
+function probeMatchActivation(seen, hits, maxRun) {
+  if (!seen) return 0;                       // no probe fired ⇒ no evidence, not a perfect score
+  const rate = hits / seen;
+  return (maxRun >= PROBE_RUN_MIN || rate >= PROBE_RATE_MIN) ? 1 : clamp(rate, 0, 1);
+}
+
 function sideAggregate(steps, side, hasTime, params, opts) {
   const { w, t } = riskParams(params);
   // 0.4.2 §2.3: an evasion hand is excluded from the main statistics. That exclusion IS the
@@ -2985,6 +3120,63 @@ function sideAggregate(steps, side, hasTime, params, opts) {
   const aLiveThree = liveThreeMax >= LIVE_POOL_MIN
     ? clamp((Math.pow(1.3, liveThreeMax - 1) - 1) / 4, 0, 1)
     : 0;
+  // 0.5.7 §1.3① 不漏防 — the first term in this table that is NOT a function of the engine's
+  // candidate list. It is a fact about the BOARD: the opponent held a threat whose answer was
+  // forced, and this side found it. A full-strength engine and a shallow web engine both do this
+  // (which is the whole point — §1.3's cheater is a WEAK engine, and `top1`/`sharp`/`goodPool`
+  // cannot see it, because they all ask "how engine-like was this move"), so the term is evidence
+  // of "something searched", not of "something searched well".
+  //
+  // The population is NOT `s`. `s` drops the forced-defence hands (`isExemptUnique`), and those ARE
+  // the blocks — measuring over `s` would count every miss and throw away every answer. §1.3 says
+  // 「整局」, so it is every hand this side played and had analysed: evasions in (an evasion can be a
+  // missed block too), openings out.
+  //
+  // ⚠ Measured on the operator's own 65 archives / 127 sides: forced threats average 1.29 per side,
+  // 44% of sides face NONE, only 17% face three or more, and **every single one is a 冲四 — not one
+  // 活三 in the whole corpus**. So uniqueDefences()'s 活三 half is inert on real data (it is kept
+  // because it is the same test and costs nothing, not because it fires), and the sample factor
+  // below is load-bearing rather than decorative — see the curve's own note.
+  const played = steps.filter(x => x.side === side && x.analyzed && !x.isOpening);
+  const threatCount = played.filter(x => x.oppThreat).length;
+  const missedBlocks = played.filter(x => x.oppThreat && x.missedBlock).length;
+  // §1.3①'s two clauses, with the sample floor its first clause implies made explicit. The spec's
+  // literal reading makes the `>= 3` gate inert (`1 - 0/1` is already 1), which hands the full 15%
+  // to the 50% of sides that faced one or two threats and answered them; a hard floor (`< 3 ⇒ 0`)
+  // discards real evidence AND inverts the order (a 2-threat 0-miss side would score below a
+  // 4-threat 2-miss one). Carrying the factor keeps full marks exactly at 「>= 3 且漏防 = 0」, gives
+  // small samples proportional credit, and is monotone in both directions.
+  const aNoBlunder = threatCount === 0 ? 0
+    : clamp((1 - missedBlocks / threatCount) * Math.min(1, threatCount / NO_BLUNDER_MIN), 0, 1);
+  // 0.5.7 §1.3② 败势不崩 — also not an engine-list term. It reads `bestWR`/`loss`, both of which the
+  // engine produced, but it asks about the side's COMPOSURE rather than its accuracy: a shallow
+  // engine's evaluation is stable, so a lost position does not make it flail, whereas a human under
+  // pressure starts taking the 20% move instead of the 10% one and ACPL rises with the loss.
+  //
+  // Same population and the same sample factor as §1.3①, and for the same measured reason: a side's
+  // lost hands average 3.48 but 36% of sides have none, so the literal reading would let a single
+  // lossless lost hand outscore three merely-good ones.
+  const losing = played.filter(x => x.bestWR != null && x.bestWR < STEADY_LOST_WR);
+  const losingLosses = losing.map(x => x.loss).filter(v => v != null);
+  const losingLoss = losingLosses.length ? avg(losingLosses) : null;
+  const steadyBase = losingLoss == null ? 0
+    : (losingLoss < STEADY_LOST_LOSS ? 1 : clamp(1 - losingLoss / STEADY_LOST_SPAN, 0, 1));
+  const aSteadyLost = losing.length === 0 ? 0
+    : clamp(steadyBase * Math.min(1, losing.length / STEADY_LOST_MIN), 0, 1);
+  // 0.5.7 §1.3③ 探针匹配 — read off the per-hand flags scoreStep() stamped; see the curve's own note
+  // for why the term is not computed here from the record. `probeSeen` is "a probe position occurred
+  // on this hand", `probeHit` is "…and the move played was the shallow engine's". The run is over the
+  // side's own sequence — the same "consecutive means this player's consecutive hands" rule
+  // sharpStreakStats() uses — and a seen-but-missed probe breaks it while an unseen hand leaves it
+  // standing (an unseen hand is neither a hit nor a failure to hit).
+  const probeSeen = played.filter(x => x.probeSeen).length;
+  const probeHits = played.filter(x => x.probeSeen && x.probeHit).length;
+  let probeRun = 0, probeMaxRun = 0;
+  for (const x of played) {
+    if (x.probeSeen && x.probeHit) { probeRun++; if (probeRun > probeMaxRun) probeMaxRun = probeRun; }
+    else if (x.probeSeen) probeRun = 0;
+  }
+  const aProbeMatch = probeMatchActivation(probeSeen, probeHits, probeMaxRun);
   // 0.3.3 C: the feature library's similarity match. Only present once 重新学习 has built a
   // library; it then claims `simWeight` of the score and the six base terms are scaled down
   // proportionally, so an unlearned run is bit-identical to 0.3.1. `aiSimilar` is set by
@@ -3010,7 +3202,14 @@ function sideAggregate(steps, side, hasTime, params, opts) {
                     + wEff.evasion * aEvasion + wEff.winBlunder * aWinBlunder
                     + wEff.uselessFour * aUselessFour
                     + wEff.sharpStreak * aSharpStreak + wEff.sharpTotal * aSharpTotal
-                    + wEff.goodPool * aGoodPool + wEff.liveThree * aLiveThree), 0, 100);
+                    + wEff.goodPool * aGoodPool + wEff.liveThree * aLiveThree
+                    // 0.5.7 §1.3 — the three low-end-AI terms. `wEff.time` is still in the sum above
+                    // and still multiplied by `aTime`; the shipped weight is 0, so the product is 0.
+                    // That is deliberate over deleting the term: the field, the computation and the
+                    // panel row all survive §1.2, and a pin that puts `time` back would be honoured
+                    // exactly as it is for every other signal.
+                    + wEff.noBlunder * aNoBlunder + wEff.steadyLost * aSteadyLost
+                    + wEff.probeMatch * aProbeMatch), 0, 100);
   const level = risk >= t.riskHigh ? '高风险' : (risk >= t.riskMid ? '可疑' : '低风险');
   return {
     side, n, top1, top3, top5, topProx, meanLoss, sharpHit, outTop5, desperateCount,
@@ -3034,6 +3233,20 @@ function sideAggregate(steps, side, hasTime, params, opts) {
     goodRatio: gp.ratio, goodCount: gp.count, goodTotal: gp.total, goodStreak: gp.streak,
     // §1.2. Unchanged: the 活三 pool's own run length.
     liveThreeMax,
+    // 0.5.7 §1.3①②. The raw figures behind the two board/composure terms, reported so the detail
+    // table can print 「被迫防守 N 次 / 漏防 M 次」 and 「败势手 N 手 / 平均损失 x」 without recomputing
+    // either — the same reason sharpStreakMax/goodRatio are carried. `losingLoss` is null when the
+    // side has no lost hand with a readable loss, which is the "no sample" state rather than a 0.
+    threatCount, missedBlocks, losingCount: losing.length, losingLoss,
+    // §1.3③'s three raw figures, carried for the same reason: the detail table prints
+    // 「探针命中 N / 出现 M」, and a reader that wanted them back from the activation could not get
+    // them (the activation collapses 3-or-80% into a single 1).
+    probeSeen, probeHits, probeMaxRun,
+    // The two ACTIVATIONS, carried rather than left to be re-derived from `contributions` by
+    // dividing the weight back out. buildReport() needs them for §1.5's 低端AI downgrade, and the
+    // learner's mirror needs to compare like with like; a reader that divides is a second
+    // implementation of the weight table, which is the thing this file keeps refusing to have.
+    aNoBlunder, aSteadyLost, aProbeMatch,
     contributions: {
       top1: wEff.top1 * aTop1 * 100, acpl: wEff.acpl * aAcpl * 100, sharp: wEff.sharp * aSharp * 100,
       out: wEff.out * aOut * 100, desperate: wEff.desperate * aDesperate * 100, time: wEff.time * aTime * 100,
@@ -3042,6 +3255,8 @@ function sideAggregate(steps, side, hasTime, params, opts) {
       uselessFour: wEff.uselessFour * aUselessFour * 100,
       sharpStreak: wEff.sharpStreak * aSharpStreak * 100, sharpTotal: wEff.sharpTotal * aSharpTotal * 100,
       goodPool: wEff.goodPool * aGoodPool * 100, liveThree: wEff.liveThree * aLiveThree * 100,
+      noBlunder: wEff.noBlunder * aNoBlunder * 100, steadyLost: wEff.steadyLost * aSteadyLost * 100,
+      probeMatch: wEff.probeMatch * aProbeMatch * 100,
     },
     risk, level,
   };
@@ -3168,9 +3383,35 @@ const TYPE_OF_BAND = { suspect: 'suspectAi', pro: 'pro', expert: 'expert', norma
 //
 // `lowTotal` is still reported: it is the number the 0.4.3 classifier used and an operator
 // comparing two archives of the same game should be able to see why the label moved.
-function classifySide(risk, segments, steps, side, thresholds) {
+// ---------- 0.5.7 §1.5 — the 低端AI downgrade ----------
+// The band a score lands in is a statement about the SCORE; §1.5 is a statement about what the score
+// was MADE OF, and this is the one place in the file where the two deliberately disagree.
+//
+// A shallow web engine (a page's 「最强档」 Minimax, which is what §1's cheater relays) cannot satisfy
+// the terms the strong bands are built from: `top1`/`sharp`/`out`/`goodPool` all ask "how close was
+// this to a STRONG engine's own choice", and its choices are not a strong engine's. So it lands in
+// 职业选手 / 高手玩家 rather than 疑似AI. What it CAN satisfy is §1.3's three — it searches at least one
+// ply, so it never misses a forced block, and its evaluation is stable, so a lost position does not
+// collapse into flailing. A side that reached a strong-human band while doing both of those is not a
+// strong human.
+//
+// The two cuts are §1.5's own numbers and they are on the ACTIVATIONS, not on the points, so the
+// rule does not move when the weights are rebalanced.
+const LOWEND_NO_BLUNDER_MIN = 0.8;
+const LOWEND_STEADY_MIN = 0.7;
+
+function classifySide(risk, segments, steps, side, thresholds, acts) {
   const band = riskBand(risk, thresholds);
   if (band !== 'ai') {
+    // `acts` is optional, and that is load-bearing: every pre-0.5.7 caller and test classifies a bare
+    // score, and they must keep getting the plain band rather than a downgrade they cannot see the
+    // evidence for. buildReport passes the side's own aggregate, which already carries the two
+    // activations (see sideAggregate's `aNoBlunder`/`aSteadyLost`) — one object, no second lookup.
+    if ((band === 'pro' || band === 'expert') && acts &&
+        (acts.aNoBlunder || 0) > LOWEND_NO_BLUNDER_MIN &&
+        (acts.aSteadyLost || 0) > LOWEND_STEADY_MIN) {
+      return { suspect: 'suspect', type: 'lowEndAi', auto: true, lowSteps: 0 };
+    }
     return { suspect: band, type: TYPE_OF_BAND[band] || 'normal', auto: true, lowSteps: 0 };
   }
   const lowRuns = [];
@@ -3209,8 +3450,10 @@ function buildReport(steps, record, opts) {
   const segments = { B: segmentSide(steps, 'B'), W: segmentSide(steps, 'W') };
   const typeTh = riskParams(params).t;
   const types = {
-    B: black ? classifySide(black.risk, segments.B, steps, 'B', typeTh) : null,
-    W: white ? classifySide(white.risk, segments.W, steps, 'W', typeTh) : null,
+    // 0.5.7 §1.5 — the two aggregates are handed in as the optional sixth argument, because the
+    // downgrade reads the two low-end-AI ACTIVATIONS off them (see classifySide's own note).
+    B: black ? classifySide(black.risk, segments.B, steps, 'B', typeTh, black) : null,
+    W: white ? classifySide(white.risk, segments.W, steps, 'W', typeTh, white) : null,
   };
   const flagged = steps.filter(x =>
     x.analyzed && x.orderKnown !== false && !x.isOpening &&
@@ -3306,13 +3549,16 @@ if (typeof module !== 'undefined' && module.exports) {
     // for the same reason — a test that had to re-implement segmentSide() to check it would
     // be testing its own copy, and the two could drift.
     stepProximity, segmentSide, riskBand, classifySide, MIN_SEGMENT,
+    // 0.5.7 §1.5 — the two cuts the 低端AI downgrade reads, exported so the suite can drive the rule
+    // at its boundary rather than having to find a game that lands on it.
+    LOWEND_NO_BLUNDER_MIN, LOWEND_STEADY_MIN,
     getEngine, defaultThreadNum, resolveThreadNum, engineInfo, warmEngine,
     // 0.3.4 活四：导出形状识别与判定，供单元测试直接驱动（不再依赖引擎胜率）
     liveFourHolder, applyTerminal, boardFromCoords, scanThreats,
     // 0.4.8 §1.1/§1.2/§1.3: the shape-first forced-defence test, the sharp-streak statistics
     // and the two-stage terminal. Exported so the suite can drive each one directly instead of
     // re-deriving it — the same reason the line above exists.
-    forcedDefenseByShape, uniqueBlocksForFour, sharpStreakStats,
+    forcedDefenseByShape, uniqueBlocksForFour, uniqueDefences, sharpStreakStats,
     applyTerminalShape, checkFourThreeCounter,
     // 0.5.0 §1.1/§1.2: the four's FORM (真四 / 跳四 / 双四) and the exemption predicate. The
     // suite drives both directly — a test that re-implemented `classifyFour` to check it would
@@ -3328,6 +3574,14 @@ if (typeof module !== 'undefined' && module.exports) {
     isGoodMove, goodPoolCounts, goodMoveRatio, goodMoveStreak, computeGoodPool,
     GOOD_TOP8_MS, GOOD_RATIO_LO, GOOD_RATIO_SPAN, GOOD_STREAK_MIN,
     GOOD_STREAK_BASE, GOOD_STREAK_DIV, GOOD_W_RATIO, GOOD_W_STREAK,
+    // 0.5.7 §1.3①② — the two low-end-AI terms' five curve constants. Exported (and mirrored in
+    // learn.js) for the same reason the two lines above are: the learner has to move with the
+    // detector or it fits weights against a curve the detector no longer uses, and a suite asserts
+    // the two files agree rather than trusting them to.
+    NO_BLUNDER_MIN, STEADY_LOST_WR, STEADY_LOST_MIN, STEADY_LOST_LOSS, STEADY_LOST_SPAN,
+    // 0.5.7 §1.3③ — the probe term's curve, exported so the suite can drive it on counts instead of
+    // having to build a position that fires a probe. learn.js keeps its own copy (THE MIRROR RULE).
+    PROBE_RUN_MIN, PROBE_RATE_MIN, probeMatchActivation,
     // 0.3.3 risk-model plumbing, exported so the learner and the tests can reason about the
     // exact numbers the detector uses.
     riskParams, rampUp, rampDown, loadLearnedParams, BASE_WEIGHTS, BASE_THRESHOLDS,

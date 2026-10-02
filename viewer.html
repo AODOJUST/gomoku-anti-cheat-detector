@@ -1821,9 +1821,10 @@
       </div>
     </div>
 
-    <!-- 0.5.6 补增 §三 — 检测信号权重. Thirteen number inputs and the running total above them:
+    <!-- 0.5.6 补增 §三 — 检测信号权重. Sixteen number inputs and the running total above them
+         (thirteen until 0.5.7 §1 raised the ceiling to 150% and added the three low-end signals):
          the requirement is that EVERY signal is adjustable by the operator, and a table with a
-         ceiling of its own (130%) cannot be edited by feel. The rows are built in JS
+         ceiling of its own cannot be edited by feel. The rows are built in JS
          (`buildSignalWeightsPanel`) for two reasons — their labels are semantic keys
          (`learn.weight.*`, the same ones 标签百科 and the learner print, so no new translation
          and no chance of the three surfaces disagreeing), and the family headings under which
@@ -2321,6 +2322,8 @@
      that will actually hand it to worker.js. The two contexts share one IndexedDB. -->
 <script src="engines.js"></script>
 <script src="custom-engine.js"></script>
+<!-- 0.5.7 §1.3③ — the probe library, before app.js for the same reason as in offscreen.html. -->
+<script src="probes.js"></script>
 <script src="app.js"></script>
 <script src="learn.js"></script>
 <!-- 0.5.3 §1.2/§1.4 — the toast stack and the tag encyclopedia.

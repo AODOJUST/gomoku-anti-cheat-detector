@@ -80,11 +80,16 @@ GMI18n.register('zh-CN', {
   // report.types / entry.types / manualType. Nothing compares it by literal (the panel and the
   // viewer render it through TO('type', code)), but it is a stored identity value all the same,
   // which is what puts it here rather than in the text-keyed table. The five bands of §1.6 are
-  // NOT listed: only the three AI classes and the four non-AI classes are ever stored, and the
+  // NOT listed: only the AI classes and the four non-AI classes are ever stored, and the
   // band names (疑似AI / 职业选手 / …) survive as the type names themselves.
   'type.lowAi': '低级AI',
   'type.evasiveAi': '规避型AI',
   'type.strongEvasiveAi': '强规避AI',
+  // 0.5.7 §1.5 — the fourth AI class, and the only one that is not a band of the score at all:
+  // `classifySide` reaches it by DOWNGRADING a 职业选手 / 高手玩家 verdict whose two low-end
+  // signals give it away. It is stored like any other code, so it needs its row here as well as
+  // in _tools/i18n-extra.js.
+  'type.lowEndAi': '低端AI',
   'type.suspectAi': '疑似AI',
   'type.pro': '职业选手',
   'type.expert': '高手玩家',
@@ -221,6 +226,14 @@ GMI18n.register('zh-CN', {
   // for why the six keep summing to 1.00 and every addition lands outside).
   'learn.weight.goodPool': '好点池',
   'learn.weight.liveThree': '活三好手',
+  // 0.5.7 §1.3 — the three low-end-AI signals. They are the first weight rows whose raw counts
+  // do NOT come from the engine's candidate list at all: 不漏防 / 败势不崩 read the board and the
+  // stored win rates, 探针匹配 reads the board against probes.js. Same arrangement as every other
+  // runtime-key row — listed here so the BASELINE resolves them, emitted into the twelve
+  // generated tables from _tools/i18n-extra.js.
+  'learn.weight.noBlunder': '不漏防',
+  'learn.weight.steadyLost': '败势不崩',
+  'learn.weight.probeMatch': '探针匹配',
 
   'learn.threshold.top1Lo': 'Top1 下界',
   'learn.threshold.top1Hi': 'Top1 上界',
