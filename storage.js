@@ -2332,6 +2332,12 @@
       // kind (the classification is a function of this one number plus the run's extent).
       fourRun: isFinite(s.fourRun) ? s.fourRun : 0,
       fourKind: s.fourKind || null,
+      // 0.4.7 §1.1 — the raw input the two fields above are DERIVED from: scoreStep() stamps it
+      // from the board after the hand, markFourRuns() groups it into runs and labels them. Kept
+      // for the same reason `prevBestWR` is: the archive claims to be re-derivable, and a reader
+      // that re-ran markFourRuns() over these steps would get zero runs for every game if the
+      // flag it reads were dropped here. It is a boolean, so it costs one byte.
+      four: !!s.four,
       prevBestWR: s.prevBestWR == null ? null : s.prevBestWR,
       // 0.4.2 §2.3: this hand is a deliberate-looking blunder with good hands either side —
       // an evasion. Kept per step so the badge survives a reload and the per-side evasion

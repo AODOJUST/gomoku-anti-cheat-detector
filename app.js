@@ -998,6 +998,26 @@ function scoreStep(step, res, actual, board, prevBoard, budgetMs) {
   const shape = forcedDefenseByShape(board, step.side, actual, prevBoard);
   step.forcedDefense = engForced || !!(shape && shape.forced);
   step.forcedDefenseHow = (shape && shape.forced) ? 'shape' : (engForced ? 'engine' : null);
+  // 0.4.7 §1.1 冲四 — "this hand left my side holding a four". This is the flag `markFourRuns`
+  // groups into runs and classifies by the rate before the run; until now NOTHING wrote it, so
+  // `uselessFour` was structurally 0 (see that pass's header).
+  //
+  // Stamped HERE because this is the one function BOTH analysis paths call — `analyzeStep`
+  // (逐步, live and replay alike) and `analyzeGame` (全局) — and both hand it the position AFTER
+  // the hand (`board`), which is what "this hand made a four" means. `scanThreats` reads a
+  // 5-cell window of 4 own + 1 empty, i.e. "an empty point that completes five", which covers
+  // the 冲四 and the 活四 alike; that is exactly §1.1's 「你走一个冲四，对手必须应」.
+  //
+  // `newly`, not merely `has`: a four that already stood BEFORE this hand (the opponent declined
+  // to block it, or a 双四 left one line standing) is not a four this hand made, and counting it
+  // would extend a run by a hand that only inherited one. `prevBoard` is optional — a caller that
+  // supplies none degrades to the plain "has a four" test instead of failing, the same
+  // conservative direction every other optional-board test in this function takes.
+  const mySide = (step.side === 'B' || step.side === 'W') ? step.side : null;
+  const fourAfter = board ? scanThreats(board) : null;
+  const fourBefore = prevBoard ? scanThreats(prevBoard) : null;
+  const had = (t) => !!(t && mySide && t[mySide] && t[mySide].four);
+  step.four = had(fourAfter) && !had(fourBefore);
   return step;
 }
 
@@ -1537,6 +1557,13 @@ function markEvasion(steps, thresholds) {
 // skipped), so "consecutive" means consecutive HANDS OF THAT PLAYER, which is what a forcing
 // sequence actually is.
 //
+// `s.four` — "this hand left my side holding a four" — is the one input this pass cannot derive
+// from the step array, so it is stamped at analysis time by `scoreStep()` from the board AFTER
+// the hand (see the block there). ⚠ From 0.4.7 through 0.5.6 it was stamped by NOTHING: the two
+// reads below were the field's only mentions in the entire extension, so `uselessFour` was
+// structurally 0 and the weight the table spends on it never paid. No suite could see it because
+// every fixture wrote `four` by hand — a synthesised fixture cannot fail the way production does.
+//
 // The classification is by `prevBestWR`: the win rate the engine gave the best move in the
 // position BEFORE the run started. §1.1 is explicit that this is "序列第一步之前" and not the
 // first hand's own `bestWR` — a four that is already on the board has moved the win rate, so
@@ -1572,6 +1599,9 @@ function markFourRuns(steps, thresholds) {
     });
     let k = 0;
     while (k < own.length) {
+      // Written by scoreStep(); see the note in this pass's header. Read as a plain truth test
+      // (not `=== true`) so a step from a pre-0.4.7 archive — which has no such field — is a
+      // non-four rather than a crash, and the term stays exactly 0 for that corpus.
       if (!own[k].s.four) { k++; continue; }
       const start = k;
       while (k + 1 < own.length && own[k + 1].s.four) k++;
@@ -1692,6 +1722,10 @@ async function analyzeStep(eng, allMoves, playerIdx, actual, opts, budgetMs, rec
     budgetMs,
     analyzed: true,
     orderKnown: true,
+    // 0.4.7 §1.1 — declared here so the field exists on EVERY step shape, and left `false` by the
+    // 开局 early return below (an unanalysed hand is never a member of a four run). scoreStep()
+    // is what turns it true, from the board after the hand.
+    four: false,
   };
   // 0.4.8 §1.1: the position before this hand, for the shape-first forced-defence test. `board`
   // is the position AFTER the hand (what applyTerminal reads); slicing off the last stone gives
@@ -1810,6 +1844,9 @@ async function analyzeStepwise(record, opts, onProgress, onStep) {
         top1: false, top3: false, top5: false, top8: false, outsideTop5: false,
         bestWR: null, actualWR: null, loss: null, isSharp: false, forcedDefense: false,
         forcedDefenseHow: null,
+        // 0.4.7 §1.1 — never a member of a four run: markFourRuns() requires `analyzed`. Kept so
+        // every step in the array has the field rather than some having it and some not.
+        four: false,
       };
       // 0.4.5 §三/§3.4 — the step we just stopped analysing as an opening hand is exactly the
       // step that still has to be shape-tested. Only for scorable hands: a prejoin or
@@ -2439,6 +2476,11 @@ async function analyzeGame(record, opts, onProgress) {
       thinkMs: record.times[i] != null ? record.times[i] : null,
       analyzed: true,
       orderKnown: scorable(source),
+      // 0.4.7 §1.1 — same field, same writer (scoreStep) and same "false on a hand the engine was
+      // never asked about" rule as the stepwise path. Both paths must produce the same shape, or
+      // a game analysed 全局 and the same game replayed 逐步 would carry two different step
+      // records for one hand.
+      four: false,
     };
     const needEngine = scorable(source) && !step.isOpening &&
                        (suspect === 'both' || side === suspect);
