@@ -818,12 +818,19 @@
   // `STORAGE_FILTER_LIMITS` so the slider and the clamp can never disagree — the same rule the
   // transparency panel follows, and for the same reason (a max that disagrees with the clamp
   // snaps back on release with no visible cause).
+  //
+  // 0.5.5 §1.5.1 — the two captions are the sketch's own labels, one per segment. The combined
+  // `sfRangeLabel` names the PAIR and stays as the group heading; without a name on each bar the
+  // operator could not tell the floor from the ceiling, which is what the shipped panel looked
+  // like. Both are literals so `keys.cjs` sees them (a computed key never reaches the tables).
   function buildStorageFilter() {
     var lim = (G.STORAGE_FILTER_LIMITS || {});
     setTxt('sfTitle', T('viewer|存储过滤'));
     setTxt('sfEnabledLabel', T('viewer|启用'));
     setTxt('sfEnabledHint', T('viewer|开启后，下面两个条件任一命中的对局不自动保存回放。'));
     setTxt('sfRangeLabel', T('viewer|有序手下限 / 无序手上限'));
+    setTxt('sfMinCap', T('viewer|有序手下限'));
+    setTxt('sfMaxCap', T('viewer|无序手上限'));
     setTxt('sfHint', T('viewer|有序手低于下限、无序手高于上限的对局不会被自动存档。手动「存为存档」不受此过滤影响。'));
     SF_ROWS.forEach(function (row) {
       var hi = typeof lim[row.key] === 'number' ? lim[row.key] : 50;

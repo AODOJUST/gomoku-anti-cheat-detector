@@ -588,9 +588,23 @@
      logical properties are the ones that are correct here rather than merely policed. That is
      also why this note does not spell the two forbidden words out: quoting them was enough to
      turn the check red, which is the third time this project has paid for "count the comments
-     too". */
-  .dual-slider{display:flex;align-items:center;gap:6px;font-size:var(--ui-detail-small);
+     too".
+
+     ⚠ 0.5.5 — the caption under each segment is not decoration, it is the piece §1.5.1's sketch
+     drew and the 0.5.4 cut left out. That cut put ONE combined label above the bar, which names
+     the PAIR: it never said which of the two sliders was the floor and which was the ceiling, and
+     an operator looking at two anonymous bars either guessed or moved both. The sketch's third
+     caption (「装饰段」) is an annotation of the drawing, not a name for the operator — the gap is
+     `aria-hidden` for the same reason — so only the two bounds are printed.
+     `.ds-seg` is a column so each caption hangs under ITS OWN track; the gap gets a segment of
+     its own (with a `.ds-line` but no caption) purely so that it shares the control row's
+     geometry instead of needing a hand-tuned offset. */
+  .dual-slider{display:flex;align-items:flex-start;gap:10px;font-size:var(--ui-detail-small);
                width:100%;min-width:0}
+  .ds-seg{display:flex;flex-direction:column;gap:4px;flex:1 1 0;min-width:0}
+  .ds-seg-gap{flex:0 0 40px}
+  .ds-line{display:flex;align-items:center;gap:6px;min-height:28px;min-width:0}
+  .ds-cap{font-size:var(--ui-detail-small);color:var(--mut)}
   .ds-side{display:flex;align-items:center;gap:4px;flex:0 0 auto}
   .ds-arrow{min-height:0;padding:0;width:26px;height:26px;line-height:1;font-size:11px;
             background:var(--btn);color:var(--txt);border:1px solid var(--line);
@@ -606,6 +620,15 @@
           background:repeating-linear-gradient(90deg,transparent 0,transparent 4px,
             var(--line) 4px,var(--line) 8px)}
   .set-wide{grid-column:1/-1;min-width:0}
+  /* 0.5.5 — a checkbox is a switch, not a text field. `.set-item input{flex:1}` gave it
+     `flex-basis:0` + grow, so the CONTROL became a wide invisible box whose glyph sat in the
+     middle of the row: on the full-width rows (存储过滤's 启用, the widest of them) it drifted to
+     the centre of the panel, nowhere near the word it belongs to, and pushed its hint to the far
+     edge. Two rules, because there are two shapes: `.sw` wraps a checkbox WITH its own label text
+     (they travel together and one click on either toggles), and the bare `.fx` rows elsewhere keep
+     their label on the line above, so the box there only has to stop stretching. */
+  .sw{display:flex;align-items:center;gap:8px;cursor:pointer}
+  .set-item input[type=checkbox]{flex:0 0 auto;min-width:0}
   /* 0.5.2 §5.2 — the sub-heading inside a merged panel (「自定义检测模型」 under 引擎与自定义引擎,
      and 「自定义背景」 under 自定义UI与背景). Smaller than the panel's own h2 and separated by a
      rule, so the nesting is legible without another border: two stacked bordered panels would
@@ -1984,32 +2007,48 @@
     <div class="panel set-panel">
       <h2 id="sfTitle">存储过滤</h2>
       <div class="set-grid">
+        <!-- 0.5.5 — the switch and its name are ONE label. They used to be two flex children of a
+             full-width row, which let the pair drift to opposite ends of the panel (see `.sw`
+             above); nesting the input also makes the words clickable, which is what every other
+             switch on this page does. -->
         <div class="set-item set-wide">
-          <label id="sfEnabledLabel">启用</label>
-          <div class="fx">
+          <label class="sw">
             <input type="checkbox" id="sfEnabled">
-            <span class="hint" id="sfEnabledHint"></span>
-          </div>
+            <span id="sfEnabledLabel">启用</span>
+          </label>
+          <span class="hint" id="sfEnabledHint"></span>
         </div>
         <div class="set-item set-wide">
           <label id="sfRangeLabel">有序手下限 / 无序手上限</label>
           <div class="dual-slider" id="sfSlider">
-            <div class="ds-side ds-left">
-              <button type="button" class="ds-arrow" data-act="dec" data-target="minOrdered">◀</button>
-              <input type="number" min="0" max="50" step="1" id="setMinOrdered" value="14">
-              <button type="button" class="ds-arrow" data-act="inc" data-target="minOrdered">▶</button>
+            <div class="ds-seg">
+              <div class="ds-line">
+                <div class="ds-side ds-left">
+                  <button type="button" class="ds-arrow" data-act="dec" data-target="minOrdered">◀</button>
+                  <input type="number" min="0" max="50" step="1" id="setMinOrdered" value="14">
+                  <button type="button" class="ds-arrow" data-act="inc" data-target="minOrdered">▶</button>
+                </div>
+                <div class="ds-track ds-left">
+                  <input type="range" min="0" max="50" step="1" id="slMinOrdered" value="14">
+                </div>
+              </div>
+              <div class="ds-cap" id="sfMinCap">有序手下限</div>
             </div>
-            <div class="ds-track ds-left">
-              <input type="range" min="0" max="50" step="1" id="slMinOrdered" value="14">
+            <div class="ds-seg ds-seg-gap" aria-hidden="true">
+              <div class="ds-line"><div class="ds-gap"></div></div>
             </div>
-            <div class="ds-gap" aria-hidden="true"></div>
-            <div class="ds-track ds-right">
-              <input type="range" min="0" max="50" step="1" id="slMaxUnordered" value="5">
-            </div>
-            <div class="ds-side ds-right">
-              <button type="button" class="ds-arrow" data-act="dec" data-target="maxUnordered">◀</button>
-              <input type="number" min="0" max="50" step="1" id="setMaxUnordered" value="5">
-              <button type="button" class="ds-arrow" data-act="inc" data-target="maxUnordered">▶</button>
+            <div class="ds-seg">
+              <div class="ds-line">
+                <div class="ds-track ds-right">
+                  <input type="range" min="0" max="50" step="1" id="slMaxUnordered" value="5">
+                </div>
+                <div class="ds-side ds-right">
+                  <button type="button" class="ds-arrow" data-act="dec" data-target="maxUnordered">◀</button>
+                  <input type="number" min="0" max="50" step="1" id="setMaxUnordered" value="5">
+                  <button type="button" class="ds-arrow" data-act="inc" data-target="maxUnordered">▶</button>
+                </div>
+              </div>
+              <div class="ds-cap" id="sfMaxCap">无序手上限</div>
             </div>
           </div>
         </div>
