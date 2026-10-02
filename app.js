@@ -1965,41 +1965,59 @@ function rampDown(v, lo, hi) {
 //     operator chose (they sum to exactly 130%), not a limit of the mechanism — the panel says so,
 //     and 「先降一项再抬另一项」 is the two-step the operator performs. A profile that wants room to
 //     raise must first take it out of a term it cares less about;
-//   · the learner's two budgets are read OFF this table (`learn.js:group`), so they moved with it:
-//     基础统计六项 0.58 and 行为信号七项 0.72, where 0.5.5 had 0.63/0.37 and 0.5.6 §2 had 0.30/0.70.
+//   · the learner's two budgets are read OFF this table (`learn.js:group`), so they follow it with no
+//     second edit: 0.5.5 had 0.63/0.37, 0.5.6 §2 had 0.30/0.70, 补增 §三 moved them to 0.58/0.72, and
+//     the restore below puts them at 1.00/0.30.
 //
 // The 0.5.6 §2 split (five terms named, the other eight shrunk ×0.4783 to close at exactly 1.00) is
 // therefore history: the numbers below superseded it in the same release. It is kept described above
 // because the comment is the record of WHY the earlier shape existed, and because a suite that still
 // re-derives 0.4783 is re-deriving a table this build no longer ships.
+//
+// ⚠⚠ 补增 §三 后续 keeps 补增 §三's CEILING and its invariant, and replaces only its COMPOSITION.
+// 补增 §三's table summed to the same 1.30 but put the weight on 唯一手累计 (0.18) and 唯一手连击
+// (0.14) at the expense of the six statistics, and those two almost never fire: measured on the
+// operator's own 65 archives / 127 scored sides, **34% of that table (0.44 of 1.30) scored ZERO in
+// every single side** and the average side fell from 0.5.3's 46.9 to 36.8 — a regression the suites
+// could not see, because they check the total, the three mirrors and the ceiling, never whether a
+// term ever pays. The operator asked for the 130% ceiling to stay and for 0.5.3's effect to come
+// back, so the six statistics are 0.5.3's own numbers again (1.00 together) and the seven behaviour
+// signals are 0.5.3's seven (0.28) scaled ×30/28 to close the table at exactly 1.30.
+//
+// 补增 §三's own numbers (13% 7% 13% 11% 4% 10% / 4% 3% 4% 14% 18% 19% 10%) are therefore history
+// too. Both tables are the operator's; this one is their revert, and the reason it is written down
+// twice is that a future reader will otherwise re-derive the 13/18/19 table from the §三 spec.
 const BASE_WEIGHTS = {
-  // 补增 §三 — the operator's table, term for term, as percentages: 13% 7% 13% 11% 4% 10% for the six
-  // statistics, then 4% 3% 4% 14% 18% 19% 10% for the seven behaviour signals.
+  // 补增 §三 后续 — the 0.5.3 table, restored, as percentages: 20% 8% 22% 27% 8% 15% for the six
+  // statistics (0.5.3's own numbers, term for term) and 7% 4% 6% 4% 3% 3% 3% for the seven behaviour
+  // signals (0.5.3's 6/4/5/4/3/3/3, summing to 0.28, scaled ×30/28 so the table closes at 1.30).
   //
   // Two things this table must be read with, both of which the suite pins:
   //   · the TOTAL is the invariant, and it is **1.30** — exactly the ceiling, and the reason
   //     `verify-059` asserts `total <= SIGNAL_WEIGHT_SUM_MAX` on the shipped table rather than
-  //     leaving it to a pin.
-  //   · the DIRECTION survives from §2: the seven behaviour signals (0.72) still outweigh the six
-  //     statistics (0.58). 好点池 is no longer the largest single term — the operator's table gives
-  //     唯一手累计 0.18 and 好点池 0.19, so 好点池 is still the largest, but only by 0.01. The wiki's
-  //     「最大的一项」 claim is asserted against this table by verify-059 §3.
+  //     leaving it to a pin;
+  //   · the largest single term is **`out` (0.27)**, as it was in 0.5.3 — 好点池 is back to 0.03.
+  //     The wiki's 「最大的一项」 claim moved with it and is asserted against this table by
+  //     verify-059 §3.
   //
   // The two families, and where each term came from:
-  //   · 基础六项 (top1/acpl/sharp/out/desperate/time) — the 0.4.2 statistics, 0.58 together.
+  //   · 基础六项 (top1/acpl/sharp/out/desperate/time) — the 0.4.2 statistics, 1.00 together, and the
+  //     terms that actually pay: 42.9 of the 46.9 points an average 0.5.3 side scored.
   //   · 行为信号 (evasion/winBlunder/uselessFour/sharpStreak/sharpTotal/goodPool/liveThree) —
   //     0.4.2's evasion pair, 0.4.7's 无用冲四, 0.4.8's two 唯一手 runs, and 0.5.2/0.5.5's two
-  //     pools. These are the seven `learn.js` optimises in their own budget.
-  top1: 0.13, acpl: 0.07, sharp: 0.13, out: 0.11, desperate: 0.04, time: 0.10,
-  evasion: 0.04, winBlunder: 0.03,
-  uselessFour: 0.04,
-  sharpStreak: 0.14,
-  sharpTotal: 0.18,
+  //     pools. 0.30 together — the headroom under the ceiling, where 补增 §三 put 0.72. These are
+  //     the seven `learn.js` optimises in their own budget.
+  top1: 0.20, acpl: 0.08, sharp: 0.22, out: 0.27, desperate: 0.08, time: 0.15,
+  evasion: 0.07, winBlunder: 0.04,
+  uselessFour: 0.06,
+  sharpStreak: 0.04,
+  sharpTotal: 0.03,
   // 0.5.5 §1.1/§1.3.1 redefined the pool (Top5, share + streak) and made it first-class rather
-  // than a surcharge. It is still the largest single term, but by 0.01 over 唯一手累计.
-  goodPool: 0.19,
-  // §1.2's 活三 pool, at the operator's 0.10.
-  liveThree: 0.10,
+  // than a surcharge; 补增 §三 then made it the largest term. Restoring 0.5.3's shape puts the WEIGHT
+  // back at 0.03 — the definition is unchanged, only the number moved.
+  goodPool: 0.03,
+  // §1.2's 活三 pool, back at 0.5.3's 0.03.
+  liveThree: 0.03,
 };
 const BASE_THRESHOLDS = {
   // 0.4.3 §1.1: the ramp aTop1 now reads. `top1Lo`/`top1Hi` are kept because a pre-0.4.3

@@ -468,12 +468,12 @@ var GM_TAG_WIKI = (function () {
       zh: {
         meaning: '掉出前 5 候选的着手占比。',
         usage: '与「唯一手」互补：唯一手看它抓不抓得住对的一步，这一项看它会不会走出引擎根本没考虑的一步。',
-        impact: '权重 {w}，基础统计六项之一。',
+        impact: '权重 {w}，基础统计六项之一，也是整张权重表里最大的一项。',
       },
       en: {
         meaning: 'The share of hands played outside the engine\'s top-5 candidates.',
         usage: 'The complement of 唯一手: that one asks whether it finds the right move, this one whether it plays something the engine never considered.',
-        impact: 'Weight {w}, one of the six base statistics.',
+        impact: 'Weight {w}, one of the six base statistics — and the largest single term in the table.',
       },
     },
     {
@@ -587,7 +587,7 @@ var GM_TAG_WIKI = (function () {
         usage: '0.5.2 引入、0.5.5 重定义：看的是「一直保持在好点上」这件事本身，而不是某一步'
              + '是否命中首选。占比 55% 以下不计分，连续度不足 3 不扣分 —— 短连击只是不加分，'
              + '不会把占比挣来的分吃掉。',
-        impact: '权重 {w}，是整张权重表里最大的一项。没有好点时占比项为 0。',
+        impact: '权重 {w}，行为信号之一。没有好点时占比项为 0。',
       },
       en: {
         meaning: 'A good-point pool: 70% the share of hands inside the engine\'s top-5 candidates, '
@@ -597,7 +597,7 @@ var GM_TAG_WIKI = (function () {
              + 'good points rather than whether any single hand hit the top choice. Nothing scores '
              + 'below a 55% share, and a run shorter than three costs nothing — a short run fails to '
              + 'add, it does not eat the share\'s contribution.',
-        impact: 'Weight {w}, the largest single term in the table. Zero with no good points at all.',
+        impact: 'Weight {w}, one of the behaviour signals. Zero with no good points at all.',
       },
     },
     {

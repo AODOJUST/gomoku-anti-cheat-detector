@@ -91,12 +91,12 @@
     //
     // The values are ABSOLUTE weights (a fraction of the score, like every number in
     // BASE_WEIGHTS), not shares to be renormalised: the operator's table is allowed to sum to
-    // anything up to SIGNAL_WEIGHT_SUM_MAX — and the SHIPPED table itself is now exactly 1.30, the
-    // whole ceiling, because the table the operator tuned in the panel became the factory default
-    // (补增 §三). A table that still summed to 1.00 by construction would make the 130% ceiling unstatable, and it would also
-    // mean an operator who lifted every signal by the same factor saw no change at all. The cost is
-    // the one 0.5.5 §1.3 wrote down: the score stops being comparable across releases. That is the
-    // operator's call here, and the panel says so next to the total.
+    // anything up to SIGNAL_WEIGHT_SUM_MAX — and the SHIPPED table itself is exactly 1.30, the
+    // whole ceiling (补增 §三 后续: 0.5.3's six statistics at 1.00, plus its seven behaviour signals
+    // scaled to 0.30). A table that still summed to 1.00 by construction would make the 130% ceiling
+    // unstatable, and it would also mean an operator who lifted every signal by the same factor saw
+    // no change at all. The cost is the one 0.5.5 §1.3 wrote down: the score stops being comparable
+    // across releases. That is the operator's call here, and the panel says so next to the total.
     //
     // The DOMAIN is 0–SIGNAL_WEIGHT_MAX per signal and 0–SIGNAL_WEIGHT_SUM_MAX for the resolved
     // table, enforced here as well as by the inputs' own `max` — the stored profile is the one
@@ -1852,32 +1852,34 @@
   // 0.3.1 defaults, which is exactly the pre-0.3.3 behaviour.
   // 0.3.3 §3.5 / 0.4.2 §2.3. Every term of the risk score lives in ONE table. Through 0.5.5 §1.3 and
   // 0.5.6 §2 that table summed to 1.00 as a whole (好点池 became a first-class term, and §2 moved the
-  // split without moving the total). **0.5.6 补增 §三 replaces that total**: the operator tunes the
-  // table in the new 检测信号权重 panel and confirmed that their own numbers become the shipped
-  // default, so this table is now **1.30 — exactly the 130% ceiling** (six statistics 0.58 + seven
-  // behaviour signals 0.72), and the invariant is 「0 < Σ ≤ SIGNAL_WEIGHT_SUM_MAX (1.30)」. See
-  // app.js BASE_WEIGHTS for the history and for what the change means for a score.
+  // split without moving the total). **0.5.6 补增 §三 replaced that total**, and **补增 §三 后续
+  // replaced its composition**: the operator tunes the table in the 检测信号权重 panel, and 补增 §三
+  // shipped their hand-tuned 1.30 — which scored 36.8 on their own 127 archived sides against 0.5.3's
+  // 46.9, because 34% of it sat on terms that never fire. 后续 restored 0.5.3's shape (six statistics
+  // 1.00 + seven behaviour signals 0.30) and kept the total at **1.30 — exactly the 130% ceiling**,
+  // so the invariant is still 「0 < Σ ≤ SIGNAL_WEIGHT_SUM_MAX (1.30)」. See app.js BASE_WEIGHTS for
+  // the history and for what the change means for a score.
   //
   // This is the same literal set as app.js BASE_WEIGHTS and learn.js FALLBACK_WEIGHTS — the three
   // are one set of numbers. A value that is absent or non-numeric here is ignored by riskParams(),
   // so a profile written before this build simply keeps its own stored numbers.
   var DEFAULT_WEIGHTS = {
-    top1: 0.13, acpl: 0.07, sharp: 0.13, out: 0.11, desperate: 0.04, time: 0.10,
-    evasion: 0.04, winBlunder: 0.03,
-    uselessFour: 0.04,
-    sharpStreak: 0.14,
-    sharpTotal: 0.18,
-    goodPool: 0.19,
-    liveThree: 0.10,
+    top1: 0.20, acpl: 0.08, sharp: 0.22, out: 0.27, desperate: 0.08, time: 0.15,
+    evasion: 0.07, winBlunder: 0.04,
+    uselessFour: 0.06,
+    sharpStreak: 0.04,
+    sharpTotal: 0.03,
+    goodPool: 0.03,
+    liveThree: 0.03,
   };
   // 0.5.6 补增 §三 — the two ceilings on the operator's own weight table (see DEFAULTS above).
   //
   // `SIGNAL_WEIGHT_MAX` is one signal as a fraction of the score: 1.00 means "this signal alone
   // could carry a full 100-point score". `SIGNAL_WEIGHT_SUM_MAX` is the whole table: since
-  // 补增 §三 the SHIPPED default is **1.30, i.e. the entire ceiling** (the operator's own table —
-  // see DEFAULT_WEIGHTS) and an operator may not go above it. It is a ceiling and not a target: a
-  // profile that never opened the panel runs at the shipped 1.30, which is 0.5.5's 1.00 plus the 30%
-  // this release's default table deliberately adds.
+  // 补增 §三 the SHIPPED default is **1.30, i.e. the entire ceiling** (see DEFAULT_WEIGHTS) and an
+  // operator may not go above it. It is a ceiling and not a target: a profile that never opened the
+  // panel runs at the shipped 1.30, which is 0.5.3's table (1.28) with its seven behaviour signals
+  // scaled up to fill the ceiling.
   //
   // The sum is deliberately NOT a renormalisation budget. The risk score is
   // `clamp(Σ weight_i × a_i × 100, 0, 100)` against the 70/40 cuts, so a table of 1.30 makes a

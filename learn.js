@@ -36,20 +36,20 @@
   'use strict';
   if (g.GMLearn) return;
 
-  // 0.5.6 补增 §三 — same table as app.js BASE_WEIGHTS / storage.js DEFAULT_WEIGHTS: the operator's
-  // own numbers, total **1.30 — exactly the 130% ceiling** (six statistics 0.58 + seven behaviour
-  // signals 0.72) where 0.5.5 had 1.00 and 0.5.6 §2 kept it there. The two-group structure below
-  // (BASE_KEYS = the six statistics, EVASION_KEYS = the seven behaviour signals) is a separate
-  // question from the VALUES and is unchanged: `group()` reads both budgets off this table, so the
-  // split follows the numbers (0.58 / 0.72) without a second edit.
+  // 0.5.6 补增 §三 后续 — same table as app.js BASE_WEIGHTS / storage.js DEFAULT_WEIGHTS: 0.5.3's
+  // shape, total **1.30 — exactly the 130% ceiling** (six statistics 1.00 + seven behaviour signals
+  // 0.30), where 补增 §三 had 0.58/0.72, 0.5.5 had 1.00 and 0.5.6 §2 kept it there. The two-group
+  // structure below (BASE_KEYS = the six statistics, EVASION_KEYS = the seven behaviour signals) is a
+  // separate question from the VALUES and is unchanged: `group()` reads both budgets off this table,
+  // so the split follows the numbers (1.00 / 0.30) without a second edit.
   var FALLBACK_WEIGHTS = {
-    top1: 0.13, acpl: 0.07, sharp: 0.13, out: 0.11, desperate: 0.04, time: 0.10,
-    evasion: 0.04, winBlunder: 0.03,
-    uselessFour: 0.04,
-    sharpStreak: 0.14,
-    sharpTotal: 0.18,
-    goodPool: 0.19,
-    liveThree: 0.10,
+    top1: 0.20, acpl: 0.08, sharp: 0.22, out: 0.27, desperate: 0.08, time: 0.15,
+    evasion: 0.07, winBlunder: 0.04,
+    uselessFour: 0.06,
+    sharpStreak: 0.04,
+    sharpTotal: 0.03,
+    goodPool: 0.03,
+    liveThree: 0.03,
   };
   var FALLBACK_THRESHOLDS = {
     // 0.4.3 §1.1: the ramp aTop1 reads. top1Lo/top1Hi stay for a pre-0.4.3 archive and for the
@@ -736,10 +736,10 @@
     // statistic, and the seven special signals (each of which is exactly 0 on a game that never
     // fired it) are fitted inside their own budget, so a weak corpus cannot gut the base. Each
     // budget is read off the defaults, so changing a default weight moves its group's budget with
-    // it and no rebalancing release has to touch this code: 0.5.6 补增 §三 put the six on 0.58 and
-    // the seven on 0.72 (0.5.6 §2 had 0.30 / 0.70, 0.5.5 had 0.63 / 0.37) — the numbers are
-    // `defaultWeights()`'s, never this function's. ⚠ The two budgets now add up to 1.30 rather
-    // than 1.00, so a learned table does too; see `riskOfSub` below.
+    // it and no rebalancing release has to touch this code: 补增 §三 后续 put the six on 1.00 and
+    // the seven on 0.30 (补增 §三 had 0.58 / 0.72, 0.5.6 §2 had 0.30 / 0.70, 0.5.5 had 0.63 / 0.37) —
+    // the numbers are `defaultWeights()`'s, never this function's. ⚠ The two budgets add up to 1.30
+    // rather than 1.00, so a learned table does too; see `riskOfSub` below.
     var dw = defaultWeights();
     var group = function (keys) {
       var raw = {}, sum = 0, budget = 0, i;
