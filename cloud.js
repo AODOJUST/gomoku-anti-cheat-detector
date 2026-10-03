@@ -44,8 +44,8 @@
   // Empty = not configured = purely local. `http://127.0.0.1:54321` is the address `supabase
   // start` gives a local stack, which is what a developer testing against a local backend would
   // paste in here; it is accepted by `isConfigured()` on purpose.
-  var SUPABASE_URL = '';
-  var SUPABASE_ANON_KEY = '';
+  var SUPABASE_URL = 'https://truajeswcpofgqqtbmkm.supabase.co';
+  var SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRydWFqZXN3Y3BvZmdxcXRibWttIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTA5OTQ2MTAsImV4cCI6MjEwNjU3MDYxMH0.grIeOVKjGzjhYhhJl8qxY_IubAt1jpxOthhQDvdjxMU';
 
   var FUNCTIONS_PATH = '/functions/v1/';
   // 20s is generous for a cold Edge Function (they spin up on first call) and still short enough
