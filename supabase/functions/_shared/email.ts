@@ -36,8 +36,7 @@ export const EMAIL_CODE_RESEND_MS = 60 * 1000;
 export const EMAIL_CODE_RE = /^\d{6}$/;
 
 const RESEND_ENDPOINT = "https://api.resend.com/emails";
-/** §2.4's subject, verbatim. */
-const MAIL_SUBJECT = "白身 · 邮箱验证码";
+const MAIL_SUBJECT = "Your Baishen verification code";
 
 /** A row of public.email_codes (004_email_codes.sql). */
 export interface EmailCodeRow {
@@ -87,7 +86,47 @@ export function mailFrom(): string {
 
 /** §2.4's body, with the TTL read from the constant that the query also filters on. */
 export function codeEmailHtml(code: string): string {
-  return `<p>你的验证码是：<strong>${code}</strong></p><p>${EMAIL_CODE_TTL_MINUTES} 分钟内有效。</p>`;
+  return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Your verification code</title>
+</head>
+<body style="margin:0;padding:0;background:#0f1115;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;color:#e6e8eb;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#0f1115;padding:32px 0;">
+    <tr><td align="center">
+      <table role="presentation" width="560" cellpadding="0" cellspacing="0" style="background:#171a21;border-radius:12px;overflow:hidden;">
+        <tr>
+          <td style="padding:32px 40px 8px;">
+            <div style="font-size:20px;font-weight:700;letter-spacing:0.5px;">Baishen <span style="color:#7aa2ff;">·</span> 白身</div>
+          </td>
+        </tr>
+        <tr>
+          <td style="padding:16px 40px 0;font-size:16px;line-height:1.5;">
+            Your verification code is
+          </td>
+        </tr>
+        <tr>
+          <td style="padding:16px 40px;">
+            <div style="font-size:36px;font-weight:700;letter-spacing:10px;color:#ffffff;background:#0f1115;border:1px solid #2a2f3a;border-radius:8px;padding:16px 0;text-align:center;">${code}</div>
+          </td>
+        </tr>
+        <tr>
+          <td style="padding:0 40px 24px;font-size:14px;line-height:1.6;color:#9aa3b2;">
+            This code expires in ${EMAIL_CODE_TTL_MINUTES} minutes. If you didn't request it, you can safely ignore this email.
+          </td>
+        </tr>
+        <tr>
+          <td style="padding:20px 40px;border-top:1px solid #232733;font-size:12px;color:#6b7280;">
+            © Baishen · Gomoku anti-cheat detector
+          </td>
+        </tr>
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>`;
 }
 
 export type SendResult = { ok: true } | { ok: false; message: string };
