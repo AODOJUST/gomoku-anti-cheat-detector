@@ -201,9 +201,9 @@ export async function signJwt(
   user: JwtSubject,
   days: number = 30,
 ): Promise<{ jwt: string; expiresAt: string }> {
-  const secret = Deno.env.get("SUPABASE_JWT_SECRET");
+  const secret = Deno.env.get("JWT_SECRET") ?? Deno.env.get("SUPABASE_JWT_SECRET");
   const url = Deno.env.get("SUPABASE_URL");
-  if (!secret) throw new Error("SUPABASE_JWT_SECRET must be set");
+  if (!secret) throw new Error("JWT_SECRET must be set");
   if (!url) throw new Error("SUPABASE_URL must be set");
 
   const now = Math.floor(Date.now() / 1000);
@@ -270,8 +270,8 @@ export async function verifyJwtAllowExpired(
   token: string,
   graceDays: number = 30,
 ): Promise<{ token: VerifiedToken; expired: boolean } | null> {
-  const secret = Deno.env.get("SUPABASE_JWT_SECRET");
-  if (!secret) throw new Error("SUPABASE_JWT_SECRET must be set");
+  const secret = Deno.env.get("JWT_SECRET") ?? Deno.env.get("SUPABASE_JWT_SECRET");
+  if (!secret) throw new Error("JWT_SECRET must be set");
 
   const parts = token.split(".");
   if (parts.length !== 3) return null;
