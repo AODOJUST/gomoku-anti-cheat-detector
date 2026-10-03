@@ -132,39 +132,107 @@ export function codeEmailHtml(code: string): string {
 export type SendResult = { ok: true } | { ok: false; message: string };
 
 /**
- * Hand the code to Resend.
+ * Hand one message to Resend. THE transport — every mail this backend sends goes through here.
  *
- * Never throws: a mail failure is an `EMAIL_FAILED` answer, not a 500, because it is a DEPLOYMENT
- * problem the operator has to fix (an unverified sender domain, a revoked key, a quota) and the
- * generic catch-all would report it as 「稍后再试」 — which is the one sentence that never helps.
- * The provider's own message is passed along for the server log and for the operator's console.
+ * Never throws: a mail failure is a value, not an exception, because in every caller it is a
+ * DEPLOYMENT problem the operator has to fix (an unverified sender domain, a revoked key, a quota)
+ * rather than a request the sender got wrong. The provider's own message is passed back for the
+ * server log and for the operator's console.
+ *
+ * ⚠ 1.0.2 §2.5.7 gives this send as an INLINE `fetch` with `from` written out as the literal
+ * 「白身 <noreply@baishen.app>」. The literal is not what ships — `mailFrom()` is, and the reason is
+ * the same one `sendEmailCode` already documents above: Resend refuses a sender on a domain the
+ * account has not verified, so a hard-coded address would make the feedback reply the one mail in
+ * the product that ignores `MAIL_FROM`. The spec's SHAPE (POST the Resend endpoint with a key from
+ * the environment) is the requirement; the address was an example.
  */
-export async function sendEmailCode(to: string, code: string): Promise<SendResult> {
-  const key = Deno.env.get("RESEND_API_KEY");
-  if (!key) return { ok: false, message: "RESEND_API_KEY is not set" };
+export async function sendMail(to: string, subject: string, html: string): Promise<SendResult> {
+  const smtpUser = Deno.env.get("SMTP_USER");
+  const smtpPass = Deno.env.get("SMTP_PASS");
+  if (!smtpUser || !smtpPass) return { ok: false, message: "SMTP_USER/SMTP_PASS not set" };
 
   try {
-    const res = await fetch(RESEND_ENDPOINT, {
-      method: "POST",
-      headers: {
-        "Authorization": `Bearer ${key}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        from: mailFrom(),
-        to,
-        subject: MAIL_SUBJECT,
-        html: codeEmailHtml(code),
-      }),
+    const nodemailer = await import("https://esm.sh/nodemailer@6.9.13");
+    const transporter = nodemailer.default.createTransport({
+      host: "smtp.qq.com",
+      port: 465,
+      secure: true,
+      auth: { user: smtpUser, pass: smtpPass },
     });
-    if (!res.ok) {
-      const detail = await res.text().catch(() => "");
-      return { ok: false, message: `Resend ${res.status}: ${detail.slice(0, 300)}` };
-    }
+    await transporter.sendMail({
+      from: `Baishen <${smtpUser}>`,
+      to,
+      subject,
+      html,
+    });
     return { ok: true };
   } catch (err) {
-    return { ok: false, message: (err as Error)?.message ?? "network" };
+    return { ok: false, message: (err as Error)?.message ?? "smtp" };
   }
+}
+
+/**
+ * The verification code (§2.4), as one call on the transport above.
+ *
+ * Kept as its own name rather than inlined at the two call sites because the SUBJECT lives here and
+ * §2.4 spells it: 「白身 · 邮箱验证码」. Two senders with two subjects is how one of them ends up in
+ * a spam folder.
+ */
+export async function sendEmailCode(to: string, code: string): Promise<SendResult> {
+  return await sendMail(to, MAIL_SUBJECT, codeEmailHtml(code));
+}
+
+/** §2.5.7's subject, verbatim. */
+const REPLY_SUBJECT = "白身 · 你的反馈已回复";
+
+/**
+ * Escape text that is about to be interpolated into a mail body.
+ *
+ * ⚠ 1.0.2 §2.5.7 builds the reply body with a template literal — `「${title}」` and
+ * `<blockquote>${reply}</blockquote>` — and ships it as-is. Both of those are free text typed by
+ * somebody else: `title` came from a user through the feedback form, `reply` from an admin through
+ * whatever tool the operator likes. Unescaped, an admin whose reply contains `<` truncates the
+ * message, and a report titled with a `<script>` tag is markup in a mail client. Neither is far
+ * fetched for a Bug report about HTML.
+ *
+ * Same rule the panel already follows for `esc()`: 「HTML 只能由渲染函数造」. The text goes through
+ * here; the surrounding tags are constants.
+ *
+ * `codeEmailHtml` above needs no equivalent because its one interpolation is a 6-digit code this
+ * server generated — the distinction is WHERE THE TEXT CAME FROM, not which function it is in.
+ */
+export function escapeHtml(text: string): string {
+  return String(text == null ? "" : text)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+/** §2.5.7's body, escaped, with the reply as a block quote. */
+export function feedbackReplyHtml(title: string, reply: string): string {
+  return `<p>你的反馈「${escapeHtml(title)}」已收到回复：</p>` +
+    `<blockquote>${escapeHtml(reply)}</blockquote>`;
+}
+
+/**
+ * §2.5.7 「当管理员回复时，通过 Resend 发送邮件给用户」.
+ *
+ * Best-effort by construction: the reply is already stored by the time this runs, and the caller
+ * ignores the result except to log it. A mail that cannot be sent must not undo a reply an admin has
+ * already written — which is why this returns a `SendResult` instead of throwing, and why a failure
+ * never becomes an error response.
+ *
+ * `MAIL_FROM` is applied inside `sendMail`; see the ⚠ there for why §2.5.7's literal address is not
+ * what ships.
+ */
+export async function sendFeedbackReply(
+  to: string,
+  title: string,
+  reply: string,
+): Promise<SendResult> {
+  return await sendMail(to, REPLY_SUBJECT, feedbackReplyHtml(title, reply));
 }
 
 export type IssueResult =
@@ -217,7 +285,7 @@ export async function issueEmailCode(sb: SupabaseClient, email: string): Promise
     // Roll the row back so the retry is not rate-limited by a mail that never arrived.
     const { error: undoError } = await sb.from("email_codes").delete().eq("id", id);
     if (undoError) console.error("email_codes rollback failed:", undoError);
-    console.error(`auth-send-code: Resend refused ${email}: ${sent.message}`);
+    console.error(`auth-send-code: mail refused ${email}: ${sent.message}`);
     return {
       ok: false,
       response: fail("EMAIL_FAILED", HttpStatus.INTERNAL_SERVER_ERROR,
