@@ -1,0 +1,111 @@
+// auth-renew -- exchange a still-valid (or just-expired) session for a fresh 30-day one.
+//
+// POST { deviceId, userAgent? }   Authorization: Bearer <jwt>
+//   -> 200 { jwt, expiresAt }
+//
+// Renewal cadence: the extension calls this every 7 days. A 30-day token therefore
+// comfortably outlives the interval, and even a client that has been offline for a
+// while can still renew, because we accept a signature-valid token whose `exp` has
+// passed within the grace window (see verifyJwtAllowExpired in _shared/client.ts).
+// That is also why this function is deployed with --no-verify-jwt: the platform's own
+// gate would reject an expired token before our code ever runs.
+
+import { serve } from "https://deno.land/std/http/server.ts";
+import { handlePreflight } from "../_shared/cors.ts";
+import { badRequest, fail, internal, json, methodNotAllowed } from "../_shared/errors.ts";
+import {
+  bearerToken,
+  serviceClient,
+  signJwt,
+  verifyJwtAllowExpired,
+  type UserRow,
+} from "../_shared/client.ts";
+
+const MAX_DEVICES = 3;
+const JWT_DAYS = 30;
+/** How far past `exp` a token may be and still be exchanged. */
+const RENEW_GRACE_DAYS = 30;
+
+serve(async (req: Request): Promise<Response> => {
+  const preflight = handlePreflight(req);
+  if (preflight) return preflight;
+  if (req.method !== "POST") return methodNotAllowed();
+
+  try {
+    const token = bearerToken(req);
+    if (!token) return fail("UNAUTHORIZED", 401, "Missing bearer token");
+
+    // Signature-valid + within the grace window, even if already expired.
+    const verified = await verifyJwtAllowExpired(token, RENEW_GRACE_DAYS);
+    if (!verified) return fail("UNAUTHORIZED", 401, "Invalid or expired token");
+
+    const body = await req.json().catch(() => null) as Record<string, unknown> | null;
+    if (!body || typeof body !== "object") return badRequest("Invalid JSON body");
+
+    const rawDeviceId = body.deviceId;
+    if (typeof rawDeviceId !== "string" || rawDeviceId.trim() === "" || rawDeviceId.length > 256) {
+      return badRequest("Missing or invalid deviceId");
+    }
+    const deviceId = rawDeviceId.trim();
+
+    const userAgent = typeof body.userAgent === "string"
+      ? body.userAgent.slice(0, 512)
+      : (req.headers.get("user-agent") ?? "").slice(0, 512);
+
+    const sb = serviceClient();
+
+    const { data: found, error: userError } = await sb
+      .from("users")
+      .select("*")
+      .eq("id", verified.token.sub)
+      .maybeSingle();
+    if (userError) throw userError;
+    const userRow = (found as UserRow | null) ?? null;
+
+    // A token for a row that no longer exists is worthless.
+    if (!userRow) return fail("UNAUTHORIZED", 401, "Account not found");
+    // A deleted account is on its way to purging -- do not resurrect it.
+    if (userRow.deleted_at) return fail("UNAUTHORIZED", 401, "Account has been deleted");
+    if (userRow.is_banned === true) return fail("BANNED", 403, "Account is banned");
+
+    // Keep the device binding honest: register if new (respecting the limit), touch if
+    // known. Deleting the device rows (as auth-delete-account does) is what forces a
+    // user off every device.
+    const nowIso = new Date().toISOString();
+    const { data: existingDevice, error: deviceLookupError } = await sb
+      .from("devices")
+      .select("id")
+      .eq("user_id", userRow.id)
+      .eq("device_id", deviceId)
+      .maybeSingle();
+    if (deviceLookupError) throw deviceLookupError;
+
+    if (!existingDevice) {
+      const { count, error: countError } = await sb
+        .from("devices")
+        .select("id", { count: "exact", head: true })
+        .eq("user_id", userRow.id);
+      if (countError) throw countError;
+      if ((count ?? 0) >= MAX_DEVICES) {
+        return fail("DEVICE_LIMIT", 409, `At most ${MAX_DEVICES} devices may be active`);
+      }
+      const { error: insertError } = await sb
+        .from("devices")
+        .insert({ user_id: userRow.id, device_id: deviceId, user_agent: userAgent, last_seen: nowIso });
+      if (insertError) throw insertError;
+    } else {
+      const { error: touchError } = await sb
+        .from("devices")
+        .update({ last_seen: nowIso, user_agent: userAgent })
+        .eq("id", existingDevice.id);
+      if (touchError) throw touchError;
+    }
+
+    // Fresh full-length token, signed the same way as in auth-activate.
+    const { jwt, expiresAt } = await signJwt({ id: userRow.id, email: userRow.email }, JWT_DAYS);
+    return json({ jwt, expiresAt });
+  } catch (err) {
+    console.error("auth-renew failed:", err);
+    return internal("Renewal failed, please try again");
+  }
+});

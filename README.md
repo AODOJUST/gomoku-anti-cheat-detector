@@ -19,6 +19,8 @@
 - **自动搭话与提问**（可选）：开局发反作弊提示，对手上嫌疑线后自动提问；支持自定义问题与风险档位
 - **一键更新**：自动从 GitHub 下载新版 zip 并通知重载
 - **面板外观自定义**：背景图、透明度、模糊度、拖动位置
+- **云账户（可选，1.0.0 新增）**：填入激活码后可解锁云同步 / 用户主页 / 徽章 / 跨设备同步（最多 3 台）。
+  **不激活完全不影响上面任何一项**——上面全部是本机功能，永久免费、离线可用
 
 > 仅用于观战学习与可疑手提示，不替代官方判罚。
 
@@ -66,12 +68,46 @@
 - 点扩展图标打开查看器，回看历史归档、人工标注、训练阈值
 - 在"引擎设置"里可切换 Rapfi / KataGomo / 自定义权重包
 
+## 云账户与激活（1.0.0）
+
+**核心检测永远免费、纯本地。** 激活码解锁的是云功能，不是检测功能。
+
+- 拿到激活码后，在 **设置 → 云账户与同步** 里填入即可；格式 `BS-XXXX-XXXX-XXXX-XXXX`，大小写与横杠随便打，扩展会自己规整；
+- 首次激活会问你是否把本地已有数据上传，**默认不传**，且逐类可勾；
+- 云同步**默认关闭**，八个同步类别逐类可选；
+- 离线宽限 30 天：令牌过期后云功能受限或锁定，**本地功能在任何状态下都可用**；
+- 同一个码最多 **3 台**设备同时在线。
+
+完整说明见 [`docs/ACTIVATION.md`](docs/ACTIVATION.md)；隐私政策见 [`PRIVACY.md`](PRIVACY.md)（扩展「关于」面板有链接）。
+
+> 未配置后端时（出厂状态）扩展里没有云端地址，所有云功能显示「未配置」并且**不发任何网络请求**——这时它就等于 0.5.7.1 减去两个导航按钮。
+
 ## 技术说明
 
 - 引擎通信：Rapfi 走 YXBOARD + YXNBEST，解析 INFO PV/EVAL/WINRATE；KataGomo 走 KataGo analysis JSON
 - 坐标：15×15，x=字母-a（0=最左），y=15-数字（0=最上）
-- 数据仅在本地浏览器运行，棋谱与个人数据不上传任何服务器；自定义权重包存在本浏览器 IndexedDB，永不外发
+- **默认状态下**（未激活 / 未开云同步）数据只在本地浏览器里：棋谱、检测结果、设置、黑名单都不上传任何服务器；自定义权重包存在本浏览器 IndexedDB
+- **激活并主动开启云同步之后**，只有你勾选的类别会上传到云端；棋谱原始数据与检测结果**永远不上传**。范围见 [`PRIVACY.md`](PRIVACY.md) 第 2、3 节
 - KataGomo 地址为可选 host 权限，由操作者首次使用时授权
+- 云端使用 Supabase：扩展里只有**公开的 anon key**（写操作走 RLS），service role key 只存在于服务端 Edge Functions
+
+## 构建（开发者）
+
+扩展**以源码目录直接加载**，日常开发不需要构建，也不要做构建。混淆只在发布前进行（§8.4）：
+
+```bash
+npm install          # 只装 javascript-obfuscator，一个依赖
+npm run build        # copy-static → obfuscate → package
+```
+
+- `build/obfuscate.js` 逐文件分层：`app.js`/`learn.js` 重度，开局表/数据结构/翻译表/站点配置中度，UI 轻度；
+  `hook.js`、`worker.js`、`manifest.json` **不混淆**（MAIN world 入口 / `importScripts` 路径 / Chrome 自己先读）；
+- MV3 硬约束由脚本自己把关：关 `rc4` / `selfDefending` / `debugProtection` / `eval`，保留
+  `renameGlobals: false` 与 `disableConsoleOutput: false`，并断言产物里没有 `eval`、没有消息类型被改名；
+- 产物在 `build/release/`（已在 `.gitignore`），sourcemap 写进 `build/sourcemaps/` 且**不进发布包**；
+- `supabase/` 与 `docs/` 不随发布包分发，见 `build/copy-static.js` 的排除清单。
+
+> 诚实说明（§8.5）：Rapfi 是开源的，混淆防的是随手看懂后处理算法的人，不是下决心的逆向者。**它不是安全边界，只是提高门槛。**
 
 ## 免责
 

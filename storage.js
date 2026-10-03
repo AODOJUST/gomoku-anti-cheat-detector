@@ -67,6 +67,24 @@
   // the archives, and a curated set is small by nature.
   var MAX_SAMPLES = 300;
 
+  // ---- 1.0.0 云账户：三个「不是设置」的键 ----------------------------------------------------
+  // These live at the top level of the store rather than inside `settings`, for two reasons that
+  // both come back to the backup export (§一 of 0.5.6, extended in 1.0.0):
+  //
+  //   * they are not operator PREFERENCES — nothing about a session token or a write queue
+  //     belongs on the 设置 page, so putting them in `settings` would mean DEFAULTS carried
+  //     fields no control owns; and
+  //   * `settings` is the object `stripSecrets()` copies out WHOLESALE when the operator exports
+  //     a backup, and a JWT is a credential. A backup file is a thing people mail to each other.
+  //     Keeping the session out of `settings` makes 「backups never contain a token」 true by
+  //     construction rather than by one more `delete` someone has to remember.
+  var SESSION_KEY = 'cloudSession';
+  var DEVICE_KEY = 'deviceId';
+  var SYNC_QUEUE_KEY = 'syncQueue';
+  // §7.4: the queue is bounded. A queue that grows without limit turns a long offline spell into
+  // a storage-quota problem, and `chrome.storage.local` is already shared with archives+samples.
+  var MAX_SYNC_QUEUE = 500;
+
   // Every detection knob the operator can change is remembered. `aiThinkMs: null`
   // means "follow thinkMs" — the AI-think control in the viewer mirrors it.
   var DEFAULTS = {
@@ -210,6 +228,37 @@
     // and the mandatory-English rule. Empty by default, so an untouched profile has no custom
     // menu at all and 0.5.1's question menu is exactly what it was.
     customQuestions: [],
+    // ---- 1.0.0 §11.2 — the LOCAL half of the cloud account ----------------------------------
+    // PREFERENCES ONLY. No token, no device id, no queue: those are the three top-level keys
+    // declared above, precisely so that this object stays safe to copy into a backup file.
+    //
+    // `syncEnabled` defaults to false because §0 #3 decided it and §7.1 restates it — 「云同步是
+    // 默认关闭还是默认开启？→ 默认关闭，用户主动开启」, and 「首次激活时不自动开启」. Turning sync
+    // on is a deliberate act; an installer that started uploading on its own would be a surprise
+    // the operator could not undo in time.
+    //
+    // The per-category flags are the §7.2 「默认同步」 column, which is a DIFFERENT question: it
+    // is what is ticked the first time the operator opens the panel, not whether anything is
+    // moving. The two ❌ rows there are hard (二进制过大) and the two ⚠️ rows default off because
+    // they are the two with a device-specific hazard — `settings` carries `threadNum`, which is a
+    // fact about THIS machine, and 回放存档 is the large one.
+    cloud: {
+      syncEnabled: false,
+      syncCats: {
+        samples: true, archives: false, blacklist: true, settings: false,
+        customQuestions: true, learnedParams: true, customEngines: false, backgrounds: false,
+      },
+      // §7.3: 'auto' takes the newer `updated_at`; 'ask' prompts when both sides moved within a
+      // minute of each other. 'auto' is the default because §7.3 presents the prompt as the
+      // fallback for that narrow window, not as the normal path.
+      conflict: 'auto',
+      lastSyncAt: 0,
+      // §1.2's 升级引导 is shown ONCE. Not a preference the operator ever sets — it is the answer
+      // to 「have we asked this already」, and without it 「暂不激活，继续本地使用」 would be asked
+      // again on every single boot, which is the behaviour that trains people to dismiss dialogs
+      // without reading them.
+      guideSeen: false,
+    },
   };
 
   var MIN_MOVES_LO = 5;
@@ -454,6 +503,40 @@
     return out;
   }
 
+  // ---- 1.0.0 — 云同步偏好 (§7.1–§7.3) -------------------------------------------------------
+  // Field-by-field against the DEFAULTS block, like every other object-valued setting: the
+  // profile is the one input the UI never validates, and it is also the one that arrives from a
+  // stranger's backup file. Rebuilt rather than merged, so an unknown category someone adds to a
+  // file is dropped instead of being carried forward forever.
+  //
+  // `syncCats` is keyed by the EIGHT §7.2 rows, not by whatever the file lists — a category the
+  // sync engine has no reader for must not read as "on", or `syncNow()` would walk a table that
+  // does not exist.
+  var SYNC_CATS = ['samples', 'archives', 'blacklist', 'settings',
+    'customQuestions', 'learnedParams', 'customEngines', 'backgrounds'];
+  var SYNC_CONFLICTS = ['auto', 'ask'];
+
+  function normalizeCloud(v) {
+    var d = DEFAULTS.cloud;
+    var src = (v && typeof v === 'object') ? v : {};
+    var cats = {};
+    var rawCats = (src.syncCats && typeof src.syncCats === 'object') ? src.syncCats : {};
+    for (var i = 0; i < SYNC_CATS.length; i++) {
+      var k = SYNC_CATS[i];
+      // A missing row falls back to the shipped default rather than to `false`, so an older
+      // profile (written before a category existed) does not silently opt out of it.
+      cats[k] = (k in rawCats) ? !!rawCats[k] : d.syncCats[k];
+    }
+    var last = Number(src.lastSyncAt);
+    return {
+      syncEnabled: !!src.syncEnabled,
+      syncCats: cats,
+      conflict: SYNC_CONFLICTS.indexOf(src.conflict) >= 0 ? src.conflict : d.conflict,
+      lastSyncAt: (isFinite(last) && last > 0) ? last : 0,
+      guideSeen: !!src.guideSeen,
+    };
+  }
+
   /**
    * What the table `pins` RESOLVES to would sum to, against `base` (the compiled defaults unless
    * a caller has a better base in hand).
@@ -596,6 +679,8 @@
     // other setting — and here it matters twice over, because this is also the key a stranger's
     // backup file lands in.
     out.signalWeights = normalizeSignalWeights(out.signalWeights);
+    // 1.0.0 §7.1 — same treatment as every other object-valued setting, and for the same reason.
+    out.cloud = normalizeCloud(out.cloud);
     // 0.5.2 §4.1 — clamped on the way IN as well as out, like every other setting: the profile
     // is the one input the UI never validates, and a hand-edited list must not be able to put a
     // non-array (or a 200-row list, or a row with no English) in front of the send path.
@@ -616,6 +701,7 @@
       s.archiveFilter = normalizeArchiveFilter(s.archiveFilter);
       s.storageFilter = normalizeStorageFilter(s.storageFilter);
       s.signalWeights = normalizeSignalWeights(s.signalWeights);
+      s.cloud = normalizeCloud(s.cloud);
       s.customQuestions = clampCustomQuestions(s.customQuestions);
       var put = {}; put[SETTINGS_KEY] = s;
       try { await api().set(put); } catch (e) {}
@@ -626,6 +712,119 @@
   function saveSetting(key, value) {
     var patch = {}; patch[key] = value;
     return saveSettings(patch);
+  }
+
+  // =============================================================================================
+  // 1.0.0 §11.2 — 云账户的三个非设置键
+  // =============================================================================================
+  // All three go through `enqueue()` for the reason stated at its definition: these are
+  // read-modify-write cycles over a whole key, and two of them in flight at once lose one of the
+  // writes. The session in particular is written by the renewal path at boot and by the operator's
+  // 登出 click, which are exactly the two things that can happen at the same moment.
+
+  /**
+   * The cached session, or null. A session is `{ jwt, expiresAt, user, lastRenewAt }` — the JWT
+   * itself, the wall-clock instant it stops being accepted, the server's public projection of the
+   * account, and when we last tried to renew (§3.4 每 7 天续期).
+   *
+   * Anything that does not have a non-empty `jwt` is treated as NO session rather than as a
+   * broken one: the only way to get there is a hand-edited or half-written profile, and 「未激活」
+   * is both recoverable (the operator types their code again) and safe (every cloud call is
+   * already gated on `isActivated()`).
+   */
+  async function loadCloudSession() {
+    var got = null;
+    try { got = await api().get(SESSION_KEY); } catch (e) { return null; }
+    var s = got && got[SESSION_KEY];
+    if (!s || typeof s !== 'object' || typeof s.jwt !== 'string' || !s.jwt) return null;
+    return s;
+  }
+
+  function saveCloudSession(sess) {
+    var put = {}; put[SESSION_KEY] = sess;
+    return enqueue(async function () {
+      try { await api().set(put); } catch (e) {}
+      return sess;
+    });
+  }
+
+  /**
+   * Drop the LOCAL half of the account. Deliberately does not call the server: §3.6 says a revoked
+   * code makes the next online renewal fail with 401 and the client then 「清除 JWT，回到未激活
+   * 状态；本地数据不受影响」, and §4.2 says 注销 keeps local data too. So 登出 is always safe
+   * offline, always instant, and never touches archives/samples/settings.
+   */
+  function clearCloudSession() {
+    return enqueue(async function () {
+      try { await api().remove(SESSION_KEY); } catch (e) {}
+      return true;
+    });
+  }
+
+  var _devicePromise = null;
+  /**
+   * §4.1's 「客户端生成的稳定 ID」. Stable = survives a restart (so it is stored), generated = not
+   * a fingerprint (so it is random rather than derived from the machine). §9.1 lists 设备 ID among
+   * what IS uploaded, which is exactly why it must not encode anything the operator did not
+   * knowingly hand over.
+   *
+   * Memoised for the session: the boot path asks for it once and the login path asks again, and
+   * two `enqueue`d read-modify-writes racing to CREATE it would produce two different ids.
+   */
+  function getDeviceId() {
+    if (_devicePromise) return _devicePromise;
+    _devicePromise = enqueue(async function () {
+      var got = null;
+      try { got = await api().get(DEVICE_KEY); } catch (e) {}
+      var id = got && got[DEVICE_KEY];
+      if (typeof id === 'string' && id) return id;
+      var put = {}; put[DEVICE_KEY] = newDeviceId();
+      try { await api().set(put); } catch (e) {}
+      return put[DEVICE_KEY];
+    });
+    return _devicePromise;
+  }
+
+  function newDeviceId() {
+    var c = (g.crypto && g.crypto.getRandomValues) ? g.crypto : null;
+    if (c) {
+      var b = new Uint8Array(16);
+      c.getRandomValues(b);
+      var hex = '';
+      for (var i = 0; i < b.length; i++) hex += (b[i] + 0x100).toString(16).slice(1);
+      return 'dev-' + hex;
+    }
+    // WebCrypto is absent only in a stripped harness. Math.random is weaker, but this value is an
+    // opaque handle rather than a credential — it is never accepted as proof of anything on its
+    // own; the JWT is.
+    return 'dev-' + Math.random().toString(36).slice(2) + Date.now().toString(36);
+  }
+
+  /** §7.4's offline queue: `{id, type, table, data, retries}` entries, oldest first. */
+  function isQueueOp(o) {
+    return !!o && typeof o === 'object'
+      && typeof o.id === 'string' && o.id
+      && ['insert', 'update', 'delete'].indexOf(o.type) >= 0
+      && typeof o.table === 'string' && o.table;
+  }
+
+  async function loadSyncQueue() {
+    var got = null;
+    try { got = await api().get(SYNC_QUEUE_KEY); } catch (e) { return []; }
+    var q = got && got[SYNC_QUEUE_KEY];
+    return Array.isArray(q) ? q.filter(isQueueOp) : [];
+  }
+
+  function saveSyncQueue(q) {
+    // Oldest first, newest dropped past the cap: §7.4 retries FIFO, so the head of the queue is
+    // the operation the operator is most likely to still want, and a dropped tail is recoverable
+    // (the next full sync re-derives it) in a way a dropped head is not.
+    var list = (Array.isArray(q) ? q : []).filter(isQueueOp).slice(0, MAX_SYNC_QUEUE);
+    var put = {}; put[SYNC_QUEUE_KEY] = list;
+    return enqueue(async function () {
+      try { await api().set(put); } catch (e) {}
+      return list;
+    });
   }
 
   // A shallow copy is not enough for the object-valued settings. `Object.assign({}, DEFAULTS)`
@@ -3032,6 +3231,12 @@
     next.archiveFilter = normalizeArchiveFilter(current && current.archiveFilter);
     next.storageFilter = normalizeStorageFilter(current && current.storageFilter);
     next.signalWeights = normalizeSignalWeights(current && current.signalWeights);
+    // 1.0.0 — rebuilt rather than inherited. `next` starts as a shallow copy of `current`, so an
+    // object-valued key that is only copied SHARES its nested objects with the live settings; a
+    // per-field write below would then edit the operator's running profile as a side effect of
+    // validating somebody's backup file. Every object-valued key gets its own line here for that
+    // reason, not because the normaliser does something special.
+    next.cloud = normalizeCloud(current && current.cloud);
     next.llm = Object.assign({}, (current && current.llm) || {});
     if (!raw || typeof raw !== 'object') return { next: next, errors: errors, applied: applied };
 
@@ -3113,6 +3318,41 @@
       else if (valid > 0 && !(swSum > 0)) bad('signalWeights', sw, 'invalid');
       else if (swSum > SIGNAL_WEIGHT_SUM_MAX + SIGNAL_WEIGHT_EPS) bad('signalWeights', sw, 'over-budget');
       else { next.signalWeights = clean; applied++; }
+    }
+    // 7b. cloud — 云同步偏好 (§7.1–§7.3). Grouped with `settings` and therefore in the 覆盖 column,
+    //     like the block above; §1.6.1's rule still applies per FIELD, so a file with a nonsensical
+    //     `syncEnabled` keeps the operator's own value rather than importing a half-object. This is
+    //     the one branch whose fields are all cheap scalars, so there is nothing here that can be
+    //     'unreadable' as a whole — a `cloud` key that is not an object is simply ignored, which is
+    //     also what an older profile (written before 1.0.0) looks like.
+    var cl = raw.cloud;
+    if (cl && typeof cl === 'object') {
+      var appliedCloud = 0;
+      if (cl.syncEnabled !== undefined) {
+        if (typeof cl.syncEnabled !== 'boolean') bad('cloud.syncEnabled', cl.syncEnabled, 'invalid');
+        else { next.cloud.syncEnabled = cl.syncEnabled; appliedCloud++; }
+      }
+      if (cl.conflict !== undefined) {
+        if (SYNC_CONFLICTS.indexOf(cl.conflict) < 0) bad('cloud.conflict', cl.conflict, 'unsupported');
+        else { next.cloud.conflict = cl.conflict; appliedCloud++; }
+      }
+      if (cl.lastSyncAt !== undefined) {
+        if (typeof cl.lastSyncAt !== 'number' || !isFinite(cl.lastSyncAt) || cl.lastSyncAt < 0) {
+          bad('cloud.lastSyncAt', cl.lastSyncAt, 'out-of-range');
+        } else { next.cloud.lastSyncAt = cl.lastSyncAt; appliedCloud++; }
+      }
+      // `guideSeen` is deliberately NOT importable. It is this machine's 「have we asked already」
+      // flag, not part of the operator's configuration: adopting it from a backup would mean a
+      // fresh install never sees §1.2's 引导, which is the one thing it exists to deliver.
+      if (cl.syncCats && typeof cl.syncCats === 'object') {
+        for (var ci = 0; ci < SYNC_CATS.length; ci++) {
+          var ck = SYNC_CATS[ci];
+          if (cl.syncCats[ck] === undefined) continue;
+          if (typeof cl.syncCats[ck] !== 'boolean') bad('cloud.syncCats.' + ck, cl.syncCats[ck], 'invalid');
+          else { next.cloud.syncCats[ck] = cl.syncCats[ck]; appliedCloud++; }
+        }
+      }
+      if (appliedCloud) applied++;
     }
     // 8. transparency — every numeric field against its OWN ceiling, read from the same table the
     //    clamp uses, so the validator and the clamps can never disagree about a maximum.
@@ -3373,6 +3613,22 @@
     loadSettings: loadSettings,
     saveSettings: saveSettings,
     saveSetting: saveSetting,
+    // ---- 1.0.0 云账户 (§11.2) ----
+    // The three non-settings keys. Their readers live here rather than in auth.js/sync.js because
+    // `enqueue()` is the only legal door to the store, and this project has paid five times for a
+    // fact that existed in two spellings. `normalizeCloud`/`SYNC_CATS` are exported for the same
+    // reason every other pure helper here is: the settings panel, the sync engine and the suite
+    // must all read ONE list of categories.
+    loadCloudSession: loadCloudSession,
+    saveCloudSession: saveCloudSession,
+    clearCloudSession: clearCloudSession,
+    getDeviceId: getDeviceId,
+    loadSyncQueue: loadSyncQueue,
+    saveSyncQueue: saveSyncQueue,
+    normalizeCloud: normalizeCloud,
+    SYNC_CATS: SYNC_CATS,
+    SYNC_CONFLICTS: SYNC_CONFLICTS,
+    MAX_SYNC_QUEUE: MAX_SYNC_QUEUE,
     // 0.5.2 §4.1 — the custom-question store and its pure selector. Exported so the settings page,
     // the on-page menu and the suite all go through ONE implementation of "which text do we
     // send", rather than three copies of the fallback order.

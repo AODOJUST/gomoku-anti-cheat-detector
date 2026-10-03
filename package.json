@@ -1,0 +1,17 @@
+{
+  "name": "baishen",
+  "displayName": "白身 (Baishen)",
+  "version": "1.0.0",
+  "private": true,
+  "description": "White-box-only build tooling for the 白身 (Baishen) gomoku anti-cheat detector extension. The extension itself is loaded unpacked from this directory; nothing here is required to USE it.",
+  "license": "UNLICENSED",
+  "scripts": {
+    "obfuscate": "node build/obfuscate.js",
+    "copy": "node build/copy-static.js",
+    "package": "node build/package.js",
+    "build": "node build/copy-static.js && node build/obfuscate.js && node build/package.js"
+  },
+  "devDependencies": {
+    "javascript-obfuscator": "^4.1.1"
+  }
+}

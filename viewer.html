@@ -921,6 +921,25 @@
   .io-sel label{display:flex;align-items:baseline;gap:8px;padding:5px 0;font-size:var(--ui-detail-font);cursor:pointer}
   .io-sel input[type=checkbox]{flex:0 0 auto;width:auto;min-width:0;margin:0}
 
+  /* ---- 1.0.0 云账号：我的 / 管理员 (§五 / §六) ----
+     Deliberately few new classes: the 云同步 category grid reuses `.io-cats` (line 911), because it
+     is the same control doing the same job, and 0.5.6 补增 already paid for the checkbox guard
+     there (`flex:0 0 auto` — NOT `width:auto`, which would fight the global 20px box). */
+  .acct{display:flex;align-items:center;gap:16px}
+  .acct-av{width:64px;height:64px;border-radius:50%;background:var(--inset);border:1px solid var(--line);display:flex;align-items:center;justify-content:center;overflow:hidden;flex:0 0 auto;font-size:22px}
+  .acct-av img{width:100%;height:100%;object-fit:cover}
+  .acct-meta{min-width:0}
+  .acct-name{font-size:var(--ui-detail-large);font-weight:500}
+  .resv{display:flex;gap:10px;flex-wrap:wrap;margin-top:8px}
+  .resv-item{border:1px dashed var(--line);border-radius:var(--ui-detail-radius);padding:8px 14px;color:var(--mut);font-size:var(--ui-shell-nav)}
+  .rowline{display:flex;align-items:center;gap:10px;padding:6px 0;border-bottom:1px solid var(--line)}
+  .rowline .em{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .codebox{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;background:var(--inset);border:1px solid var(--line);border-radius:6px;padding:8px 10px;margin-top:8px;white-space:pre-wrap;word-break:break-all}
+  /* §9.3's link. `color:inherit` rather than a literal: the row it sits in already carries the
+     theme's text colour, and 0.5.3's lesson was that a hard-coded colour goes unreadable the moment
+     the other theme is active. */
+  #privacyLink a{color:inherit;text-decoration:underline}
+
   /* ---- detail ---- */
   .dhead{display:flex;flex-wrap:wrap;gap:12px 26px;align-items:baseline}
   .dhead .t{font-size:var(--ui-detail-large);font-weight:600}
@@ -1003,6 +1022,15 @@
          local list the operator curates) and reading left to right it comes last because it is
          the one list that is about PEOPLE rather than about games. -->
     <button class="navbtn" data-view="blacklist">黑名单</button>
+    <!-- 1.0.0 §5.1 — 我的. Starts hidden and is unhidden from the AUTH STATE, never the other way
+         round (§1.2's 「无账号用户」 column has no row for it): a tab that exists but is always
+         empty is worse than no tab, because it reads as a broken feature rather than as an absent
+         one. The ids are what viewer.js toggles; `data-view` is what showView() routes on. -->
+    <button class="navbtn hidden" data-view="profile" id="navProfile">—</button>
+    <!-- 1.0.0 §6.3 — 管理员, 「仅 `is_admin` 可见」. One more condition than 我的, and it is the
+         only condition §6.1 lets the client evaluate at all — for VISIBILITY, never for
+         authorisation (every operation is re-checked server-side). -->
+    <button class="navbtn hidden" data-view="admin" id="navAdmin">—</button>
     <button class="navbtn" data-view="settings">设置</button>
   </div>
   <!-- 0.3.5 §3.2: one control for the four step tables' columns. It lives in the header
@@ -1748,6 +1776,84 @@
     </div>
   </section>
 
+  <!-- ======================= 我的 (1.0.0 §5) ======================= -->
+  <!-- 1.0.0 §5.1: 「查看器新增『我的』标签页（仅已激活用户可见）」. Every visible word here is
+       written by `renderProfile()` in viewer.js, not by the static markup — the whole page is a
+       function of the auth state (name, avatar, sample count, which of the four reserved rows is
+       live), so a static version would have to be overwritten in full anyway. The markup is the
+       frame: containers plus `—` placeholders, and `—` carries no CJK so the static i18n pass
+       ignores it (see keys.cjs's CJK test). -->
+  <section class="view" id="view-profile">
+    <div class="panel">
+      <div class="acct">
+        <div class="acct-av" id="pfAvatar">—</div>
+        <div class="acct-meta">
+          <div class="acct-name" id="pfName">—</div>
+          <div class="hint" id="pfMeta">—</div>
+        </div>
+        <span class="sp"></span>
+        <div class="btn-row">
+          <button class="sec" id="pfEdit">—</button>
+          <button class="sec" id="pfLogout">—</button>
+        </div>
+      </div>
+      <div class="hint" id="pfState" style="margin-top:10px">—</div>
+    </div>
+
+    <!-- §5.1's 「─── 预留接口 ───」 block. §5.2 決定 the four accessors return empty values for now,
+         and §5.2 也说 the UI shows them 「灰色 + 即将推出」 so that 「未来实现时只需替换数据源」. -->
+    <div class="panel">
+      <h2 id="pfResvTitle">—</h2>
+      <div id="pfResv" class="resv"></div>
+    </div>
+
+    <div class="panel" id="pfSyncPanel">
+      <h2 id="pfSyncTitle">—</h2>
+      <div id="pfSyncBody"></div>
+    </div>
+
+    <div class="panel">
+      <h2 id="pfDevTitle">—</h2>
+      <div id="pfDev"></div>
+    </div>
+
+    <div class="panel">
+      <h2 id="pfDangerTitle">—</h2>
+      <div id="pfDanger"></div>
+    </div>
+  </section>
+
+  <!-- ======================= 管理员 (1.0.0 §6) ======================= -->
+  <!-- 1.0.0 §6.3: 「扩展内最小集（可选）：生成激活码（一键复制）/ 查看用户列表（分页）/ 封禁解封」.
+       Those three are the whole page. §6.3 also says 「推荐用 Supabase Studio 完成大部分操作」, so
+       anything beyond this set is deliberately not drawn here. -->
+  <section class="view" id="view-admin">
+    <div class="panel">
+      <h2 id="adGenTitle">—</h2>
+      <div class="btn-row" style="margin-top:10px;line-height:2.2">
+        <label><span id="adCountLabel">—</span> <input type="number" id="adCount" min="1" max="100" value="1" style="width:80px"></label>
+        <label><span id="adNoteLabel">—</span> <input type="text" id="adNote" style="width:220px"></label>
+        <button id="adGen">—</button>
+      </div>
+      <div id="adGenOut"></div>
+    </div>
+
+    <div class="panel">
+      <div class="filters-bar">
+        <h2 style="margin:0" id="adListTitle">—</h2>
+        <label><span id="adQueryLabel">—</span> <input type="text" id="adQuery" style="width:180px"></label>
+        <button class="sec" id="adSearch">—</button>
+        <span class="sp"></span>
+        <span class="hint" id="adTotal">—</span>
+      </div>
+      <div id="adRows"></div>
+      <div class="btn-row" style="margin-top:10px">
+        <button class="sec" id="adPrev">—</button>
+        <button class="sec" id="adNext">—</button>
+      </div>
+    </div>
+  </section>
+
   <!-- ======================= 设置 ======================= -->
   <!-- 0.4.0 §二: the panels are now semantic GROUPS rather than one 620px column, and each
        group's items flow into as many columns as the window affords (see .set-grid above).
@@ -2266,6 +2372,18 @@
       <div class="io-report" id="ioReport"></div>
     </div>
 
+    <!-- 1.0.0 §7.1 — 云账户与同步. 「设置页『云同步』开关，默认 `false`；开启时逐类选择：样本库 /
+         回放 / 黑名单 / 设置」. It lives in 设置 rather than on 我的 because that is where §7.1 puts
+         it, and because it has to be reachable by an operator who has NOT activated yet — it is the
+         switch they come back for once they have a code.
+         Activated or not, everything below `clHint` is written by buildCloudPanel(), so a language
+         switch repaints the whole panel through one function (the same rule 导入与导出 follows). -->
+    <div class="panel set-panel">
+      <h2 id="clTitle">—</h2>
+      <div class="hint" id="clHint">—</div>
+      <div id="clBody"></div>
+    </div>
+
     <div class="panel set-panel">
       <h2>关于</h2>
       <div class="set-grid">
@@ -2278,6 +2396,14 @@
             <button class="sec" id="setCheckUpd"></button>
             <span class="hint" id="setUpdHint">—</span>
           </div>
+        </div>
+        <!-- 1.0.0 §9.3 — 「独立 HTML 页面托管在 GitHub Pages；扩展内『关于』面板链接过去」. The URL
+             is a placeholder until the operator names a host (§十三 lists it as one of the three
+             things only they can supply); viewer.js renders it as plain text rather than as a dead
+             link when it is still empty. -->
+        <div class="set-item">
+          <label id="privacyLabel">—</label>
+          <div class="fx"><span class="hint" id="privacyLink">—</span></div>
         </div>
       </div>
       <div class="hint" style="margin-top:12px">
@@ -2334,6 +2460,11 @@
      figures would read as unreachable and every weight would print as an em dash. -->
 <script src="toast.js"></script>
 <script src="tagWiki.js"></script>
+<script src="cloud.js"></script>
+<script src="auth.js"></script>
+<script src="profile.js"></script>
+<script src="sync.js"></script>
+<script src="admin.js"></script>
 <script src="viewer.js"></script>
 </body>
 </html>

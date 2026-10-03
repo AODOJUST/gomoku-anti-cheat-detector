@@ -1,3 +1,12 @@
 Thumbs.db
 .DS_Store
 *.zip
+
+# §11.3 — the obfuscation toolchain is dev-only. `build/release/` is the whole release tree
+# (regenerated from source by `npm run build`), and `build/sourcemaps/` is §8.4's
+# 「sourcemap 上传到私密位置」 — it is deliberately NOT in the extension, so it must not be in git
+# either, because a sourcemap in the repo is the unobfuscated source with a bow on it.
+build/release/
+build/sourcemaps/
+node_modules/
+package-lock.json

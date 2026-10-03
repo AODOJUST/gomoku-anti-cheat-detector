@@ -534,6 +534,13 @@
     // CREATES the offscreen document and loads a 40 MB engine. A repaint re-paints from the answer
     // already in hand instead of asking again.
     if (name === 'settings') renderSettings(opts && opts.repaint);
+    // 1.0.0 §5/§6 — the two account-aware tabs. 我的 is repainted from the memoised session (a pure
+    // function of state), so it costs nothing to redraw on every visit; 管理员's list is a network
+    // read, so it is fetched only until it has arrived once — `opts.repaint` (a language switch)
+    // must not fire another request, for the same reason the settings pane does not re-ask the
+    // offscreen document.
+    if (name === 'profile') { syncNavForAuth(); renderProfile(); }
+    if (name === 'admin') { renderAdmin(); if (!ADC.loaded) adminLoadUsers(1); }
   }
   document.querySelectorAll('.navbtn').forEach(function (b) {
     b.onclick = function () { showView(b.dataset.view); };
@@ -568,6 +575,14 @@
     // operator's export ticks survive, because buildIoPanel reads `ioChecked` instead of
     // resetting it.
     buildIoPanel();
+    // 1.0.0 §7.1 — the same rule again for the account/sync panel, and for the two account pages:
+    // every word in them is written by JS. `syncNavForAuth` is here as well as in the renderers
+    // because a language switch must not be able to leave a hidden tab looking available.
+    buildCloudPanel();
+    syncNavForAuth();
+    renderProfile();
+    renderAdmin();
+    renderPrivacyLink();
     // §一.4: the banner and the settings page's status line are built in JS, so they carry no
     // `__gmKey` and the static pass above cannot reach them.
     fillVersionRow();
@@ -3288,6 +3303,633 @@
       ioEnsureChecked();
       ioChecked[box.getAttribute('data-io-cat')] = !!box.checked;
     });
+  }
+
+  // =====================================================================
+  // 1.0.0 云账户、我的、管理员 (§一–§九)
+  // =====================================================================
+  // The client half of §十四's 「云账号 + 激活码 + 管理员」. Everything here is written to be
+  // correct in the SHIPPED state — no backend (`GMCloud.isConfigured() === false`) — because that
+  // is what §1.2 promises a 0.5.x operator: 「不破坏已有用户的本地使用」. Nothing in this block can
+  // stop the detector from working, and nothing in it paints a broken control.
+  //
+  // One rule shapes the whole block: `GMAuth.status()` is SYNCHRONOUS (it reads the memoised
+  // session), so every renderer here is a pure function of the state in hand and can be called
+  // from `repaintForLang()` — which is synchronous by contract. Only the two network readers
+  // (`adminLoadUsers`, `profileLoad`) are async, and they paint when their answer arrives.
+
+  // §9.3 — the hosted policy page. The default is this repository's own GitHub Pages address
+  // (Settings → Pages → branch `main`, folder `/docs` → `https://<user>.github.io/<repo>/privacy.html`),
+  // which is the one hosting option that needs no third party. An operator who prefers their own
+  // domain changes this one string; if they clear it, the 关于 panel prints 「尚未提供」 instead of
+  // drawing a dead link, which is the honest render while the address is still unknown (§十三).
+  var PRIVACY_URL = 'https://aodojust.github.io/gomoku-anti-cheat-detector/privacy.html';
+
+  // §7.2's rows, labelled. The SET of categories comes from `GMSync.CATS` — the sync engine's own
+  // table — and this function only supplies words, so a category can never exist in one list and
+  // not the other. It is a literal SWITCH rather than `T('viewer|' + nameMap[k])` on purpose: the
+  // dictionary toolchain only sees literal keys (`keys.cjs` scans source text), so a concatenated
+  // lookup is invisible to it and the labels would silently stay Chinese in every other language —
+  // the exact trap `_tools/i18n-extra.js` was created for. Reading each key out literally keeps the
+  // eight auto-extractable and needs no second registration. An unknown key falls through to the
+  // raw category name, which is a visible degradation rather than a wrong translation.
+  function cloudCatLabel(k) {
+    switch (k) {
+      case 'samples': return T('viewer|样本库');
+      case 'archives': return T('viewer|回放存档');
+      case 'blacklist': return T('viewer|黑名单');
+      case 'settings': return T('viewer|设置');
+      case 'customQuestions': return T('viewer|自定义问题');
+      case 'learnedParams': return T('viewer|学习参数');
+      case 'customEngines': return T('viewer|自定义引擎');
+      case 'backgrounds': return T('viewer|背景图片');
+    }
+    return k;
+  }
+
+  function activeView() {
+    var b = document.querySelector('.navbtn.active');
+    return b ? b.dataset.view : 'detect';
+  }
+
+  /**
+   * §5.1 「仅已激活用户可见」 / §6.3 「仅 `is_admin` 可见」.
+   *
+   * Two jobs, and the second one is the easy one to forget: when the tab we are STANDING on stops
+   * being visible (登出, 注销, or a revoked code that the boot-time renewal noticed), leaving it on
+   * screen produces a page no nav button points at. Moving to 检测 is the destination the nav
+   * itself would offer, so the two never disagree about where 「not here」 goes.
+   */
+  function syncNavForAuth() {
+    // ⚠ Bare globals, NOT `g.GMCloud`/`g.GMAuth`. `viewer.js` is a plain IIFE with no `g`
+    // parameter (unlike the modules, which all start `(function (g) {`), so `g.GMAuth` is a
+    // ReferenceError — and it is one that does not surface as a page error, because `boot()` ends
+    // with an awaited `cloudBoot()` whose rejection nobody catches: the cloud half simply never
+    // painted and the page looked fine. Found by behave-062-cloud, which asserts on
+    // `unhandledrejection` precisely so this class of failure cannot hide as "the panel is empty".
+    var on = !!(GMAuth.isActivated && GMAuth.isActivated());
+    var adm = !!(GMAdmin.isAdmin && GMAdmin.isAdmin());
+    if ($('navProfile')) $('navProfile').classList.toggle('hidden', !on);
+    if ($('navAdmin')) $('navAdmin').classList.toggle('hidden', !adm);
+    var v = activeView();
+    if ((v === 'profile' && !on) || (v === 'admin' && !adm)) showView('detect');
+  }
+
+  // §3.4's four states plus 「no backend at all」, as words. The unconfigured case is first because
+  // it is not a state of the ACCOUNT — it is the absence of a server, and saying 「未激活」 would
+  // send the operator looking for a code they were never issued.
+  function cloudStateText(st) {
+    if (!st.configured) return T('viewer|云端未配置（纯本地模式）');
+    if (st.state === 'active') return T('viewer|已激活');
+    if (st.state === 'grace') return T('viewer|离线宽限');
+    if (st.state === 'locked') return T('viewer|已锁定');
+    if (st.state === 'banned') return T('viewer|已封禁');
+    return T('viewer|本地使用（未激活）');
+  }
+
+  // §3.2's error vocabulary, as sentences. The codes are the Edge Functions' own and are stable;
+  // the words are what the operator acts on.
+  function cloudErrText(err) {
+    if (err === 'BAD_FORMAT') return T('viewer|激活码格式形如 BS-XXXX-XXXX-XXXX-XXXX');
+    if (err === 'INVALID_CODE') return T('viewer|激活码无效');
+    if (err === 'CODE_REVOKED') return T('viewer|激活码已被撤销');
+    if (err === 'CODE_ALREADY_USED') return T('viewer|激活码已被其他账户使用');
+    if (err === 'BANNED') return T('viewer|本账户已被封禁');
+    if (err === 'DEVICE_LIMIT') return T('viewer|已达设备数上限（{n} 台）', { n: GMAuth.DEVICE_LIMIT });
+    return T('viewer|网络错误，请稍后重试');
+  }
+
+  function fmtDateTime(ms) {
+    if (!ms) return '—';
+    var d = new Date(Number(ms));
+    if (isNaN(d.getTime())) return '—';
+    var p = function (n) { return (n < 10 ? '0' : '') + n; };
+    return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate());
+  }
+
+  // ---------------------------------------------------------------------
+  // 设置页：云账户与同步 (§7.1)
+  // ---------------------------------------------------------------------
+  async function buildCloudPanel() {
+    var body = $('clBody');
+    if (!body || !GMCloud) return;
+    var st = GMAuth.status();
+    if ($('clTitle')) $('clTitle').textContent = T('viewer|云账户与同步');
+    if ($('clHint')) $('clHint').textContent = T('viewer|激活码解锁云功能，核心检测仍然免费');
+
+    var h = '';
+    if (!st.configured) {
+      // The shipped state. One line saying so, and nothing else — a form that cannot possibly
+      // succeed is worse than no form.
+      h += '<div class="hint">' + esc(T('viewer|云端未配置（纯本地模式）')) + '</div>';
+    } else if (!st.user) {
+      h += '<div class="btn-row" style="margin-top:10px;line-height:2.2">' +
+        '<input type="text" id="clCode" placeholder="' + esc(T('viewer|输入激活码')) + '" style="width:260px">' +
+        '<button id="clActivate">' + esc(T('viewer|激活')) + '</button>' +
+        '</div>' +
+        '<div class="hint" style="margin-top:6px">' + esc(T('viewer|激活码格式形如 BS-XXXX-XXXX-XXXX-XXXX')) + '</div>' +
+        '<div class="hint" id="clMsg" style="margin-top:6px"></div>' +
+        // §9.2 「明确同意：首次激活时勾选『我同意隐私政策』」. The checkbox is required, not
+        // pre-ticked: a consent box that arrives already ticked is not consent.
+        '<label class="hint" style="display:flex;align-items:center;gap:8px;margin-top:8px">' +
+        '<input type="checkbox" id="clAgree" style="flex:0 0 auto;width:auto;min-width:0;margin:0">' +
+        '<span>' + esc(T('viewer|我同意隐私政策')) + '</span></label>';
+    } else {
+      h += '<div class="hint" style="margin-top:10px">' + esc(st.user.username || st.user.email || '—') +
+        ' · ' + esc(cloudStateText(st)) + '</div>';
+    }
+
+    // The sync half is only meaningful once there is an account to sync (§7.1: 「用户主动开启」).
+    if (st.user) {
+      var prefs = S.cloud;
+      h += '<div class="btn-row" style="margin-top:14px">' +
+        '<label class="hint" style="display:flex;align-items:center;gap:8px">' +
+        '<input type="checkbox" id="clSyncOn" style="flex:0 0 auto;width:auto;min-width:0;margin:0"' +
+        (prefs.syncEnabled ? ' checked' : '') + '><span>' + esc(T('viewer|云同步')) + '</span></label>' +
+        '<span class="hint">' + esc(T('viewer|开启后本机数据会与云端双向同步')) + '</span></div>';
+
+      // Reuses `.io-cats` — the same labelled-checkbox grid the export panel uses, including its
+      // `flex:0 0 auto` guard (0.5.6 补增). A new class here would be a second copy of that fix.
+      h += '<div class="io-cats" id="clCats">';
+      GMSync.CATS.forEach(function (c) {
+        var on = !!prefs.syncCats[c.key];
+        // The two §7.2 ❌ rows are drawn DISABLED rather than omitted: the operator has read that
+        // 自定义引擎 and 背景图片 are excluded, and hiding them would read as a missing feature.
+        var dis = c.hard ? ' disabled' : '';
+        h += '<label' + (c.hard ? ' class="hint"' : '') + '>' +
+          '<input type="checkbox" data-cl-cat="' + c.key + '"' + (on ? ' checked' : '') + dis + '>' +
+          '<span>' + esc(cloudCatLabel(c.key)) +
+          (c.hard ? ' · ' + esc(T('viewer|体积过大，不参与同步')) : '') + '</span></label>';
+      });
+      h += '</div>';
+
+      h += '<div class="btn-row" style="margin-top:12px;line-height:2.2">' +
+        '<label class="hint">' + esc(T('viewer|冲突处理')) + ' ' +
+        '<select id="clConflict">' +
+        '<option value="auto"' + (prefs.conflict === 'auto' ? ' selected' : '') + '>' +
+        esc(T('viewer|保留较新者（自动）')) + '</option>' +
+        '<option value="ask"' + (prefs.conflict === 'ask' ? ' selected' : '') + '>' +
+        esc(T('viewer|冲突时询问我')) + '</option>' +
+        '</select></label>' +
+        '<button class="sec" id="clSyncNow">' + esc(T('viewer|立即同步')) + '</button>' +
+        '<span class="hint" id="clSyncState">' + esc(syncStateText(prefs)) + '</span>' +
+        '</div>';
+    }
+    body.innerHTML = h;
+    wireCloudPanel();
+  }
+
+  /**
+   * The settings panel's own controls.
+   *
+   * ⚠ WHY THIS FUNCTION EXISTS, AND WHY IT IS NOTICEABLE THAT IT HAS A COMMENT SAYING SO.
+   * The first version of `buildCloudPanel` drew `#clActivate`, `#clAgree`, `#clSyncOn`, the eight
+   * category ticks, `#clConflict` and `#clSyncNow` — and wired NONE of them. Nothing static caught
+   * it: every id was present, every label translated, every disabled state in place, and the panel
+   * looked finished. The buttons simply did nothing when clicked, which is the one failure mode a
+   * source scan cannot see (the same shape 0.5.5 found in 「链接与按钮共用一个 handler」). It was
+   * found by `behave-062-cloud` clicking its way down the panel, and that harness now clicks every
+   * control below — so the rule this comment is really recording is: **a panel that is BUILT by a
+   * function has to be WIRED by one, and the wiring goes in the same place as the markup.**
+   */
+  function wireCloudPanel() {
+    var go = $('clActivate');
+    var agree = $('clAgree');
+    var code = $('clCode');
+    if (go) {
+      go.onclick = async function () {
+        var msg = $('clMsg');
+        // §9.2 「明确同意：首次激活时勾选『我同意隐私政策』」. A gate that fails SILENTLY is not
+        // consent — from the operator's side it is a button that looks broken — so the refusal is
+        // printed where they are looking rather than swallowed.
+        if (agree && !agree.checked) {
+          if (msg) msg.textContent = T('viewer|请先勾选同意隐私政策');
+          return;
+        }
+        go.disabled = true;
+        if (msg) msg.textContent = T('viewer|正在激活…');
+        var res = await GMAuth.activate(code ? code.value : '');
+        go.disabled = false;
+        if (!res.ok) {
+          if (msg) msg.textContent = cloudErrText(res.error);
+          return;
+        }
+        if (msg) msg.textContent = '';
+        afterAuthChange();
+      };
+    }
+    if (code && go) {
+      code.onkeydown = function (e) { if (e.key === 'Enter') go.click(); };
+    }
+    // §7.1's switch. Retoggling rebuilds the panel because the eight category rows and the
+    // 「立即同步」 row only exist while sync is on — drawing them disabled would be a second
+    // rendering of the same rule.
+    var syncOn = $('clSyncOn');
+    if (syncOn) {
+      syncOn.onchange = async function () {
+        await GMSync.setEnabled(syncOn.checked);
+        S = await G.loadSettings();
+        await buildCloudPanel();
+      };
+    }
+    // §7.2's per-category ticks. The two hard rows are drawn `disabled`, so no change event can
+    // arrive from them; `setCategory` refuses an unknown key on its own as well.
+    Array.prototype.forEach.call(
+      document.querySelectorAll('#clCats input[data-cl-cat]'),
+      function (b) {
+        b.onchange = async function () {
+          await GMSync.setCategory(b.getAttribute('data-cl-cat'), b.checked);
+          S = await G.loadSettings();
+        };
+      });
+    var conf = $('clConflict');
+    if (conf) {
+      conf.onchange = async function () {
+        // §7.3's policy. Saved rather than acted on: it decides what the NEXT sync does with a pair
+        // of timestamps that are both recent, and re-reading it per sync is what keeps two tabs
+        // honest.
+        await GMSync.setPrefs({ conflict: conf.value });
+        S = await G.loadSettings();
+      };
+    }
+    var now = $('clSyncNow');
+    if (now) now.onclick = function () { cloudSyncNow(); };
+  }
+
+  function syncStateText(prefs) {
+    if (!prefs.syncEnabled) return T('viewer|从未同步');
+    if (!prefs.lastSyncAt) return T('viewer|从未同步');
+    return T('viewer|上次同步') + ' ' + fmtDateTime(prefs.lastSyncAt);
+  }
+
+  async function cloudSyncNow() {
+    var el = $('clSyncState');
+    if (el) el.textContent = T('viewer|正在同步…');
+    var res = await GMSync.syncNow();
+    S = await G.loadSettings();
+    await buildCloudPanel();
+    var el2 = $('clSyncState');
+    if (!el2) return;
+    if (res.ok) el2.textContent = syncStateText(S.cloud);
+    else if (res.error === 'NOT_CONFIGURED') el2.textContent = T('viewer|云端未配置（纯本地模式）');
+    else if (res.error === 'UNAUTHORIZED') el2.textContent = cloudStateText(GMAuth.status());
+    else el2.textContent = T('viewer|网络错误，请稍后重试');
+  }
+
+  // ---------------------------------------------------------------------
+  // 我的 (§5.1)
+  // ---------------------------------------------------------------------
+  function renderProfile() {
+    var st = GMAuth.status();
+    if ($('pfResvTitle')) $('pfResvTitle').textContent = T('viewer|即将推出');
+    if ($('pfSyncTitle')) $('pfSyncTitle').textContent = T('viewer|云同步');
+    if ($('pfDevTitle')) $('pfDevTitle').textContent = T('viewer|设备');
+    if ($('pfDangerTitle')) $('pfDangerTitle').textContent = T('viewer|注销账户');
+    if ($('pfEdit')) $('pfEdit').textContent = T('viewer|编辑资料');
+    if ($('pfLogout')) $('pfLogout').textContent = T('viewer|退出登录');
+
+    var u = st.user || {};
+    var name = u.username || u.email || '—';
+    if ($('pfName')) $('pfName').textContent = name;
+    // Avatar: §4.4 stores a URL, but the shipped state has none, so the letter is the fallback that
+    // keeps the header from collapsing to a hole.
+    var av = $('pfAvatar');
+    if (av) {
+      if (u.avatar_url) av.innerHTML = '<img alt="" src="' + esc(u.avatar_url) + '">';
+      else av.textContent = name.slice(0, 1).toUpperCase();
+    }
+    if ($('pfMeta')) {
+      var bits = [];
+      if (u.created_at || u.activated_at) {
+        bits.push(T('viewer|加入时间') + ' ' + fmtDateTime(Date.parse(u.activated_at || u.created_at)));
+      }
+      bits.push(T('viewer|样本库 {n} 个', { n: PFC.sampleCount }));
+      $('pfMeta').textContent = bits.join(' · ');
+    }
+    if ($('pfState')) $('pfState').textContent = cloudStateText(st);
+
+    // §5.1's 「─── 预留接口 ───」 block, drawn from §5.2's four accessors. They resolve to empty
+    // today and the panel says so, which is the whole point: 「未来实现时只需替换数据源」.
+    var resv = $('pfResv');
+    if (resv) {
+      var items = [T('viewer|徽章'), T('viewer|成就'), T('viewer|判断正确率'), T('viewer|好友')];
+      resv.innerHTML = items.map(function (t) {
+        return '<span class="resv-item">' + esc(t) + '</span>';
+      }).join('');
+    }
+
+    var sync = $('pfSyncBody');
+    if (sync) {
+      sync.innerHTML = '<div class="hint">' +
+        esc(S.cloud.syncEnabled ? syncStateText(S.cloud) : T('viewer|从未同步')) + '</div>' +
+        '<div class="btn-row" style="margin-top:8px"><button class="sec" id="pfSyncGo">' +
+        esc(T('viewer|云同步')) + '</button></div>';
+    }
+
+    var dev = $('pfDev');
+    if (dev) {
+      // §7.5 「一个用户最多 3 台活跃设备」 + 「设备列表在用户主页显示，可手动登出某台设备」. The list
+      // itself comes from the server; until a profile load has run there is one row — this machine —
+      // which is the only device the client can name for certain.
+      dev.innerHTML = PFC.devices.map(function (d) {
+        return '<div class="rowline"><span class="em">' + esc(d.label || d.device_id || '—') + '</span>' +
+          (d.current ? '<span class="hint">' + esc(T('viewer|本机')) + '</span>' : '') +
+          '</div>';
+      }).join('') +
+        '<div class="hint" style="margin-top:8px">' +
+        esc(T('viewer|已达设备数上限（{n} 台）', { n: GMAuth.DEVICE_LIMIT })) + '</div>';
+    }
+
+    var danger = $('pfDanger');
+    if (danger) {
+      danger.innerHTML = '<div class="hint">' + esc(T('viewer|注销后 30 天内数据仍可恢复，30 天后彻底删除')) +
+        '<br>' + esc(T('viewer|本地数据保留，云端数据将删除')) + '</div>' +
+        '<div class="btn-row" style="margin-top:10px"><button class="sec" id="pfDelete">' +
+        esc(T('viewer|注销账户')) + '</button></div>';
+    }
+    wireProfile();
+  }
+
+  // The 我的 page's async half. `§5.3`: 「全部通过 Edge Function `profile-get` 一次拉取」.
+  var PFC = { sampleCount: 0, devices: [{ current: true, label: '' }], loaded: false };
+
+  async function profileLoad() {
+    var st = GMAuth.status();
+    PFC.devices = [{ current: true, label: T('viewer|本机') }];
+    if (!st.user) { renderProfile(); return; }
+    var res = await GMProfile.getProfile();
+    if (res.ok) {
+      PFC.sampleCount = res.sampleCount;
+      PFC.loaded = true;
+    }
+    renderProfile();
+  }
+
+  function wireProfile() {
+    if ($('pfLogout')) $('pfLogout').onclick = async function () {
+      await GMAuth.logout();
+      afterAuthChange();
+    };
+    if ($('pfEdit')) $('pfEdit').onclick = openProfileEditor;
+    if ($('pfSyncGo')) $('pfSyncGo').onclick = function () { showView('settings'); };
+    if ($('pfDelete')) $('pfDelete').onclick = openDeleteAccount;
+  }
+
+  function openProfileEditor() {
+    var u = (GMAuth.status().user) || {};
+    var h = '<div class="rowline"><span>' + esc(T('viewer|用户名')) + '</span>' +
+      '<input type="text" id="peName" style="flex:1" value="' + esc(u.username || '') + '"></div>' +
+      '<div class="rowline"><span>' + esc(T('viewer|简介')) + '</span>' +
+      '<input type="text" id="peBio" style="flex:1" value="' + esc(u.bio || '') + '"></div>' +
+      '<div class="rowline"><span>' + esc(T('viewer|头像')) + '</span>' +
+      '<input type="file" id="peFile" accept="image/jpeg,image/png,image/webp">' +
+      '<span class="hint" id="peAvHint">' + esc(T('viewer|选择图片')) + '</span></div>' +
+      '<div class="hint" id="peErr" style="margin-top:8px"></div>';
+    openModal(T('viewer|编辑资料'), h, function (bd) {
+      // §4.4's client-side gate runs HERE, before the file is read: 2MB / jpg-png-webp, and the
+      // compression is 256×256 JPEG. Nothing is uploaded by this dialog — it only stages the blob.
+      var f = bd.querySelector('#peFile');
+      if (f) f.addEventListener('change', function (ev) {
+        var file = ev.target.files && ev.target.files[0];
+        if (!file) return;
+        var v = GMProfile.validateAvatar(file);
+        bd.querySelector('#peAvHint').textContent = v.ok ? file.name : cloudErrText(v.error);
+      });
+    });
+  }
+
+  function openDeleteAccount() {
+    // §4.2's 「二次确认」 is the modal itself; the code box is the 「输入激活码或邮箱验证」 step.
+    var h = '<div class="hint">' + esc(T('viewer|注销后 30 天内数据仍可恢复，30 天后彻底删除')) + '</div>' +
+      '<div class="hint" style="margin-top:6px">' + esc(T('viewer|本地数据保留，云端数据将删除')) + '</div>' +
+      '<div class="rowline" style="margin-top:10px"><span>' + esc(T('viewer|激活码')) + '</span>' +
+      '<input type="text" id="daCode" style="flex:1" placeholder="' + esc(T('viewer|输入激活码')) + '"></div>' +
+      '<div class="hint" id="daErr" style="margin-top:8px"></div>';
+    openModal(T('viewer|注销账户'), h, function (bd) {
+      var btn = document.createElement('button');
+      btn.className = 'sec';
+      btn.textContent = T('viewer|注销账户');
+      btn.onclick = async function () {
+        var code = (bd.querySelector('#daCode') || {}).value || '';
+        var res = await GMProfile.deleteAccount(code);
+        if (!res.ok) { bd.querySelector('#daErr').textContent = cloudErrText(res.error); return; }
+        closeAllModals();
+        afterAuthChange();
+        // §4.2 「本地数据不删除」 — said out loud, because the operator who just pressed this is
+        // entitled to worry about their archives.
+        GmToast.show(T('viewer|本地数据保留，云端数据将删除'), 'info');
+      };
+      // `openModal`'s onMount hands back `.bd` (the body); the footer is its SIBLING inside
+      // `.modal`, so the extra step through `closest` is required — `bd.querySelector('.ft')` is
+      // null and the insert would throw.
+      var daFt = bd.closest('.modal').querySelector('.ft');
+      daFt.insertBefore(btn, daFt.querySelector('[data-close]'));
+    });
+  }
+
+  // ---------------------------------------------------------------------
+  // 管理员 (§6.3)
+  // ---------------------------------------------------------------------
+  var ADC = { page: 1, limit: 50, total: 0, query: '', loaded: false };
+
+  function renderAdmin() {
+    if ($('adGenTitle')) $('adGenTitle').textContent = T('viewer|生成激活码');
+    if ($('adCountLabel')) $('adCountLabel').textContent = T('viewer|数量');
+    if ($('adNoteLabel')) $('adNoteLabel').textContent = T('viewer|备注');
+    if ($('adGen')) $('adGen').textContent = T('viewer|生成');
+    if ($('adListTitle')) $('adListTitle').textContent = T('viewer|用户列表');
+    if ($('adQueryLabel')) $('adQueryLabel').textContent = T('viewer|搜索');
+    if ($('adSearch')) $('adSearch').textContent = T('viewer|搜索');
+    if ($('adPrev')) $('adPrev').textContent = '‹';
+    if ($('adNext')) $('adNext').textContent = '›';
+    wireAdmin();
+  }
+
+  function wireAdmin() {
+    if ($('adGen') && !$('adGen').onclick) $('adGen').onclick = adminGenerate;
+    if ($('adSearch') && !$('adSearch').onclick) $('adSearch').onclick = function () {
+      ADC.query = ($('adQuery') || {}).value || '';
+      adminLoadUsers(1);
+    };
+    if ($('adPrev') && !$('adPrev').onclick) $('adPrev').onclick = function () {
+      if (ADC.page > 1) adminLoadUsers(ADC.page - 1);
+    };
+    if ($('adNext') && !$('adNext').onclick) $('adNext').onclick = function () {
+      if (ADC.page * ADC.limit < ADC.total) adminLoadUsers(ADC.page + 1);
+    };
+  }
+
+  async function adminGenerate() {
+    var out = $('adGenOut');
+    if (out) out.innerHTML = '<div class="hint">' + esc(T('viewer|正在激活…')) + '</div>';
+    var n = ($('adCount') || {}).value;
+    var note = ($('adNote') || {}).value || '';
+    var res = await GMAdmin.generateCodes(n, note);
+    if (!out) return;
+    if (!res.ok) {
+      out.innerHTML = '<div class="hint">' + esc(cloudErrText(res.error)) + '</div>';
+      return;
+    }
+    // §6.3 「生成激活码（一键复制）」. The copy button is built here rather than in the markup
+    // because the codes only exist after the call; the codes themselves are escaped into a
+    // <pre>-like box so a stray character cannot become markup.
+    out.innerHTML = '<div class="codebox" id="adCodes">' + esc(res.codes.join('\n')) + '</div>' +
+      '<div class="btn-row" style="margin-top:8px"><button class="sec" id="adCopy">' +
+      esc(T('viewer|复制')) + '</button></div>';
+    var copy = $('adCopy');
+    if (copy) copy.onclick = function () {
+      var text = res.codes.join('\n');
+      var done = function () { copy.textContent = T('viewer|已复制'); };
+      if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).then(done, done);
+      else done();
+    };
+  }
+
+  async function adminLoadUsers(page) {
+    ADC.page = page || 1;
+    var rows = $('adRows');
+    if (rows) rows.innerHTML = '<div class="hint">' + esc(T('viewer|正在同步…')) + '</div>';
+    var res = await GMAdmin.listUsers({ page: ADC.page, limit: ADC.limit, filter: ADC.query ? { query: ADC.query } : null });
+    if (!rows) return;
+    if (!res.ok) {
+      rows.innerHTML = '<div class="hint">' + esc(cloudErrText(res.error)) + '</div>';
+      return;
+    }
+    ADC.total = res.total;
+    ADC.loaded = true;
+    if ($('adTotal')) $('adTotal').textContent = res.total + ' / ' + ADC.limit;
+    if (!res.users.length) { rows.innerHTML = '<div class="hint">—</div>'; return; }
+    var h = '';
+    res.users.forEach(function (u) {
+      var banned = !!u.is_banned;
+      h += '<div class="rowline">' +
+        '<span class="em">' + esc(u.email || u.id) + '</span>' +
+        '<span class="hint">' + esc(u.username || '—') + '</span>' +
+        '<span class="hint">' + esc(banned ? T('viewer|已封禁') : T('viewer|正常')) + '</span>' +
+        '<button class="sec" data-ad-ban="' + esc(u.id) + '" data-ad-to="' + (banned ? '0' : '1') + '">' +
+        esc(banned ? T('viewer|解封') : T('viewer|封禁')) + '</button>' +
+        '</div>';
+    });
+    rows.innerHTML = h;
+  }
+
+  // Delegated, for the same reason the io panel's grid is: `adminLoadUsers` replaces the whole
+  // innerHTML on every page, so a per-button handler would be attached to detached nodes.
+  if ($('adRows')) {
+    $('adRows').addEventListener('click', async function (ev) {
+      var b = ev.target && ev.target.closest ? ev.target.closest('[data-ad-ban]') : null;
+      if (!b) return;
+      var id = b.getAttribute('data-ad-ban');
+      var want = b.getAttribute('data-ad-to') === '1';
+      var res = want ? await GMAdmin.banUser(id, '') : await GMAdmin.unbanUser(id);
+      if (res.ok) adminLoadUsers(ADC.page);
+    });
+  }
+
+  // ---------------------------------------------------------------------
+  // 激活引导 (§1.2) 与状态联动
+  // ---------------------------------------------------------------------
+  function openActivateGuide() {
+    // §1.2: 「首次启动弹出引导：『激活码解锁云功能，核心检测仍然免费』」 and 「用户可选择『暂不激活，
+    // 继续本地使用』」. The two buttons are the two answers that sentence offers.
+    var h = '<div class="hint">' + esc(T('viewer|激活码解锁云功能，核心检测仍然免费')) + '</div>' +
+      '<div class="btn-row" style="margin-top:12px;line-height:2.2">' +
+      '<input type="text" id="agCode" placeholder="' + esc(T('viewer|输入激活码')) + '" style="width:260px">' +
+      '<button id="agGo">' + esc(T('viewer|激活')) + '</button></div>' +
+      '<div class="hint" style="margin-top:6px">' + esc(T('viewer|激活码格式形如 BS-XXXX-XXXX-XXXX-XXXX')) + '</div>' +
+      '<label class="hint" style="display:flex;align-items:center;gap:8px;margin-top:10px">' +
+      '<input type="checkbox" id="agAgree" style="flex:0 0 auto;width:auto;min-width:0;margin:0">' +
+      '<span>' + esc(T('viewer|我同意隐私政策')) + '</span></label>';
+    openModal(T('viewer|云账户与同步'), h, function (bd) {
+      var later = document.createElement('button');
+      later.className = 'sec';
+      later.textContent = T('viewer|暂不激活，继续本地使用');
+      later.onclick = function () { closeAllModals(); };
+      var go = document.createElement('button');
+      go.textContent = T('viewer|激活');
+      go.onclick = async function () {
+        var code = (bd.querySelector('#agCode') || {}).value || '';
+        if (!(bd.querySelector('#agAgree') || {}).checked) return;
+        go.disabled = true; go.textContent = T('viewer|正在激活…');
+        var res = await GMAuth.activate(code);
+        go.disabled = false; go.textContent = T('viewer|激活');
+        if (!res.ok) {
+          var e = bd.querySelector('.hint');
+          if (e) e.textContent = cloudErrText(res.error);
+          return;
+        }
+        closeAllModals();
+        afterAuthChange();
+      };
+      var agFt = bd.closest('.modal').querySelector('.ft');
+      agFt.insertBefore(later, agFt.querySelector('[data-close]'));
+      agFt.insertBefore(go, agFt.querySelector('[data-close]'));
+    });
+  }
+
+  // One entry point for 「the account state changed」, whether from 激活 / 登出 / 注销 or from a
+  // boot-time renewal that discovered a revoked code. Repainting from a single place is what keeps
+  // the nav, the settings panel and the 我的 page from disagreeing.
+  async function afterAuthChange() {
+    S = await G.loadSettings();
+    syncNavForAuth();
+    await buildCloudPanel();
+    await profileLoad();
+    renderAdmin();
+    renderPrivacyLink();
+  }
+
+  function renderPrivacyLink() {
+    if ($('privacyLabel')) $('privacyLabel').textContent = T('viewer|隐私政策');
+    var el = $('privacyLink');
+    if (!el) return;
+    // §9.3 wants a link. With no address supplied the honest render is the placeholder text rather
+    // than an anchor that 404s — and the anchor is built with the DOM API, not `innerHTML`, because
+    // the address is a variable and this project does not paste variables into markup.
+    if (!PRIVACY_URL) { el.textContent = T('viewer|尚未提供'); return; }
+    el.textContent = '';
+    var a = document.createElement('a');
+    a.href = PRIVACY_URL;
+    a.target = '_blank';
+    a.rel = 'noopener noreferrer';
+    // The full URL is long and wraps badly in a settings row; the host+path is unambiguous and fits.
+    a.textContent = PRIVACY_URL.replace(/^https?:\/\//, '');
+    a.title = PRIVACY_URL;
+    el.appendChild(a);
+  }
+
+  /**
+   * The boot half of the cloud feature. Called once, at the very end of `boot()`.
+   *
+   * Order matters twice here:
+   *   · `GMAuth.boot()` runs BEFORE the first render — it is what performs §3.4's 「每次启动尝试续期」
+   *     and it can also CLEAR the session (a revoked code answers 401). Painting first and then
+   *     discovering there is no account would flash an activated UI at somebody who is not.
+   *   · `onChange` is subscribed AFTER that, so the renewal's own `emit()` does not re-enter the
+   *     render path we are already in. From then on the listener is the single funnel for 「the
+   *     account changed」, whether the change came from this page or from a token that turned out to
+   *     be dead.
+   */
+  async function cloudBoot() {
+    renderPrivacyLink();
+    try { await GMAuth.boot(); } catch (e) { /* a dead network is an expected outcome, not a failure */ }
+    syncNavForAuth();
+    await buildCloudPanel();
+    await profileLoad();
+    renderAdmin();
+    GMAuth.onChange(function () { afterAuthChange(); });
+
+    // §1.2's 升级引导: 「0.5.x 用户升级到 1.0.0 后，首次启动弹出引导」. Three conditions, and each
+    // one is load-bearing — no backend means there is nothing to activate against, an activated
+    // account has already answered the question, and `guideSeen` is what stops 「暂不激活」 from
+    // being asked again on every single boot.
+    var st = GMAuth.status();
+    if (st.configured && !GMAuth.isActivated() && !S.cloud.guideSeen) {
+      var next = Object.assign({}, S.cloud, { guideSeen: true });
+      S.cloud = next;
+      await G.saveSetting('cloud', next);
+      openActivateGuide();
+    }
   }
 
   // =====================================================================
@@ -8245,5 +8887,9 @@
     // text lives in the dictionary, so they are filled once here — a later language switch goes
     // through `repaintForLang`.
     renderSegLegends();
+    // 1.0.0 §1.2/§3.4 — last, deliberately: the account state has to be settled (including a
+    // boot-time renewal that may log us out) before any account-aware control is drawn, and it is
+    // the only step here that can open a dialog.
+    await cloudBoot();
   })();
 })();

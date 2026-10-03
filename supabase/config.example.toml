@@ -1,0 +1,67 @@
+# config.example.toml -- EXAMPLE ONLY.
+#
+# Copy this file to `config.toml` next to it and adjust `project_id` (and the ports, if
+# they clash with something already running on your machine) before you use the Supabase
+# CLI. `config.toml` is what the CLI actually reads; this example is committed so the
+# expected settings are reviewable. Do not commit real secrets here -- secrets are set
+# with `supabase secrets set`, never in this file.
+#
+#   cp supabase/config.example.toml supabase/config.toml
+#
+# verify_jwt = false on every function is intentional: each function does its own
+# verification (requireUser / requireAdmin), and auth-renew must be able to accept a
+# just-expired token, which the platform gate would otherwise reject before our code
+# runs. See README.md for the full reasoning.
+
+project_id = "baishen-detector"
+
+[api]
+enabled = true
+port = 54321
+schemas = ["public", "graphql_public"]
+extra_search_path = ["public", "extensions"]
+max_rows = 1000
+
+[db]
+port = 54322
+major_version = 15
+
+[studio]
+enabled = true
+port = 54323
+
+[functions.auth-activate]
+verify_jwt = false
+
+[functions.auth-renew]
+verify_jwt = false
+
+[functions.auth-delete-account]
+verify_jwt = false
+
+[functions.profile-get]
+verify_jwt = false
+
+[functions.profile-update]
+verify_jwt = false
+
+[functions.admin-generate-code]
+verify_jwt = false
+
+[functions.admin-list-users]
+verify_jwt = false
+
+[functions.admin-ban-user]
+verify_jwt = false
+
+[functions.admin-unban-user]
+verify_jwt = false
+
+[functions.admin-revoke-codes]
+verify_jwt = false
+
+[functions.admin-grant-badge]
+verify_jwt = false
+
+[functions.admin-reissue-jwt]
+verify_jwt = false
