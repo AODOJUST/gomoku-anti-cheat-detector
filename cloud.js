@@ -7,10 +7,17 @@
  * header set, the timeout, and — most importantly — what happens when there is no backend.
  *
  * ---------------------------------------------------------------------------------------------
- * THE SHIPPED STATE IS 「NOT CONFIGURED」, AND THAT IS NOT AN ERROR
+ * EMPTY CONSTANTS MEAN 「NOT CONFIGURED」, AND THAT IS NOT AN ERROR
  * ---------------------------------------------------------------------------------------------
- * §十三 tells the operator to supply `SUPABASE_URL` / the anon key / the service-role key after
- * they create the project. Until they do, the two constants below are EMPTY STRINGS, and:
+ * ⚠ 1.0.1 SHIPS THESE TWO CONSTANTS FILLED IN. The operator configured the production project
+ * (§十三), so the build that ships is configured and §1.1's activation gate is genuinely live on
+ * it. The 「not configured」 branch below is therefore no longer 「the shipped state」: it is what a
+ * cloner gets from an empty checkout, and it is a state every suite now has to CONSTRUCT on
+ * purpose in order to reach (see `verify-062` §1, and the `window.GMCloud` property-setter the
+ * behavioural harnesses install). An assertion that a build "ships unconfigured" is testing the
+ * fixture, not the product.
+ *
+ * With the two constants EMPTY (or the URL not a Supabase host), this file behaves as:
  *
  *   * `isConfigured()` returns false,
  *   * `call()` returns `{ok:false, error:'NOT_CONFIGURED'}` **without touching the network**,
@@ -22,9 +29,8 @@
  *   「**不破坏已有用户的本地使用**」 — 自动采集 ✅ 检测分析 ✅ 本地存档 ✅ 学习机制 ✅ 黑名单 ✅
  *   云同步 ❌ 用户主页 ❌ 徽章 ❌ 跨设备同步 ❌        (无账号用户 column, verbatim)
  *
- * A 0.5.x operator who never types an activation code must see exactly the extension they had,
- * minus two nav buttons. Anything that throws instead of returning `NOT_CONFIGURED` would break
- * that promise, so `call()` never rejects.
+ * Anything that throws instead of returning `NOT_CONFIGURED` would break that promise, so
+ * `call()` never rejects.
  *
  * ---------------------------------------------------------------------------------------------
  * WHAT MAY AND MAY NOT BE IN THIS FILE
@@ -70,6 +76,29 @@
   }
 
   /**
+   * The ONE place that turns a failed response into an error code.
+   *
+   * `call()` and `rest()` each used to spell this out separately, and they disagreed: `call()` read
+   * only `data.error`, `rest()` also read `data.code`. Two spellings of one fact is this project's
+   * most expensive recurring defect (five times over), so there is now one function and both entry
+   * points go through it.
+   *
+   * ⚠ `data.code` is deliberately NOT read, even though PostgREST and Supabase's own gateway use
+   * that key. Folding it in would be worse than leaving it out: the gateway spells its
+   * 「this function slug was never deployed」 404 as `{"code":"NOT_FOUND"}`, which is character for
+   * character the spelling this project uses for 「激活码不存在」. Merging the two namespaces would
+   * make a missing function render as 「激活码无效」 — trading one wrong sentence for a worse one.
+   *
+   * A failure carrying no `error` did not come from a function; it came from something in front of
+   * one (a proxy, the platform's router). So it is reported as `HTTP_<status>`, which is a fact,
+   * and `cloudErrText` words those by status rather than guessing at a cause.
+   */
+  function wireCode(data, status) {
+    var e = data && data.error;
+    return e ? String(e) : ('HTTP_' + status);
+  }
+
+  /**
    * The single outbound call. NEVER rejects.
    *
    * Resolves to exactly one of:
@@ -77,6 +106,7 @@
    *   { ok: false, error: 'NOT_CONFIGURED' }
    *   { ok: false, error: 'NETWORK', status: 0 }          — offline, DNS, TLS, timeout, abort
    *   { ok: false, error: '<CODE>', status: <n>, message } — the server's own error envelope
+   *   { ok: false, error: 'HTTP_<n>', status: <n> }       — a platform answer (see `wireCode`)
    *
    * `opts.jwt` is the caller's bearer token; without it the anon key is used both as `apikey` and
    * as the bearer, which is what the activation call needs (it is by definition made by someone
@@ -117,13 +147,14 @@
     if (text) { try { data = JSON.parse(text); } catch (e) { data = null; } }
 
     if (!res.ok) {
-      // The Edge Functions answer failures with `{error:'CODE', message:'…'}` (§ contract in
-      // supabase/README.md). A non-JSON body means something in front of the function answered —
-      // a proxy, the platform's own 404 for a function that is not deployed — so it is reported
-      // as an HTTP status rather than being forced into the error vocabulary, which would make
-      // 「函数没部署」 look like 「激活码无效」.
-      var code = (data && data.error) ? data.error : ('HTTP_' + res.status);
-      return { ok: false, error: code, status: res.status, message: (data && data.message) || '' };
+      // Which code comes back is `wireCode`'s one job; see the ⚠ there for why a platform 404 is
+      // reported as an HTTP status instead of being folded into the error vocabulary.
+      return {
+        ok: false,
+        error: wireCode(data, res.status),
+        status: res.status,
+        message: (data && data.message) || '',
+      };
     }
     return { ok: true, data: data, status: res.status };
   }
@@ -177,8 +208,12 @@
     var data = null;
     if (text) { try { data = JSON.parse(text); } catch (e) { data = null; } }
     if (!res.ok) {
-      var code = (data && (data.error || data.code)) ? (data.error || data.code) : ('HTTP_' + res.status);
-      return { ok: false, error: code, status: res.status, message: (data && data.message) || '' };
+      return {
+        ok: false,
+        error: wireCode(data, res.status),
+        status: res.status,
+        message: (data && data.message) || '',
+      };
     }
     return { ok: true, data: data, status: res.status };
   }

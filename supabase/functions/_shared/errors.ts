@@ -24,8 +24,11 @@ export type ErrorCode =
   // --- 1.0.1 §2.3 / §2.4 / §2.6 / §3.7 / §3.8 -------------------------------------------------
   // Every one of these is a FAILURE THE OPERATOR CAN ACT ON, and the client's `cloudErrText`
   // words them individually. That is why they are codes rather than `BAD_REQUEST` with a message:
-  // a bare 400 reaches the operator as 「网络错误，请稍后重试」, which is the one sentence that
-  // never helps.
+  // a bare 400 used to reach the operator as 「网络错误，请稍后重试」, which was the one sentence
+  // that never helps — and during the 2026-10-03 bring-up it covered three unrelated faults at
+  // once. The client no longer guesses: an unlisted code is reported by its own name
+  // (`HTTP_<status>`), so a bare 400 is at least searchable. Naming a code is still how the
+  // operator gets told WHO can fix it.
   | "BAD_USERNAME"
   | "BAD_EMAIL"
   | "BAD_EMAIL_CODE"

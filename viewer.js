@@ -3540,6 +3540,15 @@
   // §3.2's error vocabulary, as sentences. The codes are the Edge Functions' own and are stable;
   // the words are what the operator acts on. 1.0.1 adds the registration/login set (§2.3/§2.6) —
   // kept in THIS one function so the two steps of one flow cannot word the same failure differently.
+  //
+  // ⚠ A FALLBACK IS CHOSEN BY ELIMINATION, so a fallback that names a CAUSE turns every unlisted
+  // failure into a false diagnosis of that cause. 1.0.1's fallback was 「网络错误，请稍后重试」, and
+  // during the 2026-10-03 bring-up that one sentence covered three unrelated situations: eight Edge
+  // Functions that had never been deployed, a Resend key that had never been set, and — in the only
+  // case it was right about — a genuine network failure. Two of the three sent the operator to
+  // inspect their own network. The sentence itself was never wrong; it was in the wrong place.
+  // It has now MOVED to the one branch where it is true (`NETWORK`), everything else is named, and
+  // the fallback carries the raw code instead of asserting a cause.
   function cloudErrText(err) {
     if (err === 'BAD_FORMAT') return T('viewer|激活码格式形如 BS-XXXX-XXXX-XXXX-XXXX');
     if (err === 'INVALID_CODE') return T('viewer|激活码无效');
@@ -3560,7 +3569,33 @@
     // ---- 1.0.1 §2.6 登录 ----
     if (err === 'BAD_CREDENTIALS') return T('reg|邮箱或密码不正确');
     if (err === 'NOT_FOUND') return T('viewer|激活码无效');
-    return T('viewer|网络错误，请稍后重试');
+    // ---- 传输层：`GMCloud` 自己的码，不是服务端的错误词表 ----
+    // `NETWORK` is the ONLY code that means the network. `cloud.js` returns it for a failed fetch —
+    // offline, DNS, TLS, timeout, abort — and for nothing else, which is what earns it the sentence.
+    if (err === 'NETWORK') return T('viewer|网络错误，请稍后重试');
+    if (err === 'NOT_CONFIGURED') return T('viewer|云端未配置（纯本地模式）');
+    if (err === 'UNAUTHORIZED') return T('viewer|登录状态已失效，请重新登录');
+    if (err === 'FORBIDDEN') return T('viewer|没有权限执行此操作');
+    if (err === 'BAD_REQUEST') return T('viewer|请求无效，请重试');
+    // ---- 平台层：没有 `error` 键的失败，见 `cloud.js` 的 `wireCode` ----
+    // `INTERNAL` is the functions' own catch-all (`_shared/errors.ts`); `HTTP_5xx` is a platform
+    // answer. To the operator they are one fact — the server side gave up — so they share one
+    // sentence rather than growing a distinction nothing acts on.
+    if (err === 'INTERNAL') return T('viewer|服务端暂时出错，请稍后重试');
+    if (/^HTTP_5\d\d$/.test(err)) return T('viewer|服务端暂时出错，请稍后重试');
+    // EMAIL_FAILED is `_shared/email.ts`: Resend is unconfigured, refused, or out of quota. That is
+    // a DEPLOYMENT problem and the end user cannot fix it, so the sentence says who can.
+    if (err === 'EMAIL_FAILED') return T('reg|验证码邮件发送失败，请稍后重试或联系管理员');
+    // ⚠ A 404 with no `error` key is the platform saying the function slug does not exist. This is
+    // the sentence the bring-up needed and did not have: it used to reach the operator as
+    // 「网络错误」 while their network was demonstrably fine.
+    if (err === 'HTTP_404') return T('viewer|服务端接口不存在，后端可能尚未部署');
+    // Any other status the platform answered with. `HTTP_404` is handled above, so this is the
+    // 400/401/403/405/429/… set — name the status rather than invent a cause.
+    if (/^HTTP_\d+$/.test(err)) return T('viewer|请求被服务端拒绝（{code}）', { code: err });
+    // Last resort. It NAMES the code rather than asserting a cause, so the operator has something
+    // to search for — which 「网络错误，请稍后重试」 never gave them.
+    return T('viewer|未知错误（{code}）', { code: String(err == null ? '' : err) });
   }
 
 
@@ -3713,10 +3748,12 @@
     await buildCloudPanel();
     var el2 = $('clSyncState');
     if (!el2) return;
-    if (res.ok) el2.textContent = syncStateText(S.cloud);
-    else if (res.error === 'NOT_CONFIGURED') el2.textContent = T('viewer|云端未配置（纯本地模式）');
-    else if (res.error === 'UNAUTHORIZED') el2.textContent = cloudStateText(GMAuth.status());
-    else el2.textContent = T('viewer|网络错误，请稍后重试');
+    // ⚠ 1.0.1 spelled this mapping out a SECOND time here, and the two copies disagreed. This one
+    // knew only NOT_CONFIGURED and UNAUTHORIZED, so every other failure — an undeployed table, a
+    // policy refusing the token, a 5xx — was reported as 「网络错误，请稍后重试」. A sync error is
+    // exactly where a PostgREST code shows up, so this copy was the one most likely to lie. One
+    // answer gets one copy, and `cloudErrText` is it.
+    el2.textContent = res.ok ? syncStateText(S.cloud) : cloudErrText(res.error);
   }
 
   // ---------------------------------------------------------------------
