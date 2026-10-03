@@ -10,9 +10,10 @@ supabase/
 │  ├─ 001_init.sql            # 表 / 索引 / updated_at 触发器
 │  ├─ 002_rls.sql             # 默认拒绝的 RLS 策略 + is_admin()
 │  ├─ 003_user_kv.sql         # 云同步的四类键值（黑名单 / 设置 / 自定义题库 / 学习参数）
-│  └─ 004_email_codes.sql     # §2.4 邮箱验证码表 + §3.7 token_epoch + §2.3 用户名唯一索引
+│  ├─ 004_email_codes.sql     # §2.4 邮箱验证码表 + §3.7 token_epoch + §2.3 用户名唯一索引
+│  └─ 005_community.sql     # 1.0.2 二 社区：chat_messages / news / feedback + is_activated()
 └─ functions/
-   ├─ _shared/                # cors / errors / client / codes / email 共享模块
+   ├─ _shared/                # cors / errors / client / codes / email / community 共享模块
    ├─ auth-*                  # 激活三步（validate-code / register / activate）、登录、续期、
    │                          # 改密码 / 改邮箱 / 忘记密码 / 发验证码 / 查重名 / 注销
    ├─ profile-*               # 资料读写（含 §3.6 头像上传）
@@ -86,7 +87,7 @@ cp supabase/config.example.toml supabase/config.toml
 supabase db push
 ```
 
-会依次执行 `migrations/` 下的四个脚本。四份都写成幂等的（`if not exists` / `create or replace` / `drop ... if exists`），重复执行安全。执行完可在 **Table Editor** 里看到 `users / activation_codes / devices / samples / archives / badges / user_kv / email_codes` 八张表，且每张表的 row count 旁都标着 `RLS enabled`。
+会依次执行 `migrations/` 下的五个脚本。五份都写成幂等的（`if not exists` / `create or replace` / `drop ... if exists`），重复执行安全。执行完可在 **Table Editor** 里看到 `users / activation_codes / devices / samples / archives / badges / user_kv / email_codes / chat_messages / news / feedback` 十一张表，且每张表的 row count 旁都标着 `RLS enabled`。
 
 > ⚠ `004_email_codes.sql` 里的用户名唯一索引（`idx_users_username_lower`）**在已有重名用户时会创建失败**，这是刻意的：静默挑一个赢家等于偷偷改掉别人的账号名。1.0.0 从不分配用户名（它是编辑资料里的可选装饰），所以全新库不会有冲突；确实有的话先手工理清重名再跑。
 
@@ -101,7 +102,8 @@ for fn in \
   auth-login auth-reset-password auth-change-password auth-change-email \
   profile-get profile-update \
   admin-generate-code admin-list-users admin-ban-user \
-  admin-unban-user admin-revoke-codes admin-grant-badge admin-reissue-jwt
+  admin-unban-user admin-revoke-codes admin-grant-badge admin-reissue-jwt \
+  chat-send feedback-submit admin-publish-news admin-reply-feedback
 do
   supabase functions deploy "$fn" --no-verify-jwt
 done
@@ -294,9 +296,9 @@ curl -X POST "https://<project-ref>.supabase.co/functions/v1/auth-register" \
 
 - [ ] 项目区域为 Singapore，状态 Active。
 - [ ] `supabase link` 成功，`config.toml` 已从示例复制并改好 `project_id`。
-- [ ] `supabase db push` 成功；**八张表**存在且都显示 **RLS enabled**。
+- [ ] `supabase db push` 成功；**十一张表**存在且都显示 **RLS enabled**。
 - [ ] `activation_codes` 表 **没有任何** policy（Dashboard → Authentication → Policies 里应为空）。
-- [ ] **20 个函数**全部部署成功：`supabase functions list`。
+- [ ] **24 个函数**全部部署成功：`supabase functions list`。
 - [ ] 每个函数都带 `verify_jwt = false`，且代码内部有 `requireUser` / `requireAdmin` 或明确的匿名理由。
 - [ ] secrets 已设置：`SUPABASE_JWT_SECRET`（必需）、`RESEND_API_KEY`（1.0.1 必需）、`MAIL_FROM`（建议）、`PUBLIC_AVATAR_PREFIX`（可选）；改完已重新部署。
 - [ ] Storage 里存在 **public 的 `avatars` 桶**（第 7.1 步）。

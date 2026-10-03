@@ -517,7 +517,10 @@
   // list because they belong to an ACCOUNT (§3.3), not because a nav button leads to them: §3.1
   // removes 我的's tab and reaches both through the drawer, so the drawer is the only door — and a
   // door into a room the operator may not enter is exactly what this list closes.
-  var GATED_VIEWS = ['replay', 'samples', 'blacklist', 'profile', 'account'];
+  // 1.0.2 二.1 adds `community`: §2.1 「未激活用户：不显示「社区」按钮」, and it is in the list for the
+  // same reason as the three above — hiding the button is §2.1's visible half, and the router is
+  // where the invisible half lives.
+  var GATED_VIEWS = ['replay', 'samples', 'blacklist', 'profile', 'account', 'community'];
 
   /** The gate, in the one form this file asks it in. Sync, because `GMAuth.gateOpen()` is. */
   function activationOpen() { return !!(GMAuth.gateOpen && GMAuth.gateOpen()); }
@@ -540,6 +543,10 @@
       if (GATED_VIEWS.indexOf(name) !== -1) openActivationGuide();
       return;
     }
+    // ⚠ BEFORE the `.active` class moves. `activeView()` answers from `.view.active`, so asking it
+    // after the toggle would answer with the view we are going TO and 「was the community view on
+    // screen?」 would be a question about the destination — the teardown below would never run.
+    var was = activeView();
     var btns = document.querySelectorAll('.navbtn');
     for (var i = 0; i < btns.length; i++) btns[i].classList.toggle('active', btns[i].dataset.view === name);
     document.querySelectorAll('.view').forEach(function (v) { v.classList.remove('active'); });
@@ -568,6 +575,13 @@
     if (name === 'profile') { renderProfile(); }
     if (name === 'account') { buildAccountPanel(); }
     if (name === 'admin') { renderAdmin(); if (!ADC.loaded) adminLoadUsers(1); }
+    // 1.0.2 二 — the community view. `was === name` is what distinguishes a REPAINT (a language
+    // switch re-entering the view it is already on) from an ENTRY, and `was` is asked rather than
+    // `opts.repaint` because mistaking the two has opposite costs: an entry taken for a repaint is a
+    // room that never loads and never says why, while a repaint taken for an entry is a socket that
+    // reconnects because someone changed the language.
+    if (name === 'community') refreshCommunity(was === 'community');
+    if (was === 'community' && name !== 'community') cmLeave();
   }
   document.querySelectorAll('.navbtn').forEach(function (b) {
     b.onclick = function () { showView(b.dataset.view); };
@@ -3394,6 +3408,557 @@
     return k;
   }
 
+  // =====================================================================
+  // 社区 (1.0.2 二)
+  // =====================================================================
+  // §2.2's page: 聊天室 / 新闻 / Bug与建议 behind a three-item secondary nav. Everything that talks
+  // to the server lives in community.js and returns FACTS; every word lives here, because
+  // `_tools/keys.cjs` inventories `T('…')` literals in THIS file and not in that one — see the
+  // header of community.js for why that split is the i18n rule and not just tidiness.
+
+  /** Which secondary tab is open. `'chat'` because §2.2 lists it first. */
+  var CM_TAB = 'chat';
+  /** The room's rows, ascending by `created_at`, and the one de-duplicator that fills them. */
+  var cmRows = [];
+  var cmSeen = {};
+  var cmNews = null;          // null = never arrived; [] = arrived and empty
+  var cmNewsFilter = '';      // '' = §2.4.4's 「全部」
+  var cmNewsOpen = {};        // id -> true, the cards showing their full text
+  var cmFb = null;
+  var cmNewsMsg = null;
+  var cmFbMsg = null;
+  var cmChatMsg = null;
+  var cmFbBusy = false;
+  var cmBooted = false;
+
+  /** §2.4.4's preview cut. ONE number, used both to decide whether 「阅读全文」 is offered and to
+   *  cut the text it reveals — two literals here would be a button that opens a card showing
+   *  exactly what was already on screen. */
+  var CM_PREVIEW = 120;
+
+  /**
+   * A database code as a label.
+   *
+   * §2.4.2 / §2.5.2's `category` / `status` columns hold VALUES, not display text, so the label is
+   * a semantic key (`cm.cat.bug`) rather than a source-text key. Those keys are registered in
+   * `locale/zh-CN.js` AND `_tools/i18n-extra.js`: `keys.cjs` learns the KEY from the first and the
+   * Chinese text it translates FROM the second, and registering only one of the two is how a table
+   * ends up without a row for a key that is on screen the whole time.
+   *
+   * ⚠ A code the tables do not know prints AS ITSELF. `t()` answers an unknown key with the key, so
+   * without this guard a status added to the database later would render 「cm.st.foo」 — a string no
+   * operator can act on. The raw value at least names the thing.
+   */
+  function cmNamed(prefix, code) {
+    var raw = String(code == null ? '' : code);
+    var k = prefix + raw;
+    var s = T(k);
+    return s === k ? raw : s;
+  }
+  function cmCat(code) { return cmNamed('cm.cat.', code); }
+  function cmStatus(code) { return cmNamed('cm.st.', code); }
+  function cmNewsCatLabel(code) { return cmNamed('cm.newscat.', code); }
+
+  /**
+   * §2.3.5's connection state, as words.
+   *
+   * A `switch` of literal `T('…')` calls rather than a lookup table, and it has to be: `keys.cjs`
+   * only sees an argument that is a quoted literal, so four keys held in a table would be four keys
+   * that never reach the twelve generated tables — and the room's own status line would stay
+   * Chinese in every language while looking perfectly fine in this file.
+   */
+  function cmStateText(s) {
+    switch (s) {
+      case 'connecting': return T('community|连接中…');
+      case 'live': return T('community|实时');
+      case 'polling': return T('community|轮询刷新');
+    }
+    return T('community|未连接');
+  }
+
+  /**
+   * A status line, held as a DESCRIPTOR (`{code, err, tone, …}`) rather than as prose.
+   *
+   * Two reasons, and the second is the one that has already cost this project: a language switch
+   * has to re-word every line on screen (0.3.6 §1.8), and an ERROR is only a CODE until the moment
+   * it is printed — resolving it at paint time through `cloudErrText` keeps the one error vocabulary
+   * in charge instead of freezing today's wording into a stored string.
+   *
+   * ⚠ `code` is a short name and NOT the i18n key, and that is deliberate. `_tools/keys.cjs`
+   * inventories a translation by finding a quoted literal inside a `T('…')` call — so a key stored
+   * in a descriptor (`{key: 'community|加载中…'}`) is invisible to it, gets no row in any of the
+   * twelve generated tables, and prints CHINESE in all of them while nothing anywhere reports it.
+   * A `switch` of literal `T('…')` calls is the shape this file already uses for `cloudErrText`,
+   * `cmStateText` and `stopReason`, for exactly this reason.
+   */
+  function cmMsgText(m) {
+    if (!m) return '';
+    var err = m.err ? cloudErrText(m.err) : '';
+    switch (m.code) {
+      case 'loading': return T('community|加载中…');
+      case 'loadFailed': return T('community|加载失败（{err}）', { err: err });
+      case 'sendFailed': return T('community|发送失败（{err}）', { err: err });
+      case 'submitFailed': return T('community|提交失败（{err}）', { err: err });
+      case 'submitted': return T('community|已提交，管理员会尽快处理。');
+      case 'tooLong': return T('community|单条最多 {n} 个字符。', { n: m.n });
+      case 'tooLongForm': return T('community|超出长度上限，请精简后重试。');
+      case 'censorChat': return T('community|内容包含敏感词：{word}', { word: m.word });
+      case 'censorForm': return T('community|提交内容包含敏感词：{word}', { word: m.word });
+      case 'rateChat': return T('community|发送太频繁，请稍后再试（每分钟最多 {n} 条）', { n: m.n });
+      case 'pickCat': return T('community|请选择类型。');
+      case 'needTitleBody': return T('community|标题和内容都不能为空。');
+    }
+    return '';
+  }
+
+  function cmSetMsg(el, m) {
+    if (!el) return;
+    el.textContent = cmMsgText(m);
+    el.style.color = m && m.tone === 'err' ? 'var(--red)'
+      : (m && m.tone === 'ok' ? 'var(--green)' : '');
+  }
+
+  function cmPaintChatMsg() { cmSetMsg($('cmChatNote'), cmChatMsg); }
+  function cmPaintNewsMsg() { cmSetMsg($('cmNewsState'), cmNewsMsg); }
+  function cmPaintFbMsg() { cmSetMsg($('cmFbState'), cmFbMsg); }
+
+  function cmPaintContactHint() {
+    var el = $('cmFbContactHint');
+    if (el) el.textContent = T('community|这里填的只是备注；回复会发到你的账号邮箱。');
+  }
+
+  function cmPaintState(s) {
+    var el = $('cmChatState');
+    if (el) el.textContent = cmStateText(s || (GMCommunity.chat && GMCommunity.chat.state()));
+  }
+
+  function cmPaintLen() {
+    var i = $('cmChatInput'), el = $('cmChatLen');
+    if (!i || !el) return;
+    var S = GMCommunity.shared() || {};
+    var max = S.CHAT_MAX_LEN || 0;
+    var n = String(i.value || '').length;
+    el.textContent = n + '/' + max;
+    el.style.color = n > max ? 'var(--red)' : '';
+  }
+
+  function cmPaintHint() {
+    var el = $('cmChatHint');
+    if (!el) return;
+    var S = GMCommunity.shared() || {};
+    el.textContent = T('community|全部已激活用户共用一个公共聊天室；消息保留 {days} 天，每分钟最多 {rate} 条，单条不超过 {len} 字符。',
+      { days: S.CHAT_RETENTION_DAYS, rate: S.CHAT_RATE_MAX, len: S.CHAT_MAX_LEN });
+  }
+
+  function cmUid() {
+    var s = GMAuth.session && GMAuth.session();
+    return (s && s.user && s.user.id) || '';
+  }
+
+  // 0.5.1 asked for the same fallback in `renderNavUser`: a broken `<img>` is worse than a letter.
+  // ⚠ The scheme test is the point, not the `img` tag — `data:text/html` and `javascript:` are
+  // refused by SCHEME rather than by hoping the browser treats them as a broken picture.
+  var CM_IMG_RE = /^(data:image\/(png|jpe?g|webp|gif);base64,|https?:\/\/)/i;
+
+  function cmAvatarHtml(url, name) {
+    if (typeof url === 'string' && CM_IMG_RE.test(url)) {
+      return '<img src="' + esc(url) + '" alt="">';
+    }
+    return esc(String(name || '—').slice(0, 1).toUpperCase());
+  }
+
+  function cmMsgHtml(row) {
+    var S = GMCommunity.shared() || {};
+    var name = row.username || '—';
+    var when = S.chatClock ? S.chatClock(row.created_at) : '';
+    return '<div class="cm-msg' + (row.user_id && row.user_id === cmUid() ? ' me' : '') + '">' +
+      '<div class="cm-av">' + cmAvatarHtml(row.avatar_url, name) + '</div>' +
+      '<div class="cm-txt">' +
+        '<div class="cm-who">' + esc(name) + (when ? ' · ' + esc(when) : '') + '</div>' +
+        '<div class="cm-bub">' + esc(row.content) + '</div>' +
+      '</div></div>';
+  }
+
+  function cmPaintChat() {
+    var log = $('cmChatLog');
+    if (!log) return;
+    // Stick to the bottom only when the reader was already there. A room that jumps to its newest
+    // line while someone is scrolling back is a room whose history cannot be read.
+    var stick = (log.scrollTop + log.clientHeight) >= (log.scrollHeight - 24);
+    log.innerHTML = cmRows.length
+      ? cmRows.map(cmMsgHtml).join('')
+      : '<div class="cm-empty">' + esc(T('community|还没有消息，来说第一句吧。')) + '</div>';
+    if (stick) log.scrollTop = log.scrollHeight;
+    var c = $('cmChatCount');
+    if (c) c.textContent = T('community|{n} 条消息', { n: cmRows.length });
+  }
+
+  /**
+   * One row in, from wherever it came.
+   *
+   * De-duplication by `id` is not decoration: the socket is opened BEFORE the scrollback is asked
+   * for (an insert during the load would otherwise be missed by both halves), our own send is drawn
+   * immediately AND pushed back, and a reconnect re-delivers the page. Three ordinary paths, one
+   * message each.
+   */
+  function cmPush(row) {
+    if (!row || typeof row.id !== 'string' || cmSeen[row.id]) return;
+    cmSeen[row.id] = true;
+    cmRows.push(row);
+    // Sorted on insert rather than trusting arrival order: the live socket and the scrollback
+    // interleave, and a message drawn above the one it answered is a conversation that reads wrong.
+    cmRows.sort(function (a, b) {
+      var x = String(a.created_at || ''), y = String(b.created_at || '');
+      return x < y ? -1 : (x > y ? 1 : 0);
+    });
+    cmPaintChat();
+  }
+
+  /**
+   * §2.3's send, behind §2.3.5's CLIENT half of the filter.
+   *
+   * Not decoration either: §2.3.5 says 「客户端 + 服务端双重」, and the client half is what turns a
+   * refusal into a sentence about the operator's own text instead of a 400 they waited for. The
+   * server half is what actually holds — this is a plain script in an extension directory and
+   * anyone can edit it.
+   */
+  function cmSend() {
+    var i = $('cmChatInput');
+    if (!i) return;
+    var text = String(i.value || '');
+    if (!text.trim()) return;
+    var S = GMCommunity.shared() || {};
+    if (text.length > (S.CHAT_MAX_LEN || 0)) {
+      cmChatMsg = { code: 'tooLong', n: S.CHAT_MAX_LEN, tone: 'err' };
+      cmPaintChatMsg();
+      return;
+    }
+    var hit = S.censorHit ? S.censorHit(text) : null;
+    if (hit) {
+      cmChatMsg = { code: 'censorChat', word: hit, tone: 'err' };
+      cmPaintChatMsg();
+      return;
+    }
+
+    var btn = $('cmChatSend');
+    if (btn) btn.disabled = true;
+    cmChatMsg = null;
+    cmPaintChatMsg();
+    GMCommunity.chat.send(text).then(function (r) {
+      if (btn) btn.disabled = false;
+      if (!r || !r.ok) {
+        // ⚠ RATE_LIMITED is NOT handed to `cloudErrText`. That shared vocabulary words this code as
+        // 「发送过于频繁，请 60 秒后再试」 — the EMAIL-VERIFICATION window, which is a different
+        // answer to a different question. §2.3.5's window is 「每分钟最多 10 条」, and a chat room
+        // that tells the operator to wait a minute when the wait is seconds is worse than no
+        // sentence at all. One code, two windows, so the sentence is chosen by the caller.
+        cmChatMsg = (r && r.error === 'RATE_LIMITED')
+          ? { code: 'rateChat', n: S.CHAT_RATE_MAX, tone: 'err' }
+          : { code: 'sendFailed', err: (r && r.error) || 'INTERNAL', tone: 'err' };
+        cmPaintChatMsg();
+        return;
+      }
+      i.value = '';
+      cmPaintLen();
+      // Drawn from the reply rather than waiting for the push: this operator's own message is the
+      // one they are watching for, and a room that needs a Realtime round trip to show it looks
+      // broken on a slow socket. The push for the same row arrives later and `cmPush` drops it.
+      if (r.row) cmPush(r.row);
+    });
+  }
+
+  function cmPaintNews() {
+    var box = $('cmNewsList');
+    if (!box) return;
+    var rows = (cmNews || []).filter(function (r) {
+      return !cmNewsFilter || r.category === cmNewsFilter;
+    });
+    if (!rows.length) {
+      box.innerHTML = '<div class="cm-empty">' + esc(T('community|暂无新闻。')) + '</div>';
+      return;
+    }
+    box.innerHTML = rows.map(cmNewsHtml).join('');
+  }
+
+  function cmNewsHtml(row) {
+    var S = GMCommunity.shared() || {};
+    var pick = S.newsText ? S.newsText(row, LANG)
+      : { title: row.title, content: row.content, lang: row.lang, translated: false };
+    var open = !!cmNewsOpen[row.id];
+    var long = String(pick.content || '').replace(/\s+/g, ' ').trim().length > CM_PREVIEW;
+    var body = (open || !long) ? pick.content : S.previewLine(pick.content, CM_PREVIEW);
+
+    var meta = [String(row.published_at || '').slice(0, 10), cmNewsCatLabel(row.category)];
+    // §2.4.4 「无对应翻译时显示原文」 — and SAYS so. A card labelled with the language it asked for
+    // but did not get is worse than one labelled plainly, which is why `newsText` reports which of
+    // the two it returned rather than only the text.
+    if (!pick.translated && pick.lang && pick.lang !== LANG) {
+      meta.push(T('community|原文（{lang}）', { lang: pick.lang }));
+    }
+    // Two separate literal calls, not `T(open ? 'a' : 'b')`: `keys.cjs` only inventories a quoted
+    // literal inside the call, so a conditional would drop both keys from all twelve tables.
+    var btn = open ? T('community|收起') : T('community|阅读全文');
+
+    return '<div class="cm-item">' +
+      '<div class="cm-head">' +
+        (row.is_pinned ? '<span class="cm-chip">📌</span>' : '') +
+        '<span class="cm-title">' + esc(pick.title) + '</span>' +
+        '<span class="cm-meta">' + esc(meta.join(' · ')) + '</span>' +
+      '</div>' +
+      '<div class="cm-body-txt">' + esc(body) + '</div>' +
+      (long ? '<div class="btn-row" style="margin-top:8px">' +
+        '<button class="sec" data-cm-open="' + esc(row.id) + '">' + esc(btn) + '</button></div>' : '') +
+      '</div>';
+  }
+
+  function cmPaintFeedback() {
+    var box = $('cmFbList');
+    if (!box) return;
+    var rows = cmFb || [];
+    if (!rows.length) {
+      box.innerHTML = '<div class="cm-empty">' + esc(T('community|还没有提交记录。')) + '</div>';
+      return;
+    }
+    box.innerHTML = rows.map(cmFbHtml).join('');
+  }
+
+  function cmFbHtml(row) {
+    var S = GMCommunity.shared() || {};
+    return '<div class="cm-item">' +
+      '<div class="cm-head">' +
+        '<span class="cm-chip">' + esc(cmCat(row.category)) + '</span>' +
+        '<span class="cm-title">' + esc(row.title) + '</span>' +
+        '<span class="cm-meta">' + esc(String(row.created_at || '').slice(0, 10)) + '</span>' +
+        '<span class="cm-chip">' + esc(cmStatus(row.status)) + '</span>' +
+      '</div>' +
+      '<div class="cm-body-txt">' +
+        esc(S.previewLine ? S.previewLine(row.content, 200) : row.content) + '</div>' +
+      // §2.5.1's 「管理员可回复」 has to end somewhere the submitter can see, and §2.5.5's list is
+      // the only page they own — so the reply is drawn WITH the report rather than only mailed.
+      (row.admin_reply
+        ? '<div class="cm-reply"><div class="cm-who">' + esc(T('community|管理员回复')) +
+          '</div>' + esc(row.admin_reply) + '</div>'
+        : '') +
+      '</div>';
+  }
+
+  function cmPaintNewsFilter() {
+    Array.prototype.forEach.call(document.querySelectorAll('[data-cmcat]'), function (b) {
+      b.classList.toggle('on', (b.getAttribute('data-cmcat') || '') === cmNewsFilter);
+    });
+  }
+
+  function cmShowTab(name) {
+    if (name !== 'chat' && name !== 'news' && name !== 'feedback') return;
+    CM_TAB = name;
+    Array.prototype.forEach.call(document.querySelectorAll('#cmNav .cm-tab'), function (b) {
+      b.classList.toggle('active', b.getAttribute('data-cm') === name);
+    });
+    // Scoped to this view: `.cm-pane` alone would also collect anything a future page happens to
+    // name the same way, which is the shape of the 1.0.0 defect where `syncCats.backgrounds` (a
+    // category) was mistaken for a field of the same name.
+    Array.prototype.forEach.call(document.querySelectorAll('#view-community .cm-pane'), function (p) {
+      p.classList.toggle('active', p.id === 'cmPane-' + name);
+    });
+  }
+
+  /** §2.5.4's type options, from `FEEDBACK_CATEGORIES` rather than from markup: the server accepts
+   *  exactly that set, and a hand-written <select> is a fourth list that can drift from it. */
+  function buildFeedbackCats() {
+    var sel = $('cmFbCat');
+    if (!sel) return;
+    var S = GMCommunity.shared() || {};
+    var keep = sel.value || (S.FEEDBACK_CATEGORIES || [])[0] || '';
+    sel.innerHTML = (S.FEEDBACK_CATEGORIES || []).map(function (c) {
+      return '<option value="' + esc(c) + '">' + esc(cmCat(c)) + '</option>';
+    }).join('');
+    sel.value = keep;
+  }
+
+  function cmLoadNews() {
+    if (!cmNews) {
+      cmNewsMsg = { code: 'loading' };
+      cmPaintNewsMsg();
+    }
+    GMCommunity.news.load().then(function (r) {
+      if (!r || !r.ok) {
+        cmNewsMsg = { code: 'loadFailed', err: (r && r.error) || 'INTERNAL', tone: 'err' };
+        cmPaintNewsMsg();
+        return;
+      }
+      cmNews = r.rows || [];
+      cmNewsMsg = null;
+      cmPaintNewsMsg();
+      cmPaintNews();
+    });
+  }
+
+  function cmLoadFeedback() {
+    GMCommunity.feedback.mine().then(function (r) {
+      if (!r || !r.ok) {
+        cmFbMsg = { code: 'loadFailed', err: (r && r.error) || 'INTERNAL', tone: 'err' };
+        cmPaintFbMsg();
+        return;
+      }
+      // A successful read retires the READ's own message and nothing else. 「已提交」 is a verdict
+      // about what the operator just did, and `cmFbSubmit` re-reads the list immediately after
+      // setting it — clearing the line here would wipe the confirmation a millisecond after it
+      // appeared.
+      if (cmFbMsg && (cmFbMsg.code === 'loadFailed' || cmFbMsg.code === 'loading')) cmFbMsg = null;
+      cmFb = r.rows || [];
+      cmPaintFbMsg();
+      cmPaintFeedback();
+    });
+  }
+
+  function cmFbSubmit() {
+    if (cmFbBusy) return;
+    var S = GMCommunity.shared() || {};
+    var cat = $('cmFbCat') ? $('cmFbCat').value : '';
+    var title = String(($('cmFbTitle') || {}).value || '').trim();
+    var body = String(($('cmFbBody') || {}).value || '').trim();
+    var contact = String(($('cmFbContact') || {}).value || '').trim();
+
+    // The three ceiling checks are the same numbers the `maxlength` attributes carry, so they can
+    // only fire on a control that was edited in a console. They are here because the SERVER's answer
+    // to an over-long field is a code, and a code rendered as a sentence about the operator's own
+    // typing is a better first line than a round trip.
+    if (!cat || (S.FEEDBACK_CATEGORIES || []).indexOf(cat) < 0) {
+      cmFbMsg = { code: 'pickCat', tone: 'err' }; cmPaintFbMsg(); return;
+    }
+    if (!title || !body) {
+      cmFbMsg = { code: 'needTitleBody', tone: 'err' }; cmPaintFbMsg(); return;
+    }
+    if (title.length > (S.FEEDBACK_TITLE_MAX || 0) || body.length > (S.FEEDBACK_CONTENT_MAX || 0)) {
+      cmFbMsg = { code: 'tooLongForm', tone: 'err' }; cmPaintFbMsg(); return;
+    }
+    var hit = S.censorHit ? (S.censorHit(title) || S.censorHit(body)) : null;
+    if (hit) {
+      cmFbMsg = { code: 'censorForm', word: hit, tone: 'err' };
+      cmPaintFbMsg();
+      return;
+    }
+
+    cmFbBusy = true;
+    var btn = $('cmFbSend');
+    if (btn) btn.disabled = true;
+    cmFbMsg = null;
+    cmPaintFbMsg();
+    GMCommunity.feedback.submit({ category: cat, title: title, content: body, contact: contact })
+      .then(function (r) {
+        cmFbBusy = false;
+        if (btn) btn.disabled = false;
+        if (!r || !r.ok) {
+          cmFbMsg = { code: 'submitFailed', err: (r && r.error) || 'INTERNAL', tone: 'err' };
+          cmPaintFbMsg();
+          return;
+        }
+        cmFbMsg = { code: 'submitted', tone: 'ok' };
+        cmPaintFbMsg();
+        // The form is cleared and the list re-read rather than the returned row being appended: the
+        // server's projection is deliberately not the row shape a LIST read returns (§2.5.5's
+        // columns come from `feedback`, the reply's from `publicFeedback`), and building the list
+        // from two shapes is how the two start disagreeing.
+        if ($('cmFbTitle')) $('cmFbTitle').value = '';
+        if ($('cmFbBody')) $('cmFbBody').value = '';
+        if ($('cmFbContact')) $('cmFbContact').value = '';
+        cmLoadFeedback();
+      });
+  }
+
+  function cmPaintAll() {
+    buildFeedbackCats();
+    cmPaintHint();
+    cmPaintLen();
+    cmPaintState();
+    cmPaintContactHint();
+    cmPaintChatMsg();
+    cmPaintNewsMsg();
+    cmPaintFbMsg();
+    cmPaintNewsFilter();
+    cmPaintChat();
+    cmPaintNews();
+    cmPaintFeedback();
+  }
+
+  function cmBoot() {
+    if (cmBooted) return;
+    cmBooted = true;
+    var S = GMCommunity.shared() || {};
+
+    // §2.3.5's limits onto the controls, from the one definition. `maxlength` counts UTF-16 code
+    // units, which is what the Edge Function counts — see the note in `_shared/community.ts`. A
+    // `maxlength` typed here would be a ceiling that disagrees with the server's, i.e. a control
+    // that lets through text it then refuses.
+    [[$('cmChatInput'), S.CHAT_MAX_LEN],
+     [$('cmFbTitle'), S.FEEDBACK_TITLE_MAX],
+     [$('cmFbBody'), S.FEEDBACK_CONTENT_MAX],
+     [$('cmFbContact'), S.FEEDBACK_CONTACT_MAX]
+    ].forEach(function (c) { if (c[0] && c[1]) c[0].maxLength = c[1]; });
+
+    // §2.2 — the three secondary tabs. `.cm-tab` is not `.navbtn`, so the top-level router's
+    // `querySelectorAll('.navbtn')` never sees them and their `data-cm` can never be mistaken for a
+    // view name.
+    Array.prototype.forEach.call(document.querySelectorAll('#cmNav .cm-tab'), function (b) {
+      b.onclick = function () { cmShowTab(b.getAttribute('data-cm')); };
+    });
+    Array.prototype.forEach.call(document.querySelectorAll('[data-cmcat]'), function (b) {
+      b.onclick = function () {
+        cmNewsFilter = b.getAttribute('data-cmcat') || '';
+        cmPaintNewsFilter();
+        cmPaintNews();
+      };
+    });
+    // Delegated, not per-button: §2.4.4's 「阅读全文」 is created with the card it belongs to, and
+    // every card is rebuilt on a language switch — so a handler installed per button would have to
+    // be reinstalled on every repaint, and the one repaint that forgot would be an inert button.
+    var nl = $('cmNewsList');
+    if (nl) nl.onclick = function (e) {
+      var t = (e.target && e.target.closest) ? e.target.closest('[data-cm-open]') : null;
+      if (!t) return;
+      var id = t.getAttribute('data-cm-open');
+      if (cmNewsOpen[id]) delete cmNewsOpen[id]; else cmNewsOpen[id] = true;
+      cmPaintNews();
+    };
+    var send = $('cmChatSend');
+    if (send) send.onclick = cmSend;
+    var input = $('cmChatInput');
+    if (input) {
+      input.oninput = cmPaintLen;
+      // Enter sends, Shift+Enter breaks the line. §2.3.6 draws a box one line tall with a 发送
+      // button beside it; if Enter inserted a newline there would be no keyboard way to send.
+      input.onkeydown = function (e) {
+        if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); cmSend(); }
+      };
+    }
+    if ($('cmFbSend')) $('cmFbSend').onclick = cmFbSubmit;
+    if ($('cmFbReload')) $('cmFbReload').onclick = cmLoadFeedback;
+    cmShowTab(CM_TAB);
+  }
+
+  /**
+   * The community view's entry point, in the shape the other views use.
+   *
+   * `repaint` (0.5.1's convention — see `showView`) means 「the operator changed the language」: the
+   * rows already in hand are re-worded and NOTHING is asked of the network. Without it the view is
+   * being ENTERED, so the room's socket reopens and both lists are re-fetched — a chat room that
+   * only reconnected when the page did would be a room you cannot rejoin after a glance at 回放.
+   */
+  function refreshCommunity(repaint) {
+    cmBoot();
+    cmPaintAll();
+    if (repaint) return;
+    GMCommunity.chat.subscribe({ onRow: cmPush, onState: cmPaintState });
+    cmLoadNews();
+    cmLoadFeedback();
+  }
+
+  /** Leaving closes the socket. The rows stay in `cmRows`, so coming back paints the conversation
+   *  immediately and the fresh page is de-duplicated into it rather than replacing it. */
+  function cmLeave() {
+    if (GMCommunity && GMCommunity.chat) GMCommunity.chat.unsubscribe();
+  }
+
   /**
    * Which view is ON SCREEN, as a name. Read from the `.view` element that is marked `active`
    * rather than from `.navbtn.active`.
@@ -3401,11 +3966,16 @@
    * ⚠ 1.0.1 is why this matters. 主页 and 账号设置 are reached through §3.2's drawer and have NO nav
    * button at all, so a nav-button answer is not "the current view" once the operator has opened
    * one: after `showView('profile')` every nav button is un-highlighted, and a nav-derived answer
-   * collapses to the 'detect' default. The one caller (`applyActivationGate`) uses this to decide
-   * whether the current view is still reachable, so a 'detect' answer there meant 「log out while
-   * reading 主页」 left the page rendering 主页 — the previous operator's name and sample count, from
-   * a session that had just been discarded — with no tab highlighted. Found by `behave-062-cloud`
-   * B8, which logs out from the drawer-only view for exactly this reason.
+   * collapses to the 'detect' default. `applyActivationGate` uses this to decide whether the current
+   * view is still reachable, so a 'detect' answer there meant 「log out while reading 主页」 left the
+   * page rendering 主页 — the previous operator's name and sample count, from a session that had
+   * just been discarded — with no tab highlighted. Found by `behave-062-cloud` B8, which logs out
+   * from the drawer-only view for exactly this reason.
+   *
+   * ⚠ 1.0.2 adds the SECOND caller, `showView`, which asks it 「which view am I leaving?」 before it
+   * moves the `.active` class. Both callers must therefore ask BEFORE that class changes; see the
+   * warning at the call site. The claim in this paragraph used to read 「the one caller」, which is
+   * the kind of sentence that turns a two-caller contract into a one-caller assumption.
    */
   function activeView() {
     var v = document.querySelector('.view.active');
@@ -3415,11 +3985,12 @@
   /**
    * 1.0.1 §1.3 — the viewer's half of the activation gate, and the ONLY place the viewer applies it.
    *
-   * Four surfaces, one predicate. §1.1's matrix and §1.3's sketch between them say:
+   * Five surfaces, one predicate. §1.1's matrix and §1.3's sketch between them say:
    *   · 回放 / 样本库 / 黑名单 tabs — 「不显示」 for an unactivated operator
-   *   · 设置页 — only 云账号与同步 / 新手教程 / 关于 (declared as `data-gate` in the markup)
+   *   · 设置页 — only 云账号与同步 / 语言与显示 / 新手教程 / 关于 (declared as `data-gate` in the markup)
    *   · 管理员 — still needs BOTH §6.3's is_admin and the gate
    *   · the header's right edge — the account area and the 「激活」 button are mutually exclusive
+   *   · 1.0.2 二.1: 社区 — §2.1 「未激活用户：不显示「社区」按钮」, the fifth surface
    *
    * Plus the job the 1.0.0 version of this function already had and the easy one to forget: when
    * the view we are STANDING on stops being reachable (登出, 注销, or a revoked code the boot-time
@@ -3447,6 +4018,10 @@
       p.classList.toggle('hidden', !activationOpen());
     });
     if ($('navAdmin')) $('navAdmin').classList.toggle('hidden', !viewAllowed('admin'));
+    // 1.0.2 二.1 — 社区. Same predicate as the three tabs above rather than a second reading of
+    // `activationOpen()`: `viewAllowed` is where 「admin needs two conditions」 lives, and a surface
+    // that asks the gate directly is a surface that will disagree with the router one day.
+    if ($('navCommunity')) $('navCommunity').classList.toggle('hidden', !viewAllowed('community'));
     // §3.1 vs §3.4 — one of the two is shown, never both, and never neither…
     //
     // …EXCEPT on a build with no backend, where it is neither. §3.4's 「激活」 button is an offer to
@@ -3586,6 +4161,14 @@
     // EMAIL_FAILED is `_shared/email.ts`: Resend is unconfigured, refused, or out of quota. That is
     // a DEPLOYMENT problem and the end user cannot fix it, so the sentence says who can.
     if (err === 'EMAIL_FAILED') return T('reg|验证码邮件发送失败，请稍后重试或联系管理员');
+    // ---- 1.0.2 §2 社区互动的三个判词 ----
+    // Added because the four community Edge Functions can answer them and `behave-064` found one of
+    // them reaching the operator as 「未知错误（NOT_ACTIVATED）」 — the catalogue tries hard not to
+    // repeat itself, but a screen with no matching sentence would evolve into one half-quiet failure
+    // per screen.
+    if (err === 'NOT_ACTIVATED') return T('viewer|此功能需要已激活的账户');
+    if (err === 'CONTENT_TOO_LONG') return T('viewer|内容超出长度上限');
+    if (err === 'CONTENT_REJECTED') return T('viewer|内容包含不当词汇，未能提交');
     // ⚠ A 404 with no `error` key is the platform saying the function slug does not exist. This is
     // the sentence the bring-up needed and did not have: it used to reach the operator as
     // 「网络错误」 while their network was demonstrably fine.

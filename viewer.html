@@ -997,6 +997,91 @@
   /* the board's own legend, doubling as the hover readout under the canvas */
   #dBoardTip{min-height:1.6em}
 
+  /* ---- 1.0.2 二.2 社区：3 项次级侧边导航 + 一块内容区 ----
+     §2.2's sketch IS the page: a three-item sidebar beside one content area. Every surface inside
+     is a `.panel`, so the view inherits the shell's fill, radius and — from 0.5.4 — the
+     transparency treatment instead of growing a second surface vocabulary. Only the shapes that
+     are new are declared here.
+
+     ⚠ Nothing in this block writes the `background` SHORTHAND on anything that is also a
+     `.panel`, and nothing here reads a `--viewer-*` variable. `.panel`'s fill is rewritten by the
+     single `background-color` alpha rule further down this stylesheet, and a shorthand written
+     earlier loses to it (equal specificity, later wins) — the trap that rule's own comment
+     documents at length. Same rule for `.cm-bub`: shorthand is safe because nothing downstream
+     restates it. */
+  .cm{display:flex;gap:var(--ui-shell-gap);align-items:flex-start}
+  /* The sidebar carries `.panel` in the markup, so this is only its own layout. */
+  .cm-nav{display:flex;flex-direction:column;gap:4px;flex:0 0 auto;min-width:164px;padding:6px}
+  .cm-nav .cm-tab{display:flex;align-items:center;gap:8px;width:100%;text-align:start;
+    padding:9px 12px;border:1px solid transparent;border-radius:var(--ui-detail-radius);
+    background:transparent;color:var(--mut);font-size:var(--ui-detail-font);cursor:pointer}
+  .cm-nav .cm-tab:hover{border-color:var(--line);color:var(--txt)}
+  .cm-nav .cm-tab.active{background:var(--blue);border-color:var(--blue);color:#fff}
+  /* `flex:0 0 auto` on the glyph, not `width:auto`: the 0.5.5 note about boolean controls applies
+     here too — a flex item with an auto basis is still allowed to shrink to nothing when the
+     label beside it is long (the Arabic 「اللغة والعرض」 case). */
+  .cm-ico{flex:0 0 auto;font-size:1.15em;line-height:1}
+  .cm-lbl{min-width:0;overflow-wrap:anywhere}
+
+  .cm-body{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;gap:var(--ui-shell-gap)}
+  .cm-pane{display:none}
+  .cm-pane.active{display:flex;flex-direction:column;gap:var(--ui-shell-gap)}
+
+  /* ---- 聊天室 (§2.3.6) ----
+     Height is capped in `vh` so the send row stays on screen on a laptop, which is the one thing
+     §2.3.6's sketch gets wrong: it draws a fixed-height log with no scroll. */
+  .cm-log{display:flex;flex-direction:column;gap:10px;height:min(52vh,440px);overflow-y:auto;
+    padding:var(--ui-detail-padding);border:1px solid var(--line-soft);
+    border-radius:var(--ui-detail-radius)}
+  /* §2.3.1 「自己的消息在右侧，他人的在左侧」 — `align-self` on the row, and `row-reverse` so the
+     avatar follows the bubble to the right edge instead of being a second layout. */
+  .cm-msg{display:flex;gap:8px;align-items:flex-start;max-width:min(78%,560px)}
+  .cm-msg.me{align-self:flex-end;flex-direction:row-reverse}
+  .cm-av{flex:0 0 auto;width:30px;height:30px;border-radius:50%;overflow:hidden;
+    display:flex;align-items:center;justify-content:center;background:var(--btn);color:var(--mut);
+    font-size:12px;border:1px solid var(--line);user-select:none}
+  .cm-av img{width:100%;height:100%;object-fit:cover;display:block}
+  .cm-txt{min-width:0}
+  .cm-who{font-size:var(--ui-detail-small);color:var(--mut);margin-bottom:2px}
+  .cm-msg.me .cm-who{text-align:end}
+  /* `pre-wrap` + `anywhere`: a message is user text, so a 500-character run of one character or a
+     pasted URL must wrap rather than widen the room. */
+  .cm-bub{padding:7px 11px;border-radius:var(--ui-detail-radius);border:1px solid var(--line);
+    background:var(--inset);font-size:var(--ui-detail-small);line-height:1.55;
+    white-space:pre-wrap;overflow-wrap:anywhere}
+  .cm-msg.me .cm-bub{background:rgba(var(--blue-rgb),.16);border-color:var(--blue)}
+  .cm-send{display:flex;gap:8px;align-items:flex-end}
+  /* Beats the global `textarea{height:110px}` (0,1,1 > 0,0,1); the room's box grows with its
+     content up to a ceiling rather than reserving a third of the panel for two lines. */
+  .cm-send textarea{height:auto;min-height:44px;max-height:120px;resize:vertical;
+    font-family:inherit;font-size:var(--ui-detail-small)}
+  .cm-cnt{flex:0 0 auto;font-variant-numeric:tabular-nums}
+
+  /* ---- 新闻 (§2.4.4) / Bug与建议 (§2.5.4/2.5.5) ----
+     One card shape for both lists. §2.4.4's card and §2.5.5's row are the same object — a title, a
+     line of metadata, a body — so they are one rule, not two that drift. */
+  .cm-list{display:flex;flex-direction:column;gap:8px}
+  .cm-item{border:1px solid var(--line);border-radius:var(--ui-detail-radius);
+    padding:10px 12px;background:var(--inset)}
+  .cm-head{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap}
+  .cm-title{font-size:var(--ui-detail-font);font-weight:600;color:var(--txt);
+    overflow-wrap:anywhere}
+  .cm-meta{font-size:var(--ui-detail-small);color:var(--mut);flex:1 1 auto}
+  .cm-body-txt{font-size:var(--ui-detail-small);line-height:1.65;margin-top:6px;
+    white-space:pre-wrap;overflow-wrap:anywhere}
+  .cm-chip{display:inline-block;padding:1px 8px;border-radius:999px;font-size:11px;
+    border:1px solid var(--line);color:var(--mut);background:var(--panel);flex:0 0 auto}
+  .cm-reply{margin-top:8px;padding:8px 10px;border-inline-start:3px solid var(--blue);
+    border-radius:var(--ui-detail-radius);background:rgba(var(--blue-rgb),.10);
+    font-size:var(--ui-detail-small);line-height:1.6;white-space:pre-wrap;overflow-wrap:anywhere}
+  .cm-fbst{flex:0 0 auto;font-weight:600}
+  /* §2.5.4's form. `.set-grid` is the shell's own responsive grid, so the type / title / contact
+     row is that grid rather than a fourth hand-rolled column layout. */
+  .cm-fb-row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px}
+  /* The two states a long list has and the sketch does not draw: nothing yet, and nothing
+     reachable. Both are one line of `--mut` in the middle of the box they belong to. */
+  .cm-empty{padding:26px 12px;text-align:center;font-size:var(--ui-detail-small);color:var(--mut)}
+
   /* ---- 0.5.4 §二.1 the two rules that consume the transparency variables ----
      See the long note next to the palette for WHY this sits here rather than beside the colours
      (the surfaces above use the `background` shorthand, which resets `background-color`, and a
@@ -1066,6 +1151,13 @@
          local list the operator curates) and reading left to right it comes last because it is
          the one list that is about PEOPLE rather than about games. -->
     <button class="navbtn hidden" data-view="blacklist" id="navBlacklist">黑名单</button>
+    <!-- 1.0.2 二.1 — 社区. §2.1 draws it as `[检测] [回放] [样本库] [社区] [设置]` and says
+         「未激活用户：不显示「社区」按钮」, so it ships `hidden` and joins §1.3's gated set for the
+         same reason the three above do — see the block comment over #navReplay.
+         It sits with the other content tabs rather than beside 设置: the two things it is made of
+         (a room and a changelog) are content, and 管理员 is the one tab that is about the ACCOUNT
+         rather than the archive. -->
+    <button class="navbtn hidden" data-view="community" id="navCommunity">社区</button>
     <!-- 1.0.0 §6.3 — 管理员, 「仅 `is_admin` 可见」. It is the only condition §6.1 lets the client
          evaluate at all — for VISIBILITY, never for authorisation (every operation is re-checked
          server-side).
@@ -1829,6 +1921,128 @@
     </div>
   </section>
 
+  <!-- ======================= 社区 (1.0.2 二) ======================= -->
+  <!-- §2.2's page is the whole design: a three-item sidebar beside one content area. The sidebar
+       labels and the form's field names are STATIC markup on purpose — `GMI18n.apply()` translates
+       text nodes in place and `_tools/keys.cjs` inventories them from this file, so neither the
+       words nor their keys are repeated in viewer.js. What IS built by JS is everything whose
+       value comes from the server (a row, a count, a status); the `—` placeholders are the frames
+       it fills.
+
+       ⚠ The glyph and the label are two spans, not `💬 聊天室` in one text node. The implicit pass
+       derives its key from a text node's WHOLE trimmed content, so a combined node would become
+       the key `html|💬 聊天室` — a key no dictionary row carries, and one that would therefore stay
+       Chinese in all twelve other languages while looking perfectly normal in this file.
+
+       ⚠ The numbers in the chat blurb are NOT written here. They exist once, in
+       `_shared/community.ts` (mirrored to community-shared.js), and #cmChatHint is filled from
+       them — a second copy in this file would be a second answer to 「每分钟几条」. -->
+  <section class="view" id="view-community">
+    <div class="cm">
+      <nav class="panel cm-nav" id="cmNav">
+        <button class="cm-tab active" data-cm="chat"><span class="cm-ico">💬</span><span class="cm-lbl">聊天室</span></button>
+        <button class="cm-tab" data-cm="news"><span class="cm-ico">📰</span><span class="cm-lbl">新闻</span></button>
+        <button class="cm-tab" data-cm="feedback"><span class="cm-ico">🐛</span><span class="cm-lbl">Bug与建议</span></button>
+      </nav>
+
+      <div class="cm-body">
+
+        <!-- ---- 聊天室 (§2.3) ---- -->
+        <div class="cm-pane active" id="cmPane-chat">
+          <div class="panel">
+            <div class="filters-bar">
+              <h2 style="margin:0">聊天室</h2>
+              <span class="hint" id="cmChatState">—</span>
+              <span class="sp"></span>
+              <span class="hint" id="cmChatCount">—</span>
+            </div>
+            <!-- §2.3.6's scrollback. Rows are appended by `cmChatRender` / `cmChatAppend`; nothing
+                 here is static, because every line of it depends on who is talking. -->
+            <div class="cm-log" id="cmChatLog"></div>
+            <div class="cm-send" style="margin-top:10px">
+              <!-- `maxlength` is set from `GMCommunityShared.CHAT_MAX_LEN` at boot rather than
+                   written here: the counter beside it and the Edge Function's own check are the
+                   same number, and a control whose ceiling disagrees with the server's is a
+                   control that lets through text it then refuses. -->
+              <textarea id="cmChatInput" rows="1" placeholder="说点什么…"></textarea>
+              <div class="hint cm-cnt" id="cmChatLen">—</div>
+              <button id="cmChatSend">发送</button>
+            </div>
+            <!-- The refusal line. Separate from #cmChatHint (the limits blurb) because one is
+                 permanent reference text and the other is about what just happened — the 1.0.1
+                 lesson that a status line and the thing it describes must not share an element,
+                 since the banner cannot then be cleared without erasing the reference. -->
+            <div class="hint" id="cmChatNote" style="margin-top:6px"></div>
+            <div class="hint" id="cmChatHint" style="margin-top:2px">—</div>
+          </div>
+        </div>
+
+        <!-- ---- 新闻 (§2.4) ---- -->
+        <div class="cm-pane" id="cmPane-news">
+          <div class="panel">
+            <div class="filters-bar">
+              <h2 style="margin:0">新闻</h2>
+              <span class="sp"></span>
+              <!-- §2.4.4's `[全部] [更新日志] [公告]`. `data-cmcat=""` IS 「全部」 — one predicate
+                   with "no filter" spelled as the empty string, rather than a fourth value that
+                   every caller would have to special-case. The codes are §2.4.2's category column. -->
+              <button class="tw-cat on" data-cmcat="">全部</button>
+              <button class="tw-cat" data-cmcat="changelog">更新日志</button>
+              <button class="tw-cat" data-cmcat="announcement">公告</button>
+            </div>
+            <div class="hint" id="cmNewsState" style="margin-top:8px">—</div>
+            <div class="cm-list" id="cmNewsList" style="margin-top:8px"></div>
+          </div>
+        </div>
+
+        <!-- ---- Bug与建议 (§2.5) ---- -->
+        <div class="cm-pane" id="cmPane-feedback">
+          <div class="panel">
+            <h2>提交 Bug / 建议</h2>
+            <!-- The three type options are built by `buildFeedbackCats()` from
+                 `GMCommunityShared.FEEDBACK_CATEGORIES`, not drawn here: the server accepts exactly
+                 that set, and a hand-written <select> is a fourth list that can drift from it. -->
+            <div class="cm-fb-row">
+              <label for="cmFbCat">类型</label>
+              <select id="cmFbCat"></select>
+            </div>
+            <div class="cm-fb-row">
+              <label for="cmFbTitle" style="flex:1 1 240px">标题</label>
+              <input type="text" id="cmFbTitle" style="flex:3 1 320px">
+            </div>
+            <div class="cm-fb-row" style="display:block">
+              <label for="cmFbBody">内容</label>
+              <textarea id="cmFbBody" style="height:120px;margin-top:6px"></textarea>
+            </div>
+            <div class="cm-fb-row">
+              <label for="cmFbContact" style="flex:0 0 auto">联系方式（可选）</label>
+              <input type="text" id="cmFbContact" style="flex:1 1 260px">
+              <!-- §2.5.7's mail goes to the ACCOUNT's address and never to this box — see the
+                   header of feedback-submit/index.ts. The hint says so rather than leaving the
+                   operator to discover it when their reply lands somewhere else. -->
+              <span class="hint" id="cmFbContactHint" style="flex:1 1 260px">—</span>
+            </div>
+            <div class="btn-row" style="margin-top:10px">
+              <button id="cmFbSend">提交</button>
+              <span class="hint" id="cmFbState">—</span>
+            </div>
+          </div>
+
+          <!-- §2.5.5's 「我的提交」, below the form on the same pane. -->
+          <div class="panel">
+            <div class="filters-bar">
+              <h2 style="margin:0">我的提交</h2>
+              <span class="sp"></span>
+              <button class="sec" id="cmFbReload">刷新</button>
+            </div>
+            <div class="cm-list" id="cmFbList" style="margin-top:8px"></div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </section>
+
   <!-- ======================= 我的 (1.0.0 §5) ======================= -->
   <!-- 1.0.0 §5.1: 「查看器新增『我的』标签页（仅已激活用户可见）」. Every visible word here is
        written by `renderProfile()` in viewer.js, not by the static markup — the whole page is a
@@ -1916,10 +2130,20 @@
        viewer.js: the markup is where a reader looks to find out what a page contains, and a JS list
        would have to be kept in step with it by hand. viewer.js has exactly one line that reads this
        attribute, so adding a panel to either side of the line is a one-word change.
-       ⚠ 语言与显示 is gated TOO, even though 语言 is the one setting a locked-out operator might
-       most want. §1.1's ✅ list is exhaustive — it names three panels — and the panel's own name is
-       already in the ❌ column's paraphrase (「透明度等」). Availability by convenience would be a
-       silent amendment to the matrix. -->
+       ⚠ 1.0.1 gated 语言与显示 TOO, and 1.0.2 §1.2 UNGATES it — the one ✅ the matrix gains. The
+       1.0.1 reasoning was 「availability by convenience would be a silent amendment to the matrix」,
+       and that still holds; what changed is the matrix itself. §1.2 spells the new column out
+       (云账号与同步 / **语言与显示** / 新手教程 / 关于 / 标签百科 ✅) and §1.2's 说明 gives the
+       reason: 「未激活用户需要能改语言…也需要能改主题…这两项不影响检测核心，但直接影响可用性」.
+       ⇒ A locked-out operator reads the whole UI in a language they may not speak AND in a theme
+       they may not be able to see. 语言与显示 is therefore the panel that has to come off the list.
+       ⚠ 1.0.2 §1.3 draws the boundary INSIDE the panel rather than around it: 界面语言 and 主题 are
+       free, while 透明度与模糊 and 背景 stay gated — but they are SEPARATE panels (both keep their
+       gate attribute below), so nothing in this panel had to be split. A future edit that moves
+       either of them in here MUST carry its gate along, or §1.3's 「明确不包含」 is silently false.
+       ⚠ Write the attribute itself in prose, never verbatim in a comment: the count of the gate
+       attribute in this file is what §1.2's matrix is checked against, and this comment already
+       inflated it by one when 1.0.2 was implemented. -->
   <section class="view" id="view-settings">
     <!-- 0.4.10 §三 — the tutorial, FIRST on the page. It is the one panel whose reader does not
          yet know what any of the others mean, so putting it anywhere else is putting it where the
@@ -2086,7 +2310,14 @@
     </div>
 
 
-    <div class="panel set-panel" data-gate="1">
+    <!-- 1.0.2 §1.2 — 语言与显示, the one panel §1.2's matrix newly opens to an unactivated
+         operator. No `data-gate`, for the reason argued in the block comment above the section.
+         ⚠ The title below is deliberately the bare 语言与显示: §1.4's suffix is a TRANSLATION
+         concern (`（language）` on every non-English table, and NOT on English), so it is resolved
+         through the key rather than written into the markup. The zh-CN table therefore needs an
+         explicit entry for this one key — the usual 「zh-CN falls back to the text after `|`」
+         shortcut would drop the suffix. See locale/zh-CN.js. -->
+    <div class="panel set-panel">
       <h2>语言与显示</h2>
       <div class="set-grid">
         <div class="set-item">
@@ -2527,6 +2758,13 @@
 <script src="profile.js"></script>
 <script src="sync.js"></script>
 <script src="admin.js"></script>
+<!-- 1.0.2 二 — 社区, in two files. `community-shared.js` is GENERATED from the shared block of
+     `supabase/functions/_shared/community.ts` (run `node _tools/gen-community-shared.cjs`), which
+     is where §2.3.5's limits and the word list are defined once and mirrored here; `community.js`
+     is the transport — Realtime subscription, PostgREST reads, two Edge Function calls — and it
+     carries no user-visible text at all, the same rule auth.js / sync.js / admin.js follow. -->
+<script src="community-shared.js"></script>
+<script src="community.js"></script>
 <script src="viewer.js"></script>
 </body>
 </html>

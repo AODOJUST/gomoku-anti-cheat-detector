@@ -218,6 +218,29 @@
     return { ok: true, data: data, status: res.status };
   }
 
+  /**
+   * The Realtime websocket for §2.3's chat room.
+   *
+   * Built HERE rather than in community.js for two reasons, and the second is not negotiable:
+   *
+   *   1. This is the file that knows the project URL and holds the anon key, and a page cannot put
+   *      an `Authorization` header on a `WebSocket` — Supabase reads `apikey` from the query
+   *      string. Exposing the key as an accessor would have worked too, and would have put the key
+   *      in a second file for no gain.
+   *   2. `vsn=1.0.0` pins the Phoenix protocol version. It is a query parameter with a default
+   *      that has changed between Realtime releases, and the frame shapes differ between them
+   *      (the join payload's `config.postgres_changes` moved under `config` in v1). Leaving it out
+   *      means the client's frame builder and the server can disagree with no error anywhere.
+   *
+   * The `http`→`ws` swap is done on the scheme rather than by string-replacing the host, so the
+   * local-stack case (`http://127.0.0.1:54321`) yields `ws://` — which is what a `supabase start`
+   * backend actually listens on.
+   */
+  function realtimeUrl() {
+    return SUPABASE_URL.replace(/\/+$/, '').replace(/^http/, 'ws') +
+      '/realtime/v1/websocket?apikey=' + encodeURIComponent(SUPABASE_ANON_KEY) + '&vsn=1.0.0';
+  }
+
   g.GMCloud = {
     // Constants the rest of the cloud code reads instead of re-declaring. Same rule as
     // BASE_WEIGHTS: one spelling per fact (this project has paid five times for a second copy).
@@ -227,6 +250,7 @@
 
     isConfigured: isConfigured,
     endpoint: endpoint,
+    realtimeUrl: realtimeUrl,
     call: call,
     rest: rest,
   };

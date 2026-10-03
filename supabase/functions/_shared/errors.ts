@@ -40,7 +40,23 @@ export type ErrorCode =
   | "RATE_LIMITED"
   // The mail provider refused or is not configured. Distinct from INTERNAL because it is a
   // DEPLOYMENT problem the operator (not the end user) has to fix, and generic 500s get lost.
-  | "EMAIL_FAILED";
+  | "EMAIL_FAILED"
+  // --- 1.0.2 §二 社区互动 ------------------------------------------------------------------------
+  // Same rule as the 1.0.1 block above, and it is worth restating because §2.3.5 is where it bites:
+  // 「消息长度 ≤ 500 字符」 and 「敏感词过滤」 are the two failures a user CAUSES and can FIX. Answered
+  // as a bare 400 they would reach the operator as 「请求无效」 — which names neither the limit nor the
+  // word — and the community view would look broken rather than strict. Naming the code is what lets
+  // `cloudErrText` say which of the two happened, and `message` carries the specifics (the limit, the
+  // term) that a code deliberately cannot.
+  //
+  // `NOT_ACTIVATED` is the odd one out: it is not user-fixable, it is defence in depth. §2.1 hides
+  // the 社区 button from an unactivated operator, so this answer only reaches someone calling the
+  // endpoint by hand — and it exists so that 「社区仅对已激活用户开放」 is a fact about the SERVER
+  // rather than a fact about our button. It is 403 (the caller is authenticated, the resource is
+  // forbidden) rather than 401, which would tell them to sign in again.
+  | "NOT_ACTIVATED"
+  | "CONTENT_TOO_LONG"
+  | "CONTENT_REJECTED";
 
 /** HTTP status constants used across the functions. */
 export const HttpStatus = {

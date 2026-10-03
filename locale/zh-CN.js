@@ -302,4 +302,41 @@ GMI18n.register('zh-CN', {
   'update.readyBody': '白身检测器更新包「{file}」已下载。点此打开扩展管理页，解压后重新加载即可完成更新。',
   'update.openExtensions': '打开扩展管理页',
 
+  // ---- 1.0.2 §1.4: the ONE source-text key whose zh-CN value is NOT the text after the `|`.
+  //
+  // Every other `area|中文原文` key is defined by zh-CN's absence: `fallback()` slices past the `|`
+  // and the remaining text is already correct. §1.4 breaks that — the panel is called 语言与显示 but
+  // displays 语言与显示（language）, because the suffix tells a reader who cannot yet read the UI
+  // which control changes that. English omits it («language» is already English), which is why the
+  // suffix lives in the twelve tables of `_tools/i18n-ui.js` rather than in the markup.
+  //
+  // ⚠ The key must be spelled with the area prefix here, and the markup must stay BARE: the bare
+  // text is what `keys.cjs` turns into `html|语言与显示`, and that key is what all thirteen tables
+  // are indexed by. Rewriting the <h2> to carry the suffix would change the key everywhere.
+  // ⚠ This is the only `|`-bearing line in the file, and `keys.cjs` classifies `|` keys as
+  // source-text rather than semantic for exactly this reason — see the ⚠ there. Writing the key
+  // as a literal is safe BECAUSE of that rule; before 1.0.2 it was not.
+  'html|语言与显示': '语言与显示（language）',
+
+  // ---- 1.0.2 二 — 社区的 category / status 值 ----
+  //
+  // §2.4.2's `news.category`, §2.5.2's `feedback.category` and `feedback.status` are stored as
+  // VALUES, so the label cannot be a source-text key (`area|中文原文`): `T('community|bug')` would
+  // be a key whose text is the word 「bug」, and every table would need a row keyed by a code. They
+  // are dotted runtime keys instead, the same shape as `learn.weight.top1`.
+  //
+  // ⚠ These nine MUST be listed here as well as in `_tools/i18n-extra.js`. `keys.cjs` learns the
+  // KEY from this file and the Chinese text it translates FROM from that one; listing only the
+  // latter builds the tables but leaves zh-CN itself without a row, and `t()` answers an unknown
+  // key with the KEY — so the Chinese UI would print 「cm.cat.bug」 on every card.
+  'cm.cat.bug': 'Bug',
+  'cm.cat.suggestion': '建议',
+  'cm.cat.other': '其他',
+  'cm.st.open': '待处理',
+  'cm.st.in_progress': '处理中',
+  'cm.st.resolved': '已解决',
+  'cm.st.closed': '已关闭',
+  'cm.newscat.changelog': '更新日志',
+  'cm.newscat.announcement': '公告',
+
 });
