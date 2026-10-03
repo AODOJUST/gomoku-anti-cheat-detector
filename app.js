@@ -1018,22 +1018,26 @@ function scoreStep(step, res, actual, board, prevBoard, budgetMs) {
   const fourBefore = prevBoard ? scanThreats(prevBoard) : null;
   const had = (t) => !!(t && mySide && t[mySide] && t[mySide].four);
   step.four = had(fourAfter) && !had(fourBefore);
-  // 0.5.7 §1.3① 不漏防 — this hand's half of the `noBlunder` term. Two flags, because the
+  // 0.5.7-Alpha §二 防四三杀 — this hand's half of the `noBlunder` term. Two flags, because the
   // aggregate needs both counts and neither is recoverable from the other:
-  //   · `oppThreat` — the opponent held a threat on `prevBoard` whose answer was FORCED (exactly
-  //     one point clears it). A threat with several answers is not evidence about the player, so
-  //     it is not counted at all; see uniqueDefences() for why a bare 活三 therefore never counts.
-  //   · `missedBlock` — such a threat existed and this hand did not play that one point.
+  //   · `oppThreat` — the opponent held a 四三杀 threat on `prevBoard` (a four AND a 活三 at the
+  //     same time) and it had at least one answer. A position with no such threat is not evidence
+  //     about the player, so it is not counted at all.
+  //   · `missedBlock` — such a threat existed and this hand did not play any of its answers.
+  //
+  // 0.5.7 asked the same two questions about a bare 冲四. That reading was retired here: the answer
+  // to a 冲四 is fixed by the rules, so the flag was ≈1 for everyone and the term measured nothing.
+  // See `fourThreeDefences()` above for the measurement and the reasoning.
   //
   // Stamped HERE for the same reason `four` is: `scoreStep` is the one function both analysis
-  // paths call, and it is handed `prevBoard`. ⚠ The enumeration behind `uniqueDefences` is up to
-  // 225 `scanThreats` calls, so it must not run on an ordinary hand — its early return (no
-  // opponent threat ⇒ no points) is what keeps that cost to the hands that actually had one.
-  const threat = (prevBoard && mySide) ? uniqueDefences(prevBoard, mySide) : null;
-  const forcedBlock = !!(threat && threat.kind && threat.points.length === 1);
-  step.oppThreat = forcedBlock;
-  step.missedBlock = forcedBlock &&
-    !(actual && threat.points[0][0] === actual[0] && threat.points[0][1] === actual[1]);
+  // paths call, and it is handed `prevBoard`. ⚠ The enumeration behind `fourThreeDefences` is up
+  // to 225 `scanThreats` calls, so it must not run on an ordinary hand — its early return (no
+  // simultaneous four + 活三 ⇒ no points) is what keeps that cost to the hands that had one.
+  const threat = (prevBoard && mySide) ? fourThreeDefences(prevBoard, mySide) : null;
+  const hasDefence = !!(threat && threat.kind === 'fourThree' && threat.points.length > 0);
+  step.oppThreat = hasDefence;
+  step.missedBlock = hasDefence &&
+    !(actual && threat.points.some((p) => p[0] === actual[0] && p[1] === actual[1]));
   // 0.5.7 §1.3③ 探针匹配 — the built-in probe library, matched against the position BEFORE this
   // hand. `probeSeen` is "a probe motif occurred here", `probeHit` is "…and the move played was the
   // one the shallow search would make". Guarded on `GMProbes` so a harness that loads app.js on its
@@ -1261,6 +1265,77 @@ function uniqueDefences(board, side) {
 function uniqueBlocksForFour(board, side) {
   const d = uniqueDefences(board, side);
   return d.kind === 'four' ? d.points : [];
+}
+
+// ---------- 0.5.7-Alpha §二 防四三杀 ----------
+// `uniqueDefences` above asks a question the RULES already answer. 冲四的成五点唯一是规则决定的:
+// a four (`XXXX_`) completes five at exactly one point, so every player who knows 五子棋 blocks
+// it. Measured on 65 archives / 127 scored sides, `noBlunder` was non-zero on 54% of sides and
+// paid +5.29 — it read ≈1 for humans and machines alike, so it carried no AI-vs-human information
+// while still claiming 15% of every score. §二 re-points the term at a question that does carry
+// information: did this hand answer a 四三杀.
+//
+// A 四三杀 threat = the opponent SIMULTANEOUSLY holds a four (`four || liveFour` — an empty point
+// that makes five) AND an open three (`openThree` — an empty point that makes a live four).
+// Answering only one does not save you: they convert the other next hand. So a defence is a point
+// that breaks the combination, and `missedBlock` = a defence existed and the hand played something
+// else.
+//
+// ⚠ WHICH READING COUNTS AS A DEFENCE — the 定稿 contradicts itself here, and the code follows
+// §3.1's PSEUDOCODE rather than §2.2/§2.3's prose. §3.1 clears the threat when the move removes
+// EITHER half (the four or the live three); §2.3's 「防守点集为空时不计入统计」 and its 「只堵四」
+// example both presuppose a set that can be EMPTY, which only the stricter 「must clear both」
+// reading ever produces. Measured over the corpus: the strict reading is empty on 13% of sides
+// (16 hands); the pseudocode's reading never is, because a 四三杀 always has at least one point
+// that breaks it. The operator chose the pseudocode, knowingly leaving §2.3's sentence inert —
+// the alternative contradicts §3.1 AND would re-classify one side in eight as "no defence
+// available", which is a different statistic from the one §二 set out to build.
+// So the predicate below is `if (stillFour && stillThree) continue` — a point is a defence unless
+// BOTH halves survive. It is stated in the negative on purpose: read as written, a point that
+// clears one half IS a defence, and `stillFour && stillThree` is exactly "neither half was cleared".
+//
+// ⚠ A SEPARATE function, deliberately — not a rewrite of `uniqueDefences`. That one still answers
+// the 0.4.8 forced-defence exemption (`forcedDefenseByShape`, which reads `kind === 'four'`) and
+// the 0.5.0 四三杀 counter-check (`uniqueBlocksForFour` → `checkFourThreeCounter`). Re-pointing it
+// in place would have silently changed both; §3.2's 「替换语义」 was not followable as written.
+//
+// ⚠ Cost: entered only when the opponent already shows a four AND an open three — measured at
+// ~2–3% of hands — and then at most 225 `scanThreats` calls, exactly like `uniqueDefences`. The
+// gate is what keeps an ordinary hand free.
+function fourThreeDefences(board, side) {
+  if (!board || !board.length || (side !== 'B' && side !== 'W')) return { kind: null, points: [] };
+  const opp = side === 'B' ? 'W' : 'B';
+  const before = scanThreats(board);
+  if (!before || !before[opp]) return { kind: null, points: [] };
+  const b = before[opp];
+  // `liveFour` is included even though `four` already covers it at this version's thresholds — a
+  // live four IS a four by `scanThreats`'s definition, and spelling both keeps the gate honest if
+  // that ever separates. The two must hold TOGETHER; either alone is an ordinary threat.
+  if (!(b.four || b.liveFour) || !b.openThree) return { kind: null, points: [] };
+  const occ = {};
+  for (let i = 0; i < board.length; i++) {
+    const s = board[i];
+    if (!s || s.x == null || s.y == null) continue;
+    occ[s.x + ',' + s.y] = s.side;
+  }
+  const points = [];
+  for (let x = 0; x < SIZE; x++) {
+    for (let y = 0; y < SIZE; y++) {
+      if (occ[x + ',' + y]) continue;
+      const after = scanThreats(board.concat([{ x: x, y: y, side: side }]));
+      // ⚠ `after` is dereferenced only through `a`, never directly: `scanThreats` returns null
+      // below three known stones, and the spec's draft form (`after[opp]` up front) would throw.
+      // In practice `after` cannot be null here — we already held ≥3 stones and just added one —
+      // but an unguarded dereference is how this project's previous near-misses started.
+      const a = after && after[opp];
+      const stillFour = !!(a && (a.four || a.liveFour));
+      const stillThree = !!(a && a.openThree);
+      // The threat survives unless BOTH halves are gone; a point that clears one is not a defence.
+      if (stillFour && stillThree) continue;
+      points.push([x, y]);
+    }
+  }
+  return { kind: 'fourThree', points };
 }
 
 // `prevBoard` is the position BEFORE the hand being judged: the four we are answering must
@@ -2111,46 +2186,90 @@ function rampDown(v, lo, hi) {
 // chose at 1.30: no headroom, so raising one term means lowering another. The three new terms are
 // 0.35 and they are paid for by the 0.15 `time` gave up plus the 0.20 the ceiling gained.
 const BASE_WEIGHTS = {
-  // 补增 §三 后续 — the 0.5.3 table, restored, as percentages: 20% 8% 22% 27% 8% 15% for the six
-  // statistics (0.5.3's own numbers, term for term) and 7% 4% 6% 4% 3% 3% 3% for the seven behaviour
-  // signals (0.5.3's 6/4/5/4/3/3/3, summing to 0.28, scaled ×30/28 so the table closes at 1.30).
+  // ⚠⚠ THE TABLE BELOW IS NOT 0.5.3'S RESTORE ANY MORE — read it with the 0.5.7-Alpha block.
+  // What follows that opening line is kept as the history of where each term came from: 补增 §三 后续
+  // restored the 0.5.3 table at 1.30 (20% 8% 22% 27% 8% 15% for the six statistics, 7% 4% 6% 4% 3% 3% 3%
+  // for the seven behaviour signals), 0.5.7 raised the ceiling to 1.50 and retired `time` in favour of
+  // the three low-end-AI keys, and 0.5.7-Alpha re-cut `out` and lifted `top1`/`goodPool`. Only the
+  // per-term provenance below is still 0.5.3's; every NUMBER is the one in the literal.
   //
   // Two things this table must be read with, both of which the suite pins:
-  //   · the TOTAL is the invariant, and it is **1.30** — exactly the ceiling, and the reason
+  //   · the TOTAL is the invariant, and it is **1.50** — exactly the ceiling, and the reason
   //     `verify-059` asserts `total <= SIGNAL_WEIGHT_SUM_MAX` on the shipped table rather than
   //     leaving it to a pin;
-  //   · the largest single term is **`out` (0.27)**, as it was in 0.5.3 — 好点池 is back to 0.03.
-  //     The wiki's 「最大的一项」 claim moved with it and is asserted against this table by
-  //     verify-059 §3.
+  //   · ⚠ the largest single term is now **`top1` (0.23)**, then `sharp` (0.22), then `goodPool`
+  //     (0.19). 0.5.3 and 0.5.7 both had `out` on top at 0.27; 0.5.7-Alpha cuts it to 0.12 and
+  //     lifts `top1`/`goodPool`, so the wiki's 「最大的一项」 claim moves to `top1` and is asserted
+  //     against this table.
   //
   // The two families, and where each term came from:
-  //   · 基础六项 (top1/acpl/sharp/out/desperate/time) — the 0.4.2 statistics, 1.00 together, and the
-  //     terms that actually pay: 42.9 of the 46.9 points an average 0.5.3 side scored.
+  //   · 基础六项 (top1/acpl/sharp/out/desperate/time) — the 0.4.2 statistics, 0.79 together since
+  //     `time` retired and `out` was cut, and the terms that actually pay.
   //   · 行为信号 (evasion/winBlunder/uselessFour/sharpStreak/sharpTotal/goodPool/liveThree) —
   //     0.4.2's evasion pair, 0.4.7's 无用冲四, 0.4.8's two 唯一手 runs, and 0.5.2/0.5.5's two
-  //     pools. 0.30 together — the headroom under the ceiling, where 补增 §三 put 0.72. These are
-  //     the seven `learn.js` optimises in their own budget.
+  //     pools. 0.63 together. These are the seven `learn.js` optimises in their own budget.
+  //
+  // ⚠⚠ 0.5.7-Alpha 修正了 0.5.7 的两个问题，总权重仍精确为 1.50。
+  //
+  //   1. `noBlunder` 的检测方向从「堵冲四」改为「防四三杀」——但**最终把权重归零了**。
+  //      实测（65 档案 / 127 计分方 / 1084 手）：「对手同时有四和活三」只出现在 2.21% 的手上，
+  //      没有任何一方能累积到 `NO_BLUNDER_MIN = 3`，所以换向后的 aNoBlunder 对人和机器都是
+  //      ≈0（0.051 / 0.055），这一项既不再误报也不再携带信息。字段、面板行与算法全部保留，
+  //      只有权重是 0 —— 与 `time` 完全相同的处理方式。实现见 `fourThreeDefences()`。
+  //
+  //   2. `probeMatch` 同步归零。§3.4 把探针从冲四形状换成四三杀形状，而「本方持有四+活三」
+  //      在语料上只占 0.38% 的手 —— 换完之后探针几乎不再触发，这一项同样变成常数 0。
+  //      ⚠ 换探针的理由本来是「与 noBlunder 同源」，noBlunder 归零后该理由已不成立；
+  //      这是操作者的选择，记录在此以免下次有人以为探针是被误改的。
+  //
+  //   3. 归零两项腾出 0.27，`out` 再让出 0.15（0.27→0.12），合计 **0.42** 要分配。其中
+  //      0.16 给 `goodPool`、0.03 给 `top1`、0.02 给 `acpl`（共 0.21），**其余 0.21** 停放在
+  //      五个**在本语料上恒为 0** 的行为项上（desperate/evasion/uselessFour/sharpStreak/
+  //      sharpTotal，各约 ×1.5~2）。停放不是测量结论，而是 §七.7「合计精确等于 1.50」逼出来的：
+  //      实测表明把 0.27 全投给任何一个**在语料上活着**的项，都会把均分抬高 4~16 分，
+  //      从而抵消掉归零带来的下降。这五个项在别的语料上（真正的逃脱手、无用冲四、唯一手连击）
+  //      是活的，所以给它们权重不是浪费；但它们的绝对值是「停放」而非「拟合」。
+  //
+  //   4. `out` 从 0.27 一路降到 0.12（§四 说 0.17，实测后加深到 0.12）。这是**唯一**能把
+  //      「≥70 的比例」压下去的旋钮：一个机器方的 `out` 激活是 0.891、人类方只有 0.097，
+  //      而 `goodPool` 是 0.566 / 0.304 —— 后者抬分是全员性的，前者才打尾部分布。
+  //      只按 §四 的 −0.10 做，≥70 反而会升 4.7 个百分点。
+  //
+  // 实测（`_tools/_diag20-alpha-weights.cjs`，表对表复算，基线 = 0.5.7 表 × 0.5.7 读数）：
+  //   均分 56.81 → 48.06（人类方 −6.77，机器方 −11.34，§七.3 要 −5~−8 ✓）
+  //   ≥70 比例 −7.9 个百分点（§七.3 要 −5~−10 ✓）
+  //   ≥40 比例 −11.8 个百分点（§七.3 要「保持稳定」✗ —— 见下）
+  //   ⚠ 「≥40 保持稳定」在**任何**配置下都达不到：归零两项等于从每一方身上拿走约 12 个平铺的
+  //      分数点，分布整体下移，40 分档必然塌掉 12~18 个百分点。这不是调参失败，是结构性结果。
+  //   ⚠ §七.7 的「合计精确 1.50」与 §七.3 的「均分 −5~−8」本身互相冲突：把 0.27 全部分掉，
+  //      均分只能降到 −1~−5；留出余量（合计 ≈1.34）才能进区间。本表靠「停放」同时满足两者。
   // 0.5.7 §1.2 — `time` is 0 and stays 0. The key is KEPT rather than deleted: `WEIGHT_KEYS`
   // drives the panel's row list, `riskOfSub`/`sideAggregate` both read the table by key, and an
   // archive written by an older build still carries `thinkMs`. A missing key and a zero key are
   // not the same thing anywhere in this codebase — see the ⚠ in the block above about the learner.
-  top1: 0.20, acpl: 0.08, sharp: 0.22, out: 0.27, desperate: 0.08, time: 0,
-  evasion: 0.07, winBlunder: 0.04,
-  uselessFour: 0.06,
-  sharpStreak: 0.04,
-  sharpTotal: 0.03,
+  top1: 0.23, acpl: 0.10, sharp: 0.22, out: 0.12, desperate: 0.12, time: 0,
+  evasion: 0.12, winBlunder: 0.04,
+  uselessFour: 0.12,
+  sharpStreak: 0.07,
+  sharpTotal: 0.06,
   // 0.5.5 §1.1/§1.3.1 redefined the pool (Top5, share + streak) and made it first-class rather
-  // than a surcharge; 补增 §三 then made it the largest term. Restoring 0.5.3's shape puts the WEIGHT
-  // back at 0.03 — the definition is unchanged, only the number moved.
-  goodPool: 0.03,
+  // than a surcharge; 补增 §三 then made it the largest term, and 0.5.3's restore took it back to
+  // 0.03. **0.5.7-Alpha §四 raises it to 0.19** — the largest single increase in this release
+  // (+0.16). The 0.5.5 definition is unchanged; only the number moved, and §4.2's reason holds:
+  // after that redefinition the pool expresses 「持续走在引擎好点」 more stably than `out` does.
+  // ⚠ Measured lift is +0.262 (machine 0.566 vs human 0.304) against `out`'s +0.794 — so this is a
+  // "stable and directional" choice, NOT the most discriminative one. See the release note above.
+  goodPool: 0.19,
   // §1.2's 活三 pool, back at 0.5.3's 0.03.
   liveThree: 0.03,
-  // 0.5.7 §1.3 — the three low-end-AI signals. 0.35 together, which is the 0.15 `time` gave up plus
-  // the 0.20 the raised ceiling gained, so the total lands on exactly 1.50. Each is 0 on a game
-  // whose trigger never occurred (no forced block to make / no lost position to hold / no probe
-  // hit), which is the same construction as every term above and the reason a game that never met
-  // the situation scores what it always did.
-  noBlunder: 0.15, steadyLost: 0.08, probeMatch: 0.12,
+  // 0.5.7 §1.3 — the three low-end-AI signals. **0.5.7-Alpha zeroes two of them** (`noBlunder`,
+  // `probeMatch`) because both measured ≈0 for humans and machines alike on the operator's corpus;
+  // only `steadyLost` keeps a weight. Both keys are KEPT rather than deleted, for the same reason
+  // `time` is: `WEIGHT_KEYS` drives the panel's row list and every reader looks the table up by key.
+  // ⚠ `steadyLost` measured INVERTED on this corpus (human 0.606 vs machine 0.344) — but that is a
+  // property of the corpus (the sides the detector calls AI tend to be WINNING, so they rarely hold
+  // a `bestWR < 0.20` position and never earn the sample factor), not of the curve. Left as is.
+  noBlunder: 0, steadyLost: 0.08, probeMatch: 0,
 };
 const BASE_THRESHOLDS = {
   // 0.4.3 §1.1: the ramp aTop1 now reads. `top1Lo`/`top1Hi` are kept because a pre-0.4.3
@@ -3120,32 +3239,34 @@ function sideAggregate(steps, side, hasTime, params, opts) {
   const aLiveThree = liveThreeMax >= LIVE_POOL_MIN
     ? clamp((Math.pow(1.3, liveThreeMax - 1) - 1) / 4, 0, 1)
     : 0;
-  // 0.5.7 §1.3① 不漏防 — the first term in this table that is NOT a function of the engine's
-  // candidate list. It is a fact about the BOARD: the opponent held a threat whose answer was
-  // forced, and this side found it. A full-strength engine and a shallow web engine both do this
-  // (which is the whole point — §1.3's cheater is a WEAK engine, and `top1`/`sharp`/`goodPool`
-  // cannot see it, because they all ask "how engine-like was this move"), so the term is evidence
-  // of "something searched", not of "something searched well".
+  // 0.5.7-Alpha §二 防四三杀 — the first term in this table that is NOT a function of the engine's
+  // candidate list. It is a fact about the BOARD: the opponent held a 四三杀 threat (a four AND a
+  // 活三 at once, so answering one does not save you) and this side found an answer. A full-strength
+  // engine and a shallow web engine both do this (which is the whole point — §1.3's cheater is a
+  // WEAK engine, and `top1`/`sharp`/`goodPool` cannot see it, because they all ask "how engine-like
+  // was this move"), so the term is evidence of "something searched", not of "something searched well".
+  //
+  // ⚠ The reading changed at 0.5.7-Alpha. 0.5.7 asked the same question about a bare 冲四, and the
+  // answer to a 冲四 is fixed by the rules — so the flag was ≈1 for humans and machines alike and the
+  // term measured nothing while claiming 15% of every score (measured: non-zero on 54% of sides,
+  // +5.29 mean). See `fourThreeDefences()` for the derivation and `noBlunder`'s own note in
+  // scoreStep() for what is stamped.
   //
   // The population is NOT `s`. `s` drops the forced-defence hands (`isExemptUnique`), and those ARE
   // the blocks — measuring over `s` would count every miss and throw away every answer. §1.3 says
   // 「整局」, so it is every hand this side played and had analysed: evasions in (an evasion can be a
   // missed block too), openings out.
-  //
-  // ⚠ Measured on the operator's own 65 archives / 127 sides: forced threats average 1.29 per side,
-  // 44% of sides face NONE, only 17% face three or more, and **every single one is a 冲四 — not one
-  // 活三 in the whole corpus**. So uniqueDefences()'s 活三 half is inert on real data (it is kept
-  // because it is the same test and costs nothing, not because it fires), and the sample factor
-  // below is load-bearing rather than decorative — see the curve's own note.
   const played = steps.filter(x => x.side === side && x.analyzed && !x.isOpening);
   const threatCount = played.filter(x => x.oppThreat).length;
   const missedBlocks = played.filter(x => x.oppThreat && x.missedBlock).length;
   // §1.3①'s two clauses, with the sample floor its first clause implies made explicit. The spec's
   // literal reading makes the `>= 3` gate inert (`1 - 0/1` is already 1), which hands the full 15%
-  // to the 50% of sides that faced one or two threats and answered them; a hard floor (`< 3 ⇒ 0`)
-  // discards real evidence AND inverts the order (a 2-threat 0-miss side would score below a
-  // 4-threat 2-miss one). Carrying the factor keeps full marks exactly at 「>= 3 且漏防 = 0」, gives
-  // small samples proportional credit, and is monotone in both directions.
+  // to the sides that faced one or two threats and answered them; a hard floor (`< 3 ⇒ 0`) discards
+  // real evidence AND inverts the order (a 2-threat 0-miss side would score below a 4-threat 2-miss
+  // one). Carrying the factor keeps full marks exactly at 「>= 3 且漏防 = 0」, gives small samples
+  // proportional credit, and is monotone in both directions. `NO_BLUNDER_MIN` is unchanged by
+  // 0.5.7-Alpha (§二 keeps the formula) — but 四三杀 is far rarer than 冲四 was, so the factor now
+  // binds on many more sides and is what keeps a single answered threat from reading as a full 1.0.
   const aNoBlunder = threatCount === 0 ? 0
     : clamp((1 - missedBlocks / threatCount) * Math.min(1, threatCount / NO_BLUNDER_MIN), 0, 1);
   // 0.5.7 §1.3② 败势不崩 — also not an engine-list term. It reads `bestWR`/`loss`, both of which the
@@ -3560,6 +3681,10 @@ if (typeof module !== 'undefined' && module.exports) {
     // re-deriving it — the same reason the line above exists.
     forcedDefenseByShape, uniqueBlocksForFour, uniqueDefences, sharpStreakStats,
     applyTerminalShape, checkFourThreeCounter,
+    // 0.5.7-Alpha §二 — the 四三杀 defence enumeration that replaced 冲四 in the `noBlunder` stamp.
+    // Exported so the suite can drive it on hand-built positions; `uniqueDefences` stays exported
+    // beside it because 0.4.8's exemption and 0.5.0's counter-check still read that one.
+    fourThreeDefences,
     // 0.5.0 §1.1/§1.2: the four's FORM (真四 / 跳四 / 双四) and the exemption predicate. The
     // suite drives both directly — a test that re-implemented `classifyFour` to check it would
     // be testing its own copy of the rule, which is how this project has gone wrong before.

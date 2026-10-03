@@ -1870,17 +1870,21 @@
   // so a profile written before this build simply keeps its own stored numbers.
   var DEFAULT_WEIGHTS = {
     // 0.5.7 §1.2 — `time` is 0 (kept, never scored): a 人肉中转 cheater chooses the interval, so the
-    // distribution is not evidence. 0.5.7 §1.3 adds the three low-end-AI signals at the bottom; the
-    // table now totals **1.50 — exactly the 150% ceiling** — the same 「用满上限」 shape 补增 §三
-    // chose at 1.30. See app.js BASE_WEIGHTS for why those three exist.
-    top1: 0.20, acpl: 0.08, sharp: 0.22, out: 0.27, desperate: 0.08, time: 0,
-    evasion: 0.07, winBlunder: 0.04,
-    uselessFour: 0.06,
-    sharpStreak: 0.04,
-    sharpTotal: 0.03,
-    goodPool: 0.03,
+    // distribution is not evidence. 0.5.7 §1.3 added the three low-end-AI signals at the bottom and
+    // the table totalled **1.50 — exactly the 150% ceiling**. 0.5.7-Alpha then rebalanced on
+    // measurement: `out` 0.27 → 0.12, `goodPool` 0.03 → 0.19, `top1` 0.20 → 0.23, `acpl` 0.08 →
+    // 0.10, `noBlunder` and `probeMatch` to **0** (both measured ≈0 for humans and machines alike —
+    // see app.js BASE_WEIGHTS for the 65-archive numbers), and the 0.21 that could not be returned
+    // to a live term parked on the five behaviour keys that are 0 on this corpus. The total is
+    // still exactly 1.50, which `verify-059` pins.
+    top1: 0.23, acpl: 0.10, sharp: 0.22, out: 0.12, desperate: 0.12, time: 0,
+    evasion: 0.12, winBlunder: 0.04,
+    uselessFour: 0.12,
+    sharpStreak: 0.07,
+    sharpTotal: 0.06,
+    goodPool: 0.19,
     liveThree: 0.03,
-    noBlunder: 0.15, steadyLost: 0.08, probeMatch: 0.12,
+    noBlunder: 0, steadyLost: 0.08, probeMatch: 0,
   };
   // 0.5.6 补增 §三 — the two ceilings on the operator's own weight table (see DEFAULTS above).
   //

@@ -1,4 +1,4 @@
-/* probes.js — 0.5.7 §1.3③ 探针匹配: the built-in probe library and its matcher.
+/* probes.js — 0.5.7-Alpha 探针匹配: the built-in probe library and its matcher.
  *
  * A probe is a LOCAL tactical motif, not a whole-board position. That is the one design decision
  * this file makes, and it is forced: a hand-authored 15×15 position has essentially zero chance of
@@ -11,13 +11,37 @@
  * under judgement is whoever is not `T`. The matcher binds `T` to the real colour, so one motif
  * covers both sides of every game.
  *
+ * ── 0.5.7-Alpha: the motif changed, the structure did not ───────────────────────────────────────
+ *
+ * 0.5.7 encoded family ① as a 冲四 — four `T` stones in a clear 5-cell window — and the machine's
+ * move was the window's one empty cell. 0.5.7-Alpha replaces it with the **四三杀** shape:
+ *
+ *   · a four  (`T` stones in a 5-cell window with one gap) on ONE line, AND
+ *   · an independent `_XXX_` open three on ANOTHER line,
+ *   · the two lines chosen so the four's five-point and the three's two live-four points do NOT
+ *     coincide — otherwise blocking the four would also break the three and the motif would not be
+ *     a 四三杀 at all.
+ *
+ * `machine` is still the four's one gap: a shallow search answers the immediate five, which is the
+ * whole reason the shape is worth probing.
+ *
+ * WHY THE CHANGE. 0.5.7's 冲四 motif and its `noBlunder` were THE SAME MEASUREMENT (see the ⚠ at the
+ * bottom of this header), so the two weights sat on one signal. 0.5.7-Alpha retired that signal and
+ * re-pointed this library at a shape that needs the defender to see two lines at once.
+ *
+ * ⚠⚠ MEASURED, AND IT MATTERS: 「本方持有四 + 活三」 occurs on only **0.38%** of analysed hands in the
+ * operator's 65-archive corpus (4 hands of 1040), against 15% for the old 冲四 library. So this
+ * library matches almost nothing, and `probeMatch`'s weight was set to **0** in the same release
+ * (see app.js BASE_WEIGHTS note 2). The library is kept correct and loaded rather than deleted —
+ * `scoreStep` still stamps `probeSeen`/`probeHit`, the panel still has its row, and the day a corpus
+ * contains these positions the term is one weight change away from being live again.
+ *
  * ── What is in here, and what is NOT ────────────────────────────────────────────────────────────
  *
  * §1.3③ names three families. Measured against what the detector can actually decide:
  *
- *   · 唯一防守点 — ENCODED. The motif is "four `T` stones in a clear 5-cell window", i.e. a 冲四, and
- *     the machine's move is the window's one empty cell. Ten canonical shapes — the gap at each of
- *     the five window positions, written once along `x` and once along the diagonal — × the
+ *   · 唯一防守点 — ENCODED, as the 四三杀 shape above. Ten canonical shapes — the four's gap at each
+ *     of its five window positions, written once along `x` and once along the diagonal — × the
  *     matcher's eight symmetries = 80 oriented probes. (Both base directions are needed: the eight
  *     square-lattice symmetries never map an axis to a diagonal. See the note on the library.)
  *
@@ -32,13 +56,11 @@
  *     position's VALUE, which needs the engine, and the family's whole content is "which move does a
  *     shallow engine choose when lost" — again an engine property, not a board property.
  *
- * ⚠ SO THIS TERM IS NOT INDEPENDENT OF `noBlunder`, AND THAT IS A FINDING RATHER THAN A BUG. Every
- * 冲四 has exactly one blocking point, so family ①'s `probeHit` is true on precisely the hands
- * `noBlunder` counts as answered, and its `probeSeen` is true on precisely the hands `noBlunder`
- * counts as threats. Measured on the operator's own 65 archives / 127 sides, 探针匹配 and 不漏防
- * therefore move together, and the two weights (0.12 + 0.15) sit on one measurement. The release
- * notes and the 0.5.7 report say so; the fix is a recorded probe library (above), not a bigger
- * library invented here.
+ * ⚠ HISTORICAL, kept because it explains 0.5.7-Alpha: under 0.5.7 every 冲四 has exactly one blocking
+ * point, so family ①'s `probeHit` was true on precisely the hands `noBlunder` counted as answered
+ * and its `probeSeen` on precisely the hands `noBlunder` counted as threats. Measured on the same 65
+ * archives / 127 sides the two moved together, and the two weights (0.12 + 0.15) sat on ONE
+ * measurement — a finding rather than a bug, and the reason both were retired together.
  */
 (function (root) {
   'use strict';
@@ -48,64 +70,96 @@
 
   // ---- the library -------------------------------------------------------------------------
   //
-  // `stones`  — [dx, dy, role] with role 'T' (the threatener). All of a family-① motif's stones are
-  //             `T`; the player is the other colour by construction.
+  // `stones`  — [dx, dy, role] with role 'T' (the threatener). All of a motif's stones are `T`; the
+  //             player is the other colour by construction. A 四三杀 motif has SEVEN: the four's
+  //             four, plus the three's three.
   // `window`  — the cells that must be EXACTLY as the motif says: every listed cell is either a
   //             `stones` entry or required empty. This is what keeps a motif from matching a
   //             different position that merely happens to contain the same stones somewhere else.
-  // `machine` — where the shallow search plays, in the same relative coordinates.
+  //             A 四三杀 window has TEN cells: the four's 5-cell window, plus the three's 3 stones
+  //             and its TWO open ends. ⚠ The ends must be listed — leaving them out would let the
+  //             motif match a 眠三, which is not a 四三杀 threat at all.
+  // `machine` — where the shallow search plays, in the same relative coordinates. For a 四三杀 that
+  //             is the FOUR's one gap: the immediate five is what a one-ply search answers.
   // `human`   — the beginner's common error. `null` means "any point other than `machine`", which is
   //             the honest description for a forced block: there is nothing else to do, so every
-  //             other move is the error.
+  //             other move is the error. ⚠ For the 四三杀 shape the interesting error is 「只堵四」,
+  //             and `null` cannot express it — see the family note above; it is not encodable
+  //             without a recorded engine, so it is not guessed at here.
   //
   // ⚠ WHY EACH GAP POSITION APPEARS TWICE (once along `x`, once along `x = y`). The eight symmetries
   // below are the isometries of the SQUARE LATTICE, and they map the horizontal axis to the vertical
   // and the two diagonals to each other — but never an axis to a diagonal. So an axis-aligned motif
   // can only ever match a horizontal or vertical line, and a diagonal four would go unrecognised.
   // Two base directions × five gap positions = the ten canonical shapes, and the symmetries then
-  // cover all four line directions. (Measured on the operator's corpus: the axis-only library
-  // matched 90 of the 1084 analysed hands; with the diagonal half it matches 167, 8% → 15%.)
+  // cover all four line directions. (Under the 0.5.7 冲四 library the axis-only half matched 90 of
+  // the 1084 analysed hands and the diagonal half took it to 167, 8% → 15%.)
   var PROBES = [
-    { id: 'probe-unique-block-01', family: 'uniqueBlock',
-      stones: [[1, 0, 'T'], [2, 0, 'T'], [3, 0, 'T'], [4, 0, 'T']],
-      window: [[0, 0], [1, 0], [2, 0], [3, 0], [4, 0]],
+    // ---- the four along `x` (y = 0), the open three along `x` three rows down (y = 3) ----
+    // The three sits at (0..2, 3) with both ends empty, i.e. `_XXX_`. Its live-four points are
+    // (-1,3) and (3,3); the four's five-point is the gap below. They never coincide.
+    { id: 'probe-fourthree-block-01', family: 'fourThreeBlock',
+      stones: [[1, 0, 'T'], [2, 0, 'T'], [3, 0, 'T'], [4, 0, 'T'],
+               [0, 3, 'T'], [1, 3, 'T'], [2, 3, 'T']],
+      window: [[0, 0], [1, 0], [2, 0], [3, 0], [4, 0],
+               [-1, 3], [0, 3], [1, 3], [2, 3], [3, 3]],
       machine: [0, 0], human: null },
-    { id: 'probe-unique-block-02', family: 'uniqueBlock',
-      stones: [[0, 0, 'T'], [2, 0, 'T'], [3, 0, 'T'], [4, 0, 'T']],
-      window: [[0, 0], [1, 0], [2, 0], [3, 0], [4, 0]],
+    { id: 'probe-fourthree-block-02', family: 'fourThreeBlock',
+      stones: [[0, 0, 'T'], [2, 0, 'T'], [3, 0, 'T'], [4, 0, 'T'],
+               [0, 3, 'T'], [1, 3, 'T'], [2, 3, 'T']],
+      window: [[0, 0], [1, 0], [2, 0], [3, 0], [4, 0],
+               [-1, 3], [0, 3], [1, 3], [2, 3], [3, 3]],
       machine: [1, 0], human: null },
-    { id: 'probe-unique-block-03', family: 'uniqueBlock',
-      stones: [[0, 0, 'T'], [1, 0, 'T'], [3, 0, 'T'], [4, 0, 'T']],
-      window: [[0, 0], [1, 0], [2, 0], [3, 0], [4, 0]],
+    { id: 'probe-fourthree-block-03', family: 'fourThreeBlock',
+      stones: [[0, 0, 'T'], [1, 0, 'T'], [3, 0, 'T'], [4, 0, 'T'],
+               [0, 3, 'T'], [1, 3, 'T'], [2, 3, 'T']],
+      window: [[0, 0], [1, 0], [2, 0], [3, 0], [4, 0],
+               [-1, 3], [0, 3], [1, 3], [2, 3], [3, 3]],
       machine: [2, 0], human: null },
-    { id: 'probe-unique-block-04', family: 'uniqueBlock',
-      stones: [[0, 0, 'T'], [1, 0, 'T'], [2, 0, 'T'], [4, 0, 'T']],
-      window: [[0, 0], [1, 0], [2, 0], [3, 0], [4, 0]],
+    { id: 'probe-fourthree-block-04', family: 'fourThreeBlock',
+      stones: [[0, 0, 'T'], [1, 0, 'T'], [2, 0, 'T'], [4, 0, 'T'],
+               [0, 3, 'T'], [1, 3, 'T'], [2, 3, 'T']],
+      window: [[0, 0], [1, 0], [2, 0], [3, 0], [4, 0],
+               [-1, 3], [0, 3], [1, 3], [2, 3], [3, 3]],
       machine: [3, 0], human: null },
-    { id: 'probe-unique-block-05', family: 'uniqueBlock',
-      stones: [[0, 0, 'T'], [1, 0, 'T'], [2, 0, 'T'], [3, 0, 'T']],
-      window: [[0, 0], [1, 0], [2, 0], [3, 0], [4, 0]],
+    { id: 'probe-fourthree-block-05', family: 'fourThreeBlock',
+      stones: [[0, 0, 'T'], [1, 0, 'T'], [2, 0, 'T'], [3, 0, 'T'],
+               [0, 3, 'T'], [1, 3, 'T'], [2, 3, 'T']],
+      window: [[0, 0], [1, 0], [2, 0], [3, 0], [4, 0],
+               [-1, 3], [0, 3], [1, 3], [2, 3], [3, 3]],
       machine: [4, 0], human: null },
     // The same five along the main diagonal — see the ⚠ above for why they are not redundant.
-    { id: 'probe-unique-block-11', family: 'uniqueBlock',
-      stones: [[1, 1, 'T'], [2, 2, 'T'], [3, 3, 'T'], [4, 4, 'T']],
-      window: [[0, 0], [1, 1], [2, 2], [3, 3], [4, 4]],
+    // The four runs along (1,1); the three runs along (1,1) too but offset to (3,0)..(5,2), so the
+    // two lines are parallel and disjoint. The three's ends are (2,-1) and (6,3).
+    { id: 'probe-fourthree-block-11', family: 'fourThreeBlock',
+      stones: [[1, 1, 'T'], [2, 2, 'T'], [3, 3, 'T'], [4, 4, 'T'],
+               [3, 0, 'T'], [4, 1, 'T'], [5, 2, 'T']],
+      window: [[0, 0], [1, 1], [2, 2], [3, 3], [4, 4],
+               [2, -1], [3, 0], [4, 1], [5, 2], [6, 3]],
       machine: [0, 0], human: null },
-    { id: 'probe-unique-block-12', family: 'uniqueBlock',
-      stones: [[0, 0, 'T'], [2, 2, 'T'], [3, 3, 'T'], [4, 4, 'T']],
-      window: [[0, 0], [1, 1], [2, 2], [3, 3], [4, 4]],
+    { id: 'probe-fourthree-block-12', family: 'fourThreeBlock',
+      stones: [[0, 0, 'T'], [2, 2, 'T'], [3, 3, 'T'], [4, 4, 'T'],
+               [3, 0, 'T'], [4, 1, 'T'], [5, 2, 'T']],
+      window: [[0, 0], [1, 1], [2, 2], [3, 3], [4, 4],
+               [2, -1], [3, 0], [4, 1], [5, 2], [6, 3]],
       machine: [1, 1], human: null },
-    { id: 'probe-unique-block-13', family: 'uniqueBlock',
-      stones: [[0, 0, 'T'], [1, 1, 'T'], [3, 3, 'T'], [4, 4, 'T']],
-      window: [[0, 0], [1, 1], [2, 2], [3, 3], [4, 4]],
+    { id: 'probe-fourthree-block-13', family: 'fourThreeBlock',
+      stones: [[0, 0, 'T'], [1, 1, 'T'], [3, 3, 'T'], [4, 4, 'T'],
+               [3, 0, 'T'], [4, 1, 'T'], [5, 2, 'T']],
+      window: [[0, 0], [1, 1], [2, 2], [3, 3], [4, 4],
+               [2, -1], [3, 0], [4, 1], [5, 2], [6, 3]],
       machine: [2, 2], human: null },
-    { id: 'probe-unique-block-14', family: 'uniqueBlock',
-      stones: [[0, 0, 'T'], [1, 1, 'T'], [2, 2, 'T'], [4, 4, 'T']],
-      window: [[0, 0], [1, 1], [2, 2], [3, 3], [4, 4]],
+    { id: 'probe-fourthree-block-14', family: 'fourThreeBlock',
+      stones: [[0, 0, 'T'], [1, 1, 'T'], [2, 2, 'T'], [4, 4, 'T'],
+               [3, 0, 'T'], [4, 1, 'T'], [5, 2, 'T']],
+      window: [[0, 0], [1, 1], [2, 2], [3, 3], [4, 4],
+               [2, -1], [3, 0], [4, 1], [5, 2], [6, 3]],
       machine: [3, 3], human: null },
-    { id: 'probe-unique-block-15', family: 'uniqueBlock',
-      stones: [[0, 0, 'T'], [1, 1, 'T'], [2, 2, 'T'], [3, 3, 'T']],
-      window: [[0, 0], [1, 1], [2, 2], [3, 3], [4, 4]],
+    { id: 'probe-fourthree-block-15', family: 'fourThreeBlock',
+      stones: [[0, 0, 'T'], [1, 1, 'T'], [2, 2, 'T'], [3, 3, 'T'],
+               [3, 0, 'T'], [4, 1, 'T'], [5, 2, 'T']],
+      window: [[0, 0], [1, 1], [2, 2], [3, 3], [4, 4],
+               [2, -1], [3, 0], [4, 1], [5, 2], [6, 3]],
       machine: [4, 4], human: null },
   ];
 
@@ -200,7 +254,7 @@
 
   // How many ORIENTED probes the library describes — the number the release notes quote, and the
   // one that answers §1.3③'s 「20–30 个探针局面」. TEN canonical shapes (five gap positions × the two
-  // base directions) × eight symmetries = 80.
+  // base directions) × eight symmetries = 80. 0.5.7-Alpha changed the SHAPES, not the count.
   var ORIENTED = PROBES.length * TRANSFORMS.length;
 
   var API = {

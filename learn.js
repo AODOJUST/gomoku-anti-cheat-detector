@@ -36,33 +36,49 @@
   'use strict';
   if (g.GMLearn) return;
 
-  // 0.5.6 补增 §三 后续 — same table as app.js BASE_WEIGHTS / storage.js DEFAULT_WEIGHTS: 0.5.3's
-  // shape, total **1.30 — exactly the 130% ceiling** (six statistics 1.00 + seven behaviour signals
-  // 0.30), where 补增 §三 had 0.58/0.72, 0.5.5 had 1.00 and 0.5.6 §2 kept it there. The two-group
-  // structure below (BASE_KEYS = the six statistics, EVASION_KEYS = the seven behaviour signals) is a
-  // separate question from the VALUES and is unchanged: `group()` reads both budgets off this table,
-  // so the split follows the numbers (1.00 / 0.30) without a second edit.
+  // Same table as app.js BASE_WEIGHTS / storage.js DEFAULT_WEIGHTS. 0.5.6 补增 §三 put 0.5.3's shape
+  // back at **1.30 — exactly the 130% ceiling** (six statistics 1.00 + seven behaviour signals 0.30),
+  // where 补增 §三 had 0.58/0.72, 0.5.5 had 1.00 and 0.5.6 §2 kept it there. The two-group structure
+  // below (BASE_KEYS = the six statistics, EVASION_KEYS = the seven behaviour signals) is a separate
+  // question from the VALUES and is unchanged: `group()` reads both budgets off this table, so the
+  // split follows the numbers without a second edit.
   //
   // ⚠ 0.5.7 §1 raises the ceiling to 1.50, puts `time` at **0**, and adds three low-end-AI signals
   // (0.35 together). Two consequences reach INTO this file, and both are about the learner's own
   // arithmetic rather than about the numbers:
-  //   · the base group's budget is now 0.85 (six statistics minus `time`'s 0.15) and the behaviour
-  //     group's is 0.65 — `group()` still reads them off this table, so nothing below needed a
-  //     second number;
+  //   · the base group's budget went 1.00 → **0.85** (six statistics minus `time`'s 0.15) and the
+  //     behaviour group's (seven + the three low-end keys, one budget — see LOWEND_KEYS) 0.30 → 0.65.
+  //     `group()` still reads them off this table, so nothing below needed a second number;
   //   · ⚠ `time` must never come back. `group()` floors every key's raw AUC at 0.02, so a key with
   //     a ZERO default would still be handed a share of its group's budget and would score again
   //     after the first training run. See the floor's own comment — it now reads the default.
+  //
+  // ⚠⚠ 0.5.7-Alpha moves 0.27 of weight around and zeroes two keys, so the two GROUP budgets move
+  // again: **0.85/0.65 → 0.79/0.71**. `out` (base) gave up 0.15 while `goodPool` (behaviour) took
+  // 0.16, `top1`/`acpl` (base) took 0.05, and the five rare behaviour keys took the remaining 0.21;
+  // `noBlunder` and `probeMatch` (both behaviour) went to 0. The total is still 1.50 and no code
+  // changed — this paragraph exists so the next reader does not think the learner was left behind.
+  // ⚠ The comment two paragraphs down claiming the behaviour group carries "the majority of the
+  // budget" was a 0.5.6–0.5.7 reading; the split is now nearly level (0.79 / 0.71).
   var FALLBACK_WEIGHTS = {
-    top1: 0.20, acpl: 0.08, sharp: 0.22, out: 0.27, desperate: 0.08, time: 0,
-    evasion: 0.07, winBlunder: 0.04,
-    uselessFour: 0.06,
-    sharpStreak: 0.04,
-    sharpTotal: 0.03,
-    goodPool: 0.03,
+    top1: 0.23, acpl: 0.10, sharp: 0.22, out: 0.12, desperate: 0.12, time: 0,
+    evasion: 0.12, winBlunder: 0.04,
+    uselessFour: 0.12,
+    sharpStreak: 0.07,
+    sharpTotal: 0.06,
+    // 0.5.7-Alpha §四 — `goodPool` 0.03 → 0.19, `out` 0.27 → 0.12. THE MIRROR RULE: this table must
+    // stay term-for-term equal to app.js BASE_WEIGHTS / storage.js DEFAULT_WEIGHTS, and the total is
+    // still exactly 1.50. The five keys above the pool took +0.21 between them as a PARKING decision
+    // (they are 0 on the operator's corpus), not a fit — see app.js BASE_WEIGHTS note 3.
+    goodPool: 0.19,
     liveThree: 0.03,
-    // 0.5.7 §1.3 — the three low-end-AI signals. See app.js BASE_WEIGHTS for what they mean and
-    // why the thirteen could not describe a shallow web engine.
-    noBlunder: 0.15, steadyLost: 0.08, probeMatch: 0.12,
+    // 0.5.7 §1.3 — the three low-end-AI signals. 0.5.7-Alpha zeroes two of them: both measured ≈0
+    // for humans and machines alike on the 65-archive corpus, so they can only add noise.
+    // ⚠ `noBlunder` and `probeMatch` are KEPT at 0 rather than deleted, exactly like `time` — and
+    // ⚠⚠ `group()`'s 0.02 AUC floor must keep reading the DEFAULT, or the first training run would
+    // hand a zero-default key a share of its group's budget and switch it back on. See the floor's
+    // own comment; the two new zeros are covered by the same line that covers `time`.
+    noBlunder: 0, steadyLost: 0.08, probeMatch: 0,
   };
   var FALLBACK_THRESHOLDS = {
     // 0.4.3 §1.1: the ramp aTop1 reads. top1Lo/top1Hi stay for a pre-0.4.3 archive and for the
@@ -94,8 +110,10 @@
   // would let a corpus with no such signal at all hand the six the whole budget and then take it
   // away again on the next run — the base statistics would move between two learned models for
   // reasons that have nothing to do with the base. 0.5.6 §2 does not change that structure: it
-  // moves the SPLIT (the behaviour signals now carry the majority of the budget, and the six carry
-  // less), which is a consequence of the defaults rather than an edit here. The two groups are
+  // moves the SPLIT (the behaviour signals came to carry the majority of the budget, and the six
+  // carry less), which is a consequence of the defaults rather than an edit here. ⚠ 0.5.7-Alpha §四
+  // moves the split again — 0.10 from `out` (base) to `goodPool` (behaviour) — and it is now LEVEL
+  // (0.75 / 0.75); the sentence above about a majority was a 0.5.6–0.5.7 reading. The two groups are
   // normalised separately, to the budget each group's own defaults sum to — `group()` below reads
   // both off `defaultWeights()`, so adding a key here is the whole wiring and no number is written
   // down twice.
@@ -828,9 +846,11 @@
     // the seven on 0.30 (补增 §三 had 0.58 / 0.72, 0.5.6 §2 had 0.30 / 0.70, 0.5.5 had 0.63 / 0.37) —
     // the numbers are `defaultWeights()`'s, never this function's. ⚠ The two budgets add up to the
     // shipped total rather than to 1.00, so a learned table does too; see `riskOfSub` below.
-    // ⚠ 0.5.7 §1 moved both budgets without touching a line of this code, which is the point: the
-    // base is 0.85 (six statistics minus `time`'s 0.15) and the behaviour group is 0.65 (seven plus
-    // the three new low-end-AI signals).
+  // ⚠ 0.5.7 §1 moved both budgets without touching a line of this code, which is the point: the
+  // base became 0.85 (six statistics minus `time`'s 0.15) and the behaviour group 0.65 (seven plus
+  // the three new low-end-AI signals). ⚠ 0.5.7-Alpha moved them again — `out` is base, `goodPool` is
+  // behaviour, and two behaviour keys went to zero — so the split is now **0.79 / 0.71**. The total
+  // is still 1.50 and this function is still untouched.
     var dw = defaultWeights();
     var group = function (keys) {
       var raw = {}, sum = 0, budget = 0, i;

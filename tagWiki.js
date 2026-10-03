@@ -428,12 +428,13 @@ var GM_TAG_WIKI = (function () {
         meaning: '实际走法与引擎首选的一致程度。不是「命中率」那么简单——0.4.3 起用的是'
              + '分档接近度：首选记 1.0、2–5 名记 0.80、6–8 名记 0.50，再取均值后过斜坡。',
         usage: '最基础的一项。它单独说明不了什么，但它是所有其他信号的对照组。',
-        impact: '权重 {w}，基础统计六项之一。',
+        impact: '权重 {w}，基础统计六项之一，也是整张权重表里最大的一项（0.5.7-Alpha 起，'
+              + '此前的最大项是「出前五」）。',
       },
       en: {
         meaning: 'How closely the played moves match the engine\'s first choice. Not a plain hit rate — since 0.4.3 it reads a graded proximity: top-1 scores 1.0, ranks 2–5 score 0.80, ranks 6–8 score 0.50, and the mean goes through a ramp.',
         usage: 'The most basic term. On its own it proves little, but it is the control group for everything else.',
-        impact: 'Weight {w}, one of the six base statistics.',
+        impact: 'Weight {w}, one of the six base statistics — and the largest single term in the table since 0.5.7-Alpha, a title 出前五 held before it.',
       },
     },
     {
@@ -470,13 +471,16 @@ var GM_TAG_WIKI = (function () {
       applied: true, weightKey: 'out',
       zh: {
         meaning: '掉出前 5 候选的着手占比。',
-        usage: '与「唯一手」互补：唯一手看它抓不抓得住对的一步，这一项看它会不会走出引擎根本没考虑的一步。',
-        impact: '权重 {w}，基础统计六项之一，也是整张权重表里最大的一项。',
+        usage: '与「唯一手」互补：唯一手看它抓不抓得住对的一步，这一项看它会不会走出引擎根本没考虑的一步。'
+             + '⚠ 人类强手在开局与中盘走出前五是常态，所以它同时是最大的误报源。',
+        impact: '权重 {w}，基础统计六项之一。0.5.7-Alpha 把它从 0.27 一路降到 0.12 —— '
+              + '实测中它的区分度最高（机器方激活 0.891、人类方 0.097），也是唯一能把「≥70 比例」'
+              + '压下去的旋钮，代价是它此前一直是整张表里最大的一项。',
       },
       en: {
         meaning: 'The share of hands played outside the engine\'s top-5 candidates.',
-        usage: 'The complement of 唯一手: that one asks whether it finds the right move, this one whether it plays something the engine never considered.',
-        impact: 'Weight {w}, one of the six base statistics — and the largest single term in the table.',
+        usage: 'The complement of 唯一手: that one asks whether it finds the right move, this one whether it plays something the engine never considered. ⚠ A strong human going outside the top five in the opening and middlegame is ordinary, which makes this the largest single source of false positives.',
+        impact: 'Weight {w}, one of the six base statistics. 0.5.7-Alpha cut it from 0.27 all the way to 0.12 — measured, it separates the two groups best (machine activation 0.891 against a human 0.097) and it is the only knob that moves the ≥70 share, at the cost of the title it had held as the table\'s largest term.',
       },
     },
     {
@@ -592,7 +596,9 @@ var GM_TAG_WIKI = (function () {
         usage: '0.5.2 引入、0.5.5 重定义：看的是「一直保持在好点上」这件事本身，而不是某一步'
              + '是否命中首选。占比 55% 以下不计分，连续度不足 3 不扣分 —— 短连击只是不加分，'
              + '不会把占比挣来的分吃掉。',
-        impact: '权重 {w}，行为信号之一。没有好点时占比项为 0。',
+        impact: '权重 {w}，行为信号之一。没有好点时占比项为 0。0.5.7-Alpha 把权重从 0.03 提到 0.19 ——'
+              + '实测它是「覆盖广（80% 的方）且方向正（机器 0.566 / 人类 0.304）」的行为项，'
+              + '因此承接了「不漏防」与「探针匹配」让出的份额。',
       },
       en: {
         meaning: 'A good-point pool: 70% the share of hands inside the engine\'s top-5 candidates, '
@@ -602,7 +608,7 @@ var GM_TAG_WIKI = (function () {
              + 'good points rather than whether any single hand hit the top choice. Nothing scores '
              + 'below a 55% share, and a run shorter than three costs nothing — a short run fails to '
              + 'add, it does not eat the share\'s contribution.',
-        impact: 'Weight {w}, one of the behaviour signals. Zero with no good points at all.',
+        impact: 'Weight {w}, one of the behaviour signals. Zero with no good points at all. 0.5.7-Alpha raised it from 0.03 to 0.19: measured, it is the behaviour term that both fires widely (80% of sides) and points the right way (machine 0.566 against human 0.304), so it took the share that 不漏防 and 探针匹配 gave up.',
       },
     },
     {
@@ -626,20 +632,30 @@ var GM_TAG_WIKI = (function () {
     // candidate list at all: the first two read the board and the stored win rate, the third reads
     // the board against probes.js. That is why their prose talks about what a SHALLOW engine can and
     // cannot do, rather than about how close a move came to a strong engine's own choice.
+    //
+    // ⚠⚠ 0.5.7-Alpha ZEROED TWO OF THE THREE. The entries below still describe the algorithm,
+    // because the algorithm still runs — `scoreStep` still stamps `oppThreat`/`missedBlock` and
+    // `probeSeen`/`probeHit`, the panel still shows the rows, and an archive still carries the
+    // flags. Only the WEIGHT is 0, exactly as `time`'s is. See each entry's `impact` for why.
     {
       id: 'signal-no-blunder', cat: 'signal', nameNs: 'learn.weight', nameVal: 'noBlunder',
       applied: true, weightKey: 'noBlunder',
       zh: {
-        meaning: '不漏防：被迫防守手里「挡住了唯一防点」的比例。被迫防守手 = 对手留下唯一一个'
-               + '能解冲四（或一端已堵的活三）的点，由棋盘枚举，不看引擎。',
-        usage: '0.5.7 引入。一层浅搜索按构造就能找到挡点，人不能：所以从不漏防不是「想过」，'
-             + '而是「不需要想」。威胁数不足 3 时按比例折算，不会因为只遇到一次就吃满分。',
-        impact: '权重 {w}，低端AI 检测三项之一。没有被迫防守手时为 0。',
+        meaning: '不漏防：出现「四三杀威胁」时「没有漏掉防守点」的比例。威胁 = 对手同时持有一个四'
+               + '（含活四）与一个活三 —— 只堵四救不了，只堵活三也救不了。防守点集由棋盘枚举'
+               + '（`fourThreeDefences()`），不看引擎；无解局面不计入统计。',
+        usage: '0.5.7 引入时看的是「堵冲四」，0.5.7-Alpha 改为「防四三杀」。'
+             + '⚠ 但换向之后实测发现这一项已经无法承担原意：「对手同时有四和活三」在 65 份档案 /'
+             + '1084 手里只出现 24 手（2.21%），没有任何一方能累积到 3 次门槛，于是人机两边的'
+             + '激活值都≈0（0.051 / 0.055）—— 既不误报，也不携带信息。',
+        impact: '权重 {w}，低端AI 检测三项之一。⚠ 0.5.7-Alpha 把它**归零**（与「时间规律」同样的'
+              + '处理：字段、面板行、算法全部保留，只有权重是 0），因为它测不到东西。'
+              + '威胁数不足 3 时按比例折算的规则仍然有效，等有语料能触发它时可直接恢复权重。',
       },
       en: {
-        meaning: 'Never misses a block: the share of forced-defence hands where the block was played. A forced-defence hand is one where the opponent left exactly one point that answers a 冲四 (or a live three with one end already blocked), enumerated from the board rather than from the engine.',
-        usage: 'Added in 0.5.7. A one-ply search finds the block by construction; a human does not. So never missing one is not "thought about it" but "did not need to think". Fewer than three threats scale the figure rather than granting it in full.',
-        impact: 'Weight {w}, one of the three low-end-AI signals. Zero with no forced-defence hands.',
+        meaning: 'Never misses a block: the share of 四三杀 threats that were answered. A threat is the opponent holding a four (including a live four) AND an open three at the same time — answering only one does not save you. The defence set is enumerated from the board (`fourThreeDefences()`), never from the engine; unsolvable positions are not counted.',
+        usage: 'Introduced in 0.5.7 as "blocks the 冲四" and re-pointed in 0.5.7-Alpha at "defends the 四三杀". ⚠ Measured after the change, the term can no longer carry that meaning: a position holding a four and an open three occurred on only 24 of the 1084 analysed hands (2.21%), no side ever reached the threshold of three, and both groups therefore read ≈0 (0.051 human, 0.055 machine) — neither a false positive nor a signal.',
+        impact: 'Weight {w}, one of the three low-end-AI signals. ⚠ 0.5.7-Alpha set it to ZERO — handled exactly like 时间规律: the field, the panel row and the algorithm all stay, only the weight is 0 — because it measures nothing. The "fewer than three threats scale the figure" rule still holds, so the weight can be restored the day a corpus triggers it.',
       },
     },
     {
@@ -662,16 +678,21 @@ var GM_TAG_WIKI = (function () {
       applied: true, weightKey: 'probeMatch',
       zh: {
         meaning: '探针匹配：出现内置探针局面时，实际落子与「浅层搜索会选的挡点」一致的比例；'
-               + '连续 3 次或匹配率 ≥ 80% 即满值。探针库见 probes.js（10 个标准形状 × 8 对称 = 80）。',
-        usage: '0.5.7 引入。⚠ 本项与「不漏防」落在同一个测量上：每个冲四恰好只有一个挡点，'
-             + '所以探针命中手与不漏防统计的手是同一批 —— 0.12 与 0.15 这两份权重坐在一件事上。'
+               + '连续 3 次或匹配率 ≥ 80% 即满值。探针库见 probes.js（10 个标准形状 × 8 对称 = 80）。'
+               + '0.5.7-Alpha 起探针形状是**四三杀**：一条线上的四 + 另一条独立线上的 `_XXX_` 活三，'
+               + '期望落点仍是「堵四的那个点」。',
+        usage: '0.5.7 引入，当时匹配冲四形状。⚠ 两个问题：其一，冲四探针与「不漏防」落在同一个测量上'
+             + '（每个冲四恰好一个挡点），0.12 与 0.15 两份权重坐在一件事上；其二，0.5.7-Alpha 换成'
+             + '四三杀形状后，实测「本方持有四 + 活三」只占 0.38% 的手，探针几乎不再触发。'
              + '另外两个探针家族（双威胁选择、败势顽抗）依赖具体网页引擎的行为，未编码。',
-        impact: '权重 {w}，低端AI 检测三项之一。没有探针局面时为 0。',
+        impact: '权重 {w}，低端AI 检测三项之一。⚠ 0.5.7-Alpha 把它**归零**：换形状之后它在语料上'
+              + '匹配 0 手，这一项变成常数 0。探针库本身仍然正确并照常加载 —— 面板行与'
+              + '`probeSeen`/`probeHit` 都保留，换回权重即可复活。',
       },
       en: {
-        meaning: 'Probe match: where a built-in probe position occurs, the share of hands that played the point a shallow search would block; three in a row or an 80% hit rate reaches full value. The library is probes.js (10 canonical shapes × 8 symmetries = 80).',
-        usage: 'Added in 0.5.7. ⚠ This term sits on the SAME measurement as 不漏防: every 冲四 has exactly one blocking point, so the hands a probe fires on are the hands 不漏防 counts — the 0.12 and the 0.15 are spent on one thing. The other two probe families (双威胁选择, 败势顽抗) depend on a specific web engine\'s behaviour and are not encoded.',
-        impact: 'Weight {w}, one of the three low-end-AI signals. Zero with no probe positions.',
+        meaning: 'Probe match: where a built-in probe position occurs, the share of hands that played the point a shallow search would block; three in a row or an 80% hit rate reaches full value. The library is probes.js (10 canonical shapes × 8 symmetries = 80). Since 0.5.7-Alpha the motif is the 四三杀: a four on one line plus an independent `_XXX_` open three on another, with the four\'s gap still the expected move.',
+        usage: 'Added in 0.5.7, matching 冲四 shapes. ⚠ Two problems: the 冲四 probe sat on the SAME measurement as 不漏防 (every 冲四 has exactly one blocking point), so the 0.12 and the 0.15 were spent on one thing; and after 0.5.7-Alpha re-pointed it at the 四三杀 shape, a position where the side itself holds a four and an open three covers only 0.38% of hands, so the probe almost never fires. The other two probe families (双威胁选择, 败势顽抗) depend on a specific web engine\'s behaviour and are not encoded.',
+        impact: 'Weight {w}, one of the three low-end-AI signals. ⚠ 0.5.7-Alpha set it to ZERO: after the shape change it matches no hands in the corpus, so the term is a constant 0. The library itself is still correct and still loaded — the panel row and `probeSeen`/`probeHit` are kept, and restoring the weight revives it.',
       },
     },
   ];
