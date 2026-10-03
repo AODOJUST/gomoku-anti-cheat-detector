@@ -46,10 +46,10 @@
 
 ```bash
 supabase link --project-ref <你的 project ref>
-supabase db push          # 跑 migrations/001..003
+supabase db push          # 跑 migrations/001..004
 ```
 
-三个迁移文件都是**幂等**的（`create table if not exists` / `drop policy if exists` 后再建），
+四个迁移文件都是**幂等**的（`create table if not exists` / `drop policy if exists` 后再建），
 所以重复执行、或对已经建好的项目补跑，都是安全的——这一点由 `verify-062` §8 断言。
 
 | 文件 | 建了什么 |
@@ -57,8 +57,14 @@ supabase db push          # 跑 migrations/001..003
 | `001_init.sql` | `users` / `activation_codes` / `devices` / `samples` / `archives` / `badges`，加上 §3.3 的乐观锁唯一索引 `idx_code_redeemed` 和三个 `updated_at` 触发器 |
 | `002_rls.sql` | 六张表全部 `enable row level security` + 每张表的策略 + `is_admin()` 辅助函数 |
 | `003_user_kv.sql` | `user_kv` —— §7.2 里「黑名单 / 设置 / 自定义问题 / 学习参数」四个同步类别的存放处（§11.1 没给它们表，这个文件补上；`key` 是白名单而不是自由文本） |
+| `004_email_codes.sql`（1.0.1） | `email_codes`（§2.4 邮箱验证码，**RLS 开着且没有任何 policy**，只有服务端能碰）、`users.token_epoch`（§3.7 撤销所有设备 JWT 的计数器）、`idx_users_username_lower`（§2.3 用户名唯一，大小写不敏感） |
 
-手动建也可以：把三个文件依次粘进 Studio 的 SQL Editor 跑一遍。
+> ⚠ `004` 的**用户名唯一索引**在库里已有重名用户时会创建失败，这是刻意的（静默挑一个赢家等于偷偷改掉
+> 别人的账号名）。1.0.0 从不分配用户名，全新库不会有冲突；确实有的话先手工理清。
+> `004` 还会往 `users` 加一列 `token_epoch default 0`：**1.0.1 之前签发的 token 读作 0，继续有效**，
+> 所以这次升级不会把任何人踢下线。
+
+手动建也可以：把四个文件依次粘进 Studio 的 SQL Editor 跑一遍。
 
 ---
 
@@ -66,6 +72,9 @@ supabase db push          # 跑 migrations/001..003
 
 ```bash
 supabase functions deploy auth-activate auth-renew auth-delete-account \
+                        auth-validate-code auth-send-code auth-check-available \
+                        auth-register auth-login auth-reset-password \
+                        auth-change-password auth-change-email \
                         profile-get profile-update \
                         admin-generate-code admin-list-users admin-ban-user \
                         admin-unban-user admin-revoke-codes admin-grant-badge \
@@ -75,18 +84,34 @@ supabase functions deploy auth-activate auth-renew auth-delete-account \
 ### 需要设置的环境变量
 
 Supabase 会**自动注入** `SUPABASE_URL` 和 `SUPABASE_SERVICE_ROLE_KEY` 两个变量，通常不用手动设。
-唯一需要你自己设的是**签发 JWT 用的密钥**：
+需要你自己设的有三个：
 
 ```bash
+# 1) 签发 JWT 的密钥（必需）
 supabase secrets set SUPABASE_JWT_SECRET=<Project Settings → API → JWT Settings 里的 JWT Secret>
+
+# 2) 发邮箱验证码的 Resend 密钥（1.0.1 必需，§2.4）
+supabase secrets set RESEND_API_KEY=re_xxxxxxxxxxxxxxxx
+
+# 3) 验证码邮件的发件人（1.0.1 建议设，必须是你在 Resend 里已验证的域名）
+supabase secrets set MAIL_FROM='白身 <noreply@yourdomain.com>'
 ```
 
 > ⚠ `SUPABASE_JWT_SECRET` 必须和项目自身的 JWT Secret **一致**——`auth-*` 函数用 WebCrypto 的 HS256
 > 签自己的 30 天令牌（§0 #8），签完之后客户端拿它去访问 PostgREST 时要被同一个密钥验签。
+>
+> ⚠ 不设 `MAIL_FROM` 时函数会照 §2.4 的字面值从 `noreply@baishen.app` 发信，而那个域名不属于你——
+> Resend 会拒收，客户端拿到 `EMAIL_FAILED`（Resend 的原话在函数日志里）。这不是 bug，是 Resend 的
+> 域名验证机制。
+
+### 还要建一个 Storage 桶（1.0.1，§3.6 头像）
+
+Dashboard → **Storage** → **New bucket** → 名字 **`avatars`**、勾 **Public**。不需要写 storage policy：
+写入发生在 `profile-update` 里（service-role），读取走公开桶的 public URL，客户端全程没有 Storage 写权限。
 
 `config.example.toml` 是 `supabase/config.toml` 的模板；本地开发（`supabase start`）时把它复制成
 `config.toml`，里面 `[functions.<name>] verify_jwt = false` 是**故意**的：这些函数的鉴权是自己在
-代码里做的（anon 调 `auth-activate` 时还没有令牌），让平台再验一次会把激活这一步堵死。
+代码里做的（anon 调 `auth-activate` / `auth-register` 时还没有令牌），让平台再验一次会把激活这一步堵死。
 
 ---
 
@@ -165,6 +190,12 @@ supabase functions serve          # 本地起 Edge Functions
 | 同一个码再激活一次 | `409 CODE_ALREADY_USED`（§3.3 乐观锁：`.is('redeemed_by', null)`） |
 | 不激活时用全部本地功能 | 全部正常，无网络请求 |
 | 撤销激活码后再续期 | `401`，扩展清 JWT 回到未激活，本地数据不动（§3.6） |
+| **两步注册**（1.0.1）：`auth-validate-code` → `auth-send-code` → `auth-register` | `{valid:true}` → 收到邮件 → `{jwt, user}` |
+| 60 秒内重复调 `auth-send-code` | `409 RATE_LIMITED` |
+| `auth-check-available` 查一个已占用的用户名 | `{available:false}` |
+| **改密码**（1.0.1）：`auth-change-password` 成功后再用同一个 `jwt` 调 `profile-get` | `401 UNAUTHORIZED`（`token_epoch` 已自增，所有旧 token 作废） |
+| **头像**（1.0.1）：`profile-update` 传 `avatarData` | Storage 的 `avatars` 桶里出现 `<user_id>.jpg`，`user.avatar_url` 带 `?v=` |
+| 全部本地功能在**未激活**时 | 浮层完全不创建、回放/样本库/黑名单「我的」标签不出现（§1.2 / §1.3） |
 
 ---
 

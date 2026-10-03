@@ -101,6 +101,90 @@
     return { ok: true, purgeAt: (res.data && res.data.purgeAt) || 0 };
   }
 
+  // ---- 1.0.1 §三 账号设置 --------------------------------------------------------------
+
+  /** `FileReader` → data URL, promise-shaped. The only async gap in the avatar path. */
+  function blobToDataUrl(blob) {
+    return new Promise(function (resolve, reject) {
+      var fr = new FileReader();
+      fr.onload = function () { resolve(String(fr.result || '')); };
+      fr.onerror = function () { reject(new Error('read')); };
+      fr.readAsDataURL(blob);
+    });
+  }
+
+  /**
+   * §3.6 头像上传: 「客户端压缩到 256×256（与 1.0.0 一致）；存 Supabase Storage `avatars` 桶；
+   * 路径 `avatars/{user_id}.jpg`」.
+   *
+   * The bytes travel as a data URL in the `profile-update` body rather than from the client straight
+   * to Storage. That is deliberate: a direct Storage PUT would be a THIRD outbound route in
+   * `cloud.js` (which 1.0.0 narrowed to `call`/`rest` so that 「路由只有一个门」), and it would put
+   * the bucket's RLS policy on the critical path of 「换个头像」. The server already holds the service
+   * role key, already knows the user's id, and is where the `avatars/{user_id}.jpg` path is decided.
+   */
+  async function uploadAvatar(file) {
+    var v = validateAvatar(file);
+    if (!v.ok) return v;
+    var c = await compressAvatar(file);
+    if (!c.ok) return c;
+    var t = jwt();
+    if (!t) return { ok: false, error: 'UNAUTHORIZED' };
+    var dataUrl;
+    try { dataUrl = await blobToDataUrl(c.blob); }
+    catch (e) { return { ok: false, error: 'BAD_FORMAT' }; }
+    var res = await cloud().call('profile-update', { avatarData: dataUrl }, { jwt: t });
+    if (!res.ok) return { ok: false, error: res.error, status: res.status, message: res.message };
+    var d = res.data || {};
+    // Same reason as `updateProfile`: the account area and the header's avatar both draw from the
+    // cached session, so a successful upload has to land there or they keep showing the old one.
+    var s = auth().session();
+    if (s && d.user) { s.user = d.user; await g.GMStorage.saveCloudSession(s); }
+    return { ok: true, user: d.user || null };
+  }
+
+  /**
+   * §3.7 修改密码. 当前密码 goes to the server to be verified there — a client-side check would be
+   * theatre, since the old password is exactly what an attacker holding the session does not have.
+   *
+   * §3.7 asks whether to revoke every device's JWT and answers itself: 「建议撤销——密码修改通常是
+   * 安全事件，应让所有设备重新登录」. The server revokes, so this session is dead by the time the
+   * call returns and the client logs out locally to match, rather than keeping a token the server
+   * will answer 401 to.
+   */
+  async function changePassword(currentPassword, newPassword) {
+    var t = jwt();
+    if (!t) return { ok: false, error: 'UNAUTHORIZED' };
+    // §2.3's rule, asked before the round trip so 「新密码太短」 is not reported as a network problem.
+    if (!auth().isValidPassword(newPassword)) return { ok: false, error: 'WEAK_PASSWORD' };
+    var res = await cloud().call('auth-change-password', {
+      currentPassword: String(currentPassword == null ? '' : currentPassword),
+      newPassword: String(newPassword),
+    }, { jwt: t });
+    if (!res.ok) return { ok: false, error: res.error, status: res.status, message: res.message };
+    await auth().logout();
+    return { ok: true };
+  }
+
+  /** §3.8 修改邮箱 — needs the code sent to the NEW address, plus the current password. */
+  async function changeEmail(email, emailCode, password) {
+    var t = jwt();
+    if (!t) return { ok: false, error: 'UNAUTHORIZED' };
+    var e = auth().normalizeEmail(email);
+    if (!auth().isValidEmail(e)) return { ok: false, error: 'BAD_EMAIL' };
+    if (!auth().isValidEmailCode(emailCode)) return { ok: false, error: 'BAD_EMAIL_CODE' };
+    var res = await cloud().call('auth-change-email', {
+      email: e,
+      emailCode: String(emailCode).trim(),
+      password: String(password == null ? '' : password),
+    }, { jwt: t });
+    if (!res.ok) return { ok: false, error: res.error, status: res.status, message: res.message };
+    var d = res.data || {};
+    var s = auth().session();
+    if (s && d.user) { s.user = d.user; await g.GMStorage.saveCloudSession(s); }
+    return { ok: true, user: d.user || null };
+  }
+
   // ---- 头像 (§4.4) ---------------------------------------------------------------------------
 
   /** Front-end gate for §4.4's 「格式：jpg / png / webp；大小：≤ 2MB（前端校验）」. */
@@ -153,6 +237,9 @@
 
     getProfile: getProfile,
     updateProfile: updateProfile,
+    uploadAvatar: uploadAvatar,
+    changePassword: changePassword,
+    changeEmail: changeEmail,
     logout: logout,
     deleteAccount: deleteAccount,
 

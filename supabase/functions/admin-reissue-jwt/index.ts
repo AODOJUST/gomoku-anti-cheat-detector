@@ -14,10 +14,15 @@
 
 import { serve } from "https://deno.land/std/http/server.ts";
 import { handlePreflight } from "../_shared/cors.ts";
-import { badRequest, fail, internal, json, methodNotAllowed } from "../_shared/errors.ts";
-import { requireAdmin, serviceClient, signJwt, type UserRow } from "../_shared/client.ts";
-
-const JWT_DAYS = 30;
+import { badRequest, HttpStatus, internal, json, methodNotAllowed } from "../_shared/errors.ts";
+import {
+  accountRefusal,
+  requireAdmin,
+  serviceClient,
+  SESSION_DAYS,
+  signJwt,
+  type UserRow,
+} from "../_shared/client.ts";
 
 serve(async (req: Request): Promise<Response> => {
   const preflight = handlePreflight(req);
@@ -46,16 +51,21 @@ serve(async (req: Request): Promise<Response> => {
       .maybeSingle();
     if (error) throw error;
     const target = (found as UserRow | null) ?? null;
-    if (!target) return fail("NOT_FOUND", 404, "User not found");
 
-    // Handing a session to a banned or deleted account would defeat both features.
-    if (target.is_banned === true) return fail("BANNED", 403, "Account is banned");
-    if (target.deleted_at) return fail("NOT_FOUND", 404, "Account has been deleted");
+    // Handing a session to a banned or deleted account would defeat both features. The verdicts come
+    // from `accountRefusal` — shared with the four session paths — with the 404 wording, because
+    // here the account was NAMED by an operator rather than presented as a credential, so a miss is
+    // a lookup that failed rather than an authentication that failed.
+    const refusal = accountRefusal(target, HttpStatus.NOT_FOUND);
+    if (refusal) return refusal;
 
     // Signed exactly like a normal session (HS256 with SUPABASE_JWT_SECRET, see
     // _shared/client.ts) -- there is no privileged "admin token" baked in here, so the
     // issued token grants the target user only their ordinary access.
-    const { jwt, expiresAt } = await signJwt({ id: target.id, email: target.email }, JWT_DAYS);
+    const { jwt, expiresAt } = await signJwt(
+      { id: target.id, email: target.email, epoch: target.token_epoch },
+      SESSION_DAYS,
+    );
 
     console.log(`audit: admin ${caller.id} reissued a JWT for user ${target.id}`);
 

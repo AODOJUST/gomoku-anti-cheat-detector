@@ -20,7 +20,24 @@ export type ErrorCode =
   | "CODE_ALREADY_USED"
   | "DEVICE_LIMIT"
   | "NOT_FOUND"
-  | "INTERNAL";
+  | "INTERNAL"
+  // --- 1.0.1 §2.3 / §2.4 / §2.6 / §3.7 / §3.8 -------------------------------------------------
+  // Every one of these is a FAILURE THE OPERATOR CAN ACT ON, and the client's `cloudErrText`
+  // words them individually. That is why they are codes rather than `BAD_REQUEST` with a message:
+  // a bare 400 reaches the operator as 「网络错误，请稍后重试」, which is the one sentence that
+  // never helps.
+  | "BAD_USERNAME"
+  | "BAD_EMAIL"
+  | "BAD_EMAIL_CODE"
+  | "WEAK_PASSWORD"
+  | "USERNAME_TAKEN"
+  | "EMAIL_TAKEN"
+  | "BAD_CREDENTIALS"
+  | "INVALID_EMAIL_CODE"
+  | "RATE_LIMITED"
+  // The mail provider refused or is not configured. Distinct from INTERNAL because it is a
+  // DEPLOYMENT problem the operator (not the end user) has to fix, and generic 500s get lost.
+  | "EMAIL_FAILED";
 
 /** HTTP status constants used across the functions. */
 export const HttpStatus = {

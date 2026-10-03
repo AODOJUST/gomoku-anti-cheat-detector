@@ -3,26 +3,26 @@
 // POST { code, deviceId, userAgent?, email? }
 //   -> 200 { jwt, expiresAt, user }
 //
-// This function is the only way a normal user obtains a token, and it runs with the
-// service role. It performs its own checks in a deliberate order so the client never
-// learns more than it needs to (an unknown code and a malformed one both look "not
-// found").
+// This was 1.0.0's ONLY door: 「输码即建号」, one step, no password. 1.0.1 put the two-step flow
+// (`auth-validate-code` → `auth-register`) in front of the UI, but this endpoint stays exactly as
+// it was — a deployed 1.0.0 client still calls it, and an operator who needs to re-activate an
+// account whose row predates 1.0.1 still has to come through here (see `auth-reset-password`).
+// It runs with the service role and performs its own checks in a deliberate order so the client
+// never learns more than it needs to (an unknown code and a malformed one both look "not found").
 
 import { serve } from "https://deno.land/std/http/server.ts";
 import { handlePreflight } from "../_shared/cors.ts";
 import { badRequest, fail, internal, json, methodNotAllowed } from "../_shared/errors.ts";
 import {
+  accountRefusal,
   serviceClient,
+  SESSION_DAYS,
   signJwt,
   toPublicUser,
+  touchDevice,
   type UserRow,
 } from "../_shared/client.ts";
 import { isValidCodeShape, normalizeCode } from "../_shared/codes.ts";
-
-/** Product rule: at most three active devices per account. */
-const MAX_DEVICES = 3;
-/** Session lifetime; the client renews every 7 days, so 30 days is generous. */
-const JWT_DAYS = 30;
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -129,34 +129,22 @@ serve(async (req: Request): Promise<Response> => {
 
     if (!userRow) throw new Error("Failed to resolve user during activation");
 
-    // --- 5. banned? ----------------------------------------------------------
-    if (userRow.is_banned === true) {
-      return fail("BANNED", 403, "Account is banned");
-    }
+    // --- 5. may this account hold a session? -------------------------------------------------
+    // Banned, or soft-deleted and therefore on its way to the purge (§4.2's 30-day retention).
+    // ⚠ 1.0.0 checked only `is_banned` here, so a cancelled account could be brought back to life
+    // with a spare code and would keep its `deleted_at` while holding a fresh 30-day token. The
+    // `deleted_at` half is 1.0.1's fix, and it lives in `accountRefusal` so this door and the four
+    // other doors that hand out a session cannot disagree about what 「不得再登录」 means.
+    const refusal = accountRefusal(userRow);
+    if (refusal) return refusal;
 
-    // --- 6. device plan (checked *before* redeeming so a limit hit cannot burn
-    //        an otherwise valid code) ---------------------------------------
-    const { data: existingDevice, error: deviceLookupError } = await sb
-      .from("devices")
-      .select("id")
-      .eq("user_id", userRow.id)
-      .eq("device_id", deviceId)
-      .maybeSingle();
-    if (deviceLookupError) throw deviceLookupError;
+    // --- 6. the device (§0 #2, 「3 台」) ------------------------------------------------------
+    // Checked *before* the code is redeemed so a limit hit cannot burn an otherwise valid code:
+    // `touchDevice` refuses before it inserts, so a fourth device leaves nothing behind either.
+    const limitHit = await touchDevice(sb, userRow.id, deviceId, userAgent);
+    if (limitHit) return limitHit;
 
-    const isNewDevice = !existingDevice;
-    if (isNewDevice) {
-      const { count, error: countError } = await sb
-        .from("devices")
-        .select("id", { count: "exact", head: true })
-        .eq("user_id", userRow.id);
-      if (countError) throw countError;
-      if ((count ?? 0) >= MAX_DEVICES) {
-        return fail("DEVICE_LIMIT", 409, `At most ${MAX_DEVICES} devices may be active`);
-      }
-    }
-
-    // --- 7. bind the code with an optimistic lock ----------------------------
+    // --- 7. bind the code with an optimistic lock --------------------------------------------
     const alreadyBoundToSelf = codeRow.redeemed_by === userRow.id;
     if (!alreadyBoundToSelf) {
       const { data: bound, error: bindError } = await sb
@@ -184,25 +172,12 @@ serve(async (req: Request): Promise<Response> => {
       }
     }
 
-    // --- 8. register / touch the device --------------------------------------
-    const nowIso = new Date().toISOString();
-    if (isNewDevice) {
-      const { error: insertDeviceError } = await sb
-        .from("devices")
-        .insert({ user_id: userRow.id, device_id: deviceId, user_agent: userAgent, last_seen: nowIso });
-      if (insertDeviceError) throw insertDeviceError;
-    } else {
-      const { error: touchError } = await sb
-        .from("devices")
-        .update({ last_seen: nowIso, user_agent: userAgent })
-        .eq("user_id", userRow.id)
-        .eq("device_id", deviceId);
-      if (touchError) throw touchError;
-    }
-
-    // --- 9. mint the session -------------------------------------------------
+    // --- 8. mint the session ----------------------------------------------------------------
     // Signed with the project JWT secret via WebCrypto HMAC-SHA256 (see _shared/client.ts).
-    const { jwt, expiresAt } = await signJwt({ id: userRow.id, email: userRow.email }, JWT_DAYS);
+    const { jwt, expiresAt } = await signJwt(
+      { id: userRow.id, email: userRow.email, epoch: userRow.token_epoch },
+      SESSION_DAYS,
+    );
 
     return json({ jwt, expiresAt, user: toPublicUser(userRow) });
   } catch (err) {

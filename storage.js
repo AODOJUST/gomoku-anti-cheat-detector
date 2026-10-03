@@ -3622,6 +3622,12 @@
     loadCloudSession: loadCloudSession,
     saveCloudSession: saveCloudSession,
     clearCloudSession: clearCloudSession,
+    // 1.0.1 §1.2 — `content.js` has to WATCH this key (`chrome.storage.onChanged`) so that
+    // activating in the viewer makes the on-page overlay appear without a reload. Exported rather
+    // than spelled again over there: the key name was §1.4's 「jwt」 in the 定稿's pseudocode and is
+    // `cloudSession` in the shipped store (the session deliberately lives OUTSIDE `settings` so a
+    // backup cannot leak a token by construction), and a second literal is how those two drift.
+    SESSION_KEY: SESSION_KEY,
     getDeviceId: getDeviceId,
     loadSyncQueue: loadSyncQueue,
     saveSyncQueue: saveSyncQueue,

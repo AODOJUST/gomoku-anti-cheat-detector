@@ -65,3 +65,31 @@ verify_jwt = false
 
 [functions.admin-reissue-jwt]
 verify_jwt = false
+
+# ---- 1.0.1 §二 / §3.7 / §3.8 — the two-step registration and the account settings ------------
+# Six of these are deliberately ANONYMOUS (no session exists yet when they are called), so
+# verify_jwt = false here skips nothing: each one validates its own inputs and its own credential
+# (the activation code, the emailed code, or the password) before it writes anything.
+[functions.auth-validate-code]
+verify_jwt = false
+
+[functions.auth-send-code]
+verify_jwt = false
+
+[functions.auth-check-available]
+verify_jwt = false
+
+[functions.auth-register]
+verify_jwt = false
+
+[functions.auth-login]
+verify_jwt = false
+
+[functions.auth-reset-password]
+verify_jwt = false
+
+[functions.auth-change-password]
+verify_jwt = false
+
+[functions.auth-change-email]
+verify_jwt = false

@@ -10,3 +10,11 @@ build/release/
 build/sourcemaps/
 node_modules/
 package-lock.json
+
+# §8.4 / docs/DEPLOY.md — `supabase/config.toml` is the LOCAL copy you create from the committed
+# `config.example.toml` (`cp supabase/config.example.toml supabase/config.toml`) when you run
+# `supabase start`, and `supabase/.temp/` is the CLI's own scratch directory. The EXAMPLE is the
+# reviewable artefact; the local copy is per-machine state. Neither has real secrets — secrets go
+# in with `supabase secrets set`, never in this file — so this is hygiene, not a security fix.
+supabase/config.toml
+supabase/.temp/

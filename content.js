@@ -5718,7 +5718,11 @@
   // viewer (or another tab) so the panel never shows a value that is no longer stored.
   // If the operator is typing inside the panel, only refresh the status line — a full
   // re-render would replace the input under their cursor.
-  if (chrome.storage && chrome.storage.onChanged) {
+  //
+  // 1.0.1 §1.2 — this block became a FUNCTION and moved inside `run()`: it is a listener, and an
+  // unactivated operator is promised 「不创建 host、不绑定监听、不启动任何定时器」.
+  function watchSettings() {
+    if (!chrome.storage || !chrome.storage.onChanged) return;
     chrome.storage.onChanged.addListener(function (changes, area) {
       if (area !== 'local') return;
       // 0.4.0 §一.4 — the service worker's 12-hourly check writes `updateInfo` while this tab
@@ -5782,36 +5786,111 @@
     // already on screen, and a picture that arrives a frame later is a picture, not a bug.
     refreshOverlayBg();
   }
-  // 0.5.2 §4.1 — the custom questions are loaded alongside the settings and NOT awaited before
-  // boot(): the picker is behind a click and a second or two of an empty 自定义问题 block is
-  // invisible, while holding the panel back behind another storage read would not be.
-  loadSettings().then(function () {
-    if (document.body) boot();
-    else document.addEventListener('DOMContentLoaded', boot, { once: true });
-    refreshCustomQuestions();
-  });
+  /**
+   * Everything that used to run at module scope. It is a function now for one reason: §1.2 says an
+   * unactivated operator gets 「不创建 host、不绑定监听、不启动任何定时器」, and every one of those
+   * three things lives in here — `build()` makes the shadow host, `watchSettings()` binds the
+   * storage listener, and the `setInterval` at the bottom is the 1 Hz tick that drives the whole
+   * panel. Gating the entry point gates all three, which is why there is no per-site guard below.
+   */
+  function run() {
+    watchSettings();
 
-  startDomObserver();
-  // 0.4.8 §2: restore the session facts before anything can ask about them. Fire-and-forget —
-  // every reader copes with the pre-restore value, so a late arrival can only add information.
-  hydrateSession();
-  // 0.4.9 §一.4 — the blacklist mirror. Same fire-and-forget reasoning: the button starts at
-  // `na` and the match check simply retries, so a late arrival can only add information.
-  hydrateBlacklist();
-  loadChatState();
-  resetChatForGame();
-  setInterval(function () {
+    // 0.5.2 §4.1 — the custom questions are loaded alongside the settings and NOT awaited before
+    // boot(): the picker is behind a click and a second or two of an empty 自定义问题 block is
+    // invisible, while holding the panel back behind another storage read would not be.
+    loadSettings().then(function () {
+      if (document.body) boot();
+      else document.addEventListener('DOMContentLoaded', boot, { once: true });
+      refreshCustomQuestions();
+    });
+
     startDomObserver();
-    tickDom();
-    tickStall();
-    pollEnd();
-    // 0.4.6 §一 — remember the player names while they are still on screen; papergames.io takes
-    // its player row away together with the board, and the record is built after that.
-    rememberNames();
-    // 0.4.9 §1.5 — the blacklist match. Once per game (it is keyed on gameEpoch), and it can
-    // only answer after `rememberNames()` has had a chance to see the seat list.
-    checkBlacklist();
-    // 0.4.4 — the chat clock. All three are cheap and idempotent; each re-checks its own gate.
-    tickChat();
-  }, 1000);
+    // 0.4.8 §2: restore the session facts before anything can ask about them. Fire-and-forget —
+    // every reader copes with the pre-restore value, so a late arrival can only add information.
+    hydrateSession();
+    // 0.4.9 §一.4 — the blacklist mirror. Same fire-and-forget reasoning: the button starts at
+    // `na` and the match check simply retries, so a late arrival can only add information.
+    hydrateBlacklist();
+    loadChatState();
+    resetChatForGame();
+    setInterval(function () {
+      startDomObserver();
+      tickDom();
+      tickStall();
+      pollEnd();
+      // 0.4.6 §一 — remember the player names while they are still on screen; papergames.io takes
+      // its player row away together with the board, and the record is built after that.
+      rememberNames();
+      // 0.4.9 §1.5 — the blacklist match. Once per game (it is keyed on gameEpoch), and it can
+      // only answer after `rememberNames()` has had a chance to see the seat list.
+      checkBlacklist();
+      // 0.4.4 — the chat clock. All three are cheap and idempotent; each re-checks its own gate.
+      tickChat();
+    }, 1000);
+  }
+
+  // =============================================================================================
+  // 1.0.1 §1.2 激活门槛 — 「浮层」的完全不创建
+  // =============================================================================================
+  // The 定稿 draws a hard line between 「隐藏」 and 「不存在」, and this is the 「不存在」 half:
+  //
+  //   「未激活时**不执行任何 DOM 创建**」…「页面里**完全没有浮层的痕迹**，不是隐藏，是根本不存在。」
+  //
+  // So the gate is placed BEFORE anything observable, not inside `build()`: a `display:none` host in
+  // the page's DOM is still a host the page can see, and the whole point of the requirement is that
+  // an unactivated operator's page is indistinguishable from one with no extension installed except
+  // for the two `sites.js`/`hook.js` MAIN-world taps that 1.0.0 already shipped.
+  //
+  // The judgment itself is `GMAuth.gateOpen()` and nowhere else — see its own note for why
+  // 「no backend」 is not 「未激活」. A second spelling here would be the sixth time this project paid
+  // for a duplicated answer.
+  var _started = false;
+  var _watching = false;
+
+  async function activationOpen() {
+    if (typeof GMAuth === 'undefined' || !GMAuth.gateOpen) {
+      // A missing module is a BUG, not a product state — but failing closed would brick a working
+      // tool on the strength of a load-order mistake, and 0.4.x's standing rule is that a silent
+      // abstention has to leave a trace. So: open, and say so.
+      console.warn('[detector] GMAuth missing — activation gate skipped (1.0.1 §1.2)');
+      return true;
+    }
+    try { await GMAuth.load(); } catch (e) { /* an unreadable store reads as 「no session」 */ }
+    return !!GMAuth.gateOpen();
+  }
+
+  /**
+   * §1.2 — 「唯一保留的是：监听激活状态变化，激活后重新 boot」.
+   *
+   * The 定稿's sample watches `jwt`; the shipped store keeps the session under `cloudSession`
+   * (`GMStorage.SESSION_KEY`, deliberately NOT inside `settings` so a backup cannot leak a token by
+   * construction). The key is read from the module that owns it rather than spelled again here.
+   */
+  function watchActivation() {
+    if (_watching) return;
+    _watching = true;
+    if (!chrome.storage || !chrome.storage.onChanged) return;
+    chrome.storage.onChanged.addListener(function (changes, area) {
+      if (area !== 'local') return;
+      if (!changes || !Object.prototype.hasOwnProperty.call(changes, GMStorage.SESSION_KEY)) return;
+      // Already running: a later logout must NOT tear the panel down. §1.2 only requires that an
+      // unactivated operator never gets one, and 1.0.0's §3.6 「登出 / 撤销后本地数据不受影响」
+      // would be a strange promise if the panel vanished from a game in progress.
+      if (_started) return;
+      gateBoot();
+    });
+  }
+
+  async function gateBoot() {
+    if (_started) return;
+    if (!(await activationOpen())) {
+      watchActivation();
+      return;
+    }
+    _started = true;
+    run();
+  }
+
+  gateBoot();
 })();

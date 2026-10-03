@@ -488,6 +488,27 @@
   .navbtn{background:transparent;color:var(--mut);font-size:var(--ui-shell-nav);padding:8px 22px;border-radius:var(--ui-detail-radius)}
   .navbtn:hover{background:var(--hover);color:var(--txt)}
   .navbtn.active{background:var(--blue);color:#fff}
+  /* ---- 1.0.1 §3.1 账号区（导航栏右上角） ---- */
+  /* `margin-inline-start:auto` is deliberately NOT used: `#status` already claims the auto margin,
+     so the account area simply takes the slot after it and ends up rightmost — which is where
+     §3.1's diagram puts it. Re-declaring `auto` here would split the slack between the two and
+     leave a gap in the middle of the header. */
+  .nav-user{display:flex;align-items:center;gap:8px;padding:4px 10px 4px 4px;border:1px solid var(--line);border-radius:999px;cursor:pointer;max-width:220px}
+  .nav-user:hover{background:var(--hover)}
+  .nav-avatar{width:26px;height:26px;border-radius:50%;background:var(--inset);border:1px solid var(--line);display:flex;align-items:center;justify-content:center;overflow:hidden;flex:0 0 auto;font-size:13px}
+  .nav-avatar img{width:100%;height:100%;object-fit:cover}
+  /* Truncation rather than wrapping: a 20-character username must not make the sticky header two
+     rows tall. `min-width:0` is what actually lets `text-overflow` work on a flex child. */
+  .nav-name{font-size:var(--ui-shell-nav);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .nav-caret{color:var(--mut);font-size:10px;flex:0 0 auto}
+  .nav-activate{background:var(--blue);color:#fff;font-size:var(--ui-shell-nav);padding:8px 18px;border-radius:var(--ui-shell-radius)}
+  /* The drawer's own card. It lives inside `#ctx`, whose `.it`/`.sep` rows supply everything else,
+     so this only has to describe the identity block on top. */
+  .user-card{display:flex;align-items:center;gap:12px;padding:10px 16px 12px}
+  .user-avatar-lg{width:46px;height:46px;border-radius:50%;background:var(--inset);border:1px solid var(--line);display:flex;align-items:center;justify-content:center;overflow:hidden;flex:0 0 auto;font-size:18px}
+  .user-avatar-lg img{width:100%;height:100%;object-fit:cover}
+  .user-name{font-size:var(--ui-detail-font);font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .user-email{font-size:var(--ui-detail-small);color:var(--mut);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .view{display:none}
   .view.active{display:block}
   .hidden{display:none !important}
@@ -888,6 +909,19 @@
   .modal .bd{padding:24px}
   .modal .ft{padding:16px 24px;border-top:1px solid var(--line);display:flex;gap:14px;justify-content:flex-end}
   .modal input[type=text]{width:100%;font-size:var(--ui-detail-font);padding:10px}
+  /* 1.0.1 §2.3/§3.7 — the password fields and the 强度条. Both live in rows whose other cells are
+     sized by `flex`, so the input only needs the same padding as the text ones; the BAR is a
+     separate 3-segment element rather than coloured text, because a hard-coded colour would be
+     unreadable in whichever of the two themes it was not chosen for. */
+  .modal input[type=password]{width:100%;font-size:var(--ui-detail-font);padding:10px}
+  .modal .hint a{color:inherit;text-decoration:underline}
+  .pwbar{display:inline-flex;gap:3px;align-items:center;flex:0 0 auto}
+  .pwbar i{display:block;width:15px;height:6px;border-radius:3px;background:var(--inset);border:1px solid var(--line)}
+  .pwbar.s1 i:nth-child(1){background:#d9534f;border-color:#d9534f}
+  .pwbar.s2 i:nth-child(-n+2){background:#e0a020;border-color:#e0a020}
+  .pwbar.s3 i{background:#3fa96a;border-color:#3fa96a}
+  /* §2.3's live uniqueness mark. Fixed width so the row does not re-wrap between ✓ and ✕. */
+  .hint.mark{flex:0 0 auto;min-width:16px;text-align:center}
   .modal button{font-size:var(--ui-detail-font);padding:0 22px;min-height:var(--ui-shell-btn-height);border-radius:var(--ui-shell-radius)}
   /* 0.4.10 §三 — the tutorial's prose. Eleven sections of headings and bullets, so the first one
      must not sit flush against the modal's padding and the last must not be crowded by the
@@ -1013,23 +1047,31 @@
   <h1>白身 · 反作弊检测 <span class="sub">查看器 · Rapfi(WASM)</span></h1>
   <div class="nav">
     <button class="navbtn active" data-view="detect">检测</button>
-    <button class="navbtn" data-view="replay">回放</button>
+    <!-- 1.0.1 §1.3 — 回放/样本库/黑名单 are the three tabs §1.1 gates on activation, so each needs
+         an id for viewer.js to toggle. They are drawn unconditionally in the markup and hidden by
+         the gate, because the alternative (leaving them out and building them later) would make the
+         nav's contents depend on WHEN the account state resolves.
+         ⚠ `hidden` in the MARKUP, not only in the gate: 「hidden by the gate」 and 「revealed by the
+         gate」 are two halves of one claim, and a gated tab that shipped visible would be on screen
+         for the frames between first paint and `cloudBoot()` — an unactivated operator would watch
+         the features appear and then vanish. Shipping hidden costs an ACTIVATED operator the mirror
+         image of that (the tabs appear when the gate runs), which is the trade `#navAdmin` already
+         makes. `applyActivationGate` toggles, so it reveals as well as hides. -->
+    <button class="navbtn hidden" data-view="replay" id="navReplay">回放</button>
     <!-- 0.3.3 §1.2: the sample library sits between the archive list and the settings, so
          the nav reads left-to-right in the order a game is actually worked through:
          detect it, replay it, curate it, configure. -->
-    <button class="navbtn" data-view="samples">样本库</button>
+    <button class="navbtn hidden" data-view="samples" id="navSamples">样本库</button>
     <!-- 0.4.9 §一.7 — the blacklist sits after the libraries: it is the same kind of thing (a
          local list the operator curates) and reading left to right it comes last because it is
          the one list that is about PEOPLE rather than about games. -->
-    <button class="navbtn" data-view="blacklist">黑名单</button>
-    <!-- 1.0.0 §5.1 — 我的. Starts hidden and is unhidden from the AUTH STATE, never the other way
-         round (§1.2's 「无账号用户」 column has no row for it): a tab that exists but is always
-         empty is worse than no tab, because it reads as a broken feature rather than as an absent
-         one. The ids are what viewer.js toggles; `data-view` is what showView() routes on. -->
-    <button class="navbtn hidden" data-view="profile" id="navProfile">—</button>
-    <!-- 1.0.0 §6.3 — 管理员, 「仅 `is_admin` 可见」. One more condition than 我的, and it is the
-         only condition §6.1 lets the client evaluate at all — for VISIBILITY, never for
-         authorisation (every operation is re-checked server-side). -->
+    <button class="navbtn hidden" data-view="blacklist" id="navBlacklist">黑名单</button>
+    <!-- 1.0.0 §6.3 — 管理员, 「仅 `is_admin` 可见」. It is the only condition §6.1 lets the client
+         evaluate at all — for VISIBILITY, never for authorisation (every operation is re-checked
+         server-side).
+         1.0.1 §3.1 — 我的 lost its tab. The account area (§3.1's 「[头像] 用户名 ▼」) and its drawer
+         replace it, and 主页/账号设置 are reached from there, so they are views WITHOUT nav
+         buttons — exactly like `view-admin` was already. -->
     <button class="navbtn hidden" data-view="admin" id="navAdmin">—</button>
     <button class="navbtn" data-view="settings">设置</button>
   </div>
@@ -1037,6 +1079,17 @@
        because the preference is global — the same fifteen columns in the same order. -->
   <button class="sec" id="colBtn" title="显示 / 隐藏步骤明细的列（四张表共用）">列 ▾</button>
   <span id="status">就绪</span>
+  <!-- 1.0.1 §3.5 — the account area. `#navUser` and `#navActivate` are mutually exclusive and both
+       ship `hidden`: the gate in viewer.js unhides exactly ONE of them, so there is never a frame
+       in which the header offers both a name and a 「激活」 button. `.nav-user` is a div, not a
+       `.navbtn` — it is not a view and must not be picked up by the nav's routing or by any
+       「how many tabs are there」 scan. -->
+  <div class="nav-user hidden" id="navUser">
+    <span class="nav-avatar" id="navAvatar">—</span>
+    <span class="nav-name" id="navName">—</span>
+    <span class="nav-caret">▾</span>
+  </div>
+  <button class="nav-activate hidden" id="navActivate">激活</button>
 </header>
 <div class="colmenu hidden" id="colMenu"></div>
 
@@ -1783,6 +1836,12 @@
        live), so a static version would have to be overwritten in full anyway. The markup is the
        frame: containers plus `—` placeholders, and `—` carries no CJK so the static i18n pass
        ignores it (see keys.cjs's CJK test). -->
+  <!-- ======================= 主页 (1.0.1 §3.3) ======================= -->
+  <!-- §3.3 splits what 1.0.0 had in one 「我的」 page into TWO pages with different permissions:
+       主页 is 只读 (头像 / 用户名 / 加入时间 / 样本库总数 + the 预留接口 block) and 账号设置 is
+       可编辑 (用户名 / 简介 / 头像 / 邮箱 / 密码 / 注销).
+       Neither has a nav button: §3.1's header ends in 「[头像] 用户名 ▼」 and the drawer is the only
+       door to them, so a tab for either would be a second door to the same room. -->
   <section class="view" id="view-profile">
     <div class="panel">
       <div class="acct">
@@ -1790,11 +1849,6 @@
         <div class="acct-meta">
           <div class="acct-name" id="pfName">—</div>
           <div class="hint" id="pfMeta">—</div>
-        </div>
-        <span class="sp"></span>
-        <div class="btn-row">
-          <button class="sec" id="pfEdit">—</button>
-          <button class="sec" id="pfLogout">—</button>
         </div>
       </div>
       <div class="hint" id="pfState" style="margin-top:10px">—</div>
@@ -1806,22 +1860,19 @@
       <h2 id="pfResvTitle">—</h2>
       <div id="pfResv" class="resv"></div>
     </div>
+  </section>
 
-    <div class="panel" id="pfSyncPanel">
-      <h2 id="pfSyncTitle">—</h2>
-      <div id="pfSyncBody"></div>
-    </div>
-
-    <div class="panel">
-      <h2 id="pfDevTitle">—</h2>
-      <div id="pfDev"></div>
-    </div>
-
-    <div class="panel">
-      <h2 id="pfDangerTitle">—</h2>
-      <div id="pfDanger"></div>
+  <!-- ======================= 账号设置 (1.0.1 §3.3/§3.7/§3.8) ======================= -->
+  <!-- The whole body is written by `buildAccountPanel()` because every value in it comes from the
+       session, and every label therefore has to follow a language switch through one function —
+       the same rule the 云账户与同步 panel follows. -->
+  <section class="view" id="view-account">
+    <div class="panel set-panel">
+      <h2 id="acTitle">—</h2>
+      <div id="acBody"></div>
     </div>
   </section>
+
 
   <!-- ======================= 管理员 (1.0.0 §6) ======================= -->
   <!-- 1.0.0 §6.3: 「扩展内最小集（可选）：生成激活码（一键复制）/ 查看用户列表（分页）/ 封禁解封」.
@@ -1858,6 +1909,17 @@
   <!-- 0.4.0 §二: the panels are now semantic GROUPS rather than one 620px column, and each
        group's items flow into as many columns as the window affords (see .set-grid above).
        The old single-column layout used 1-2 of every 5 available slots on a wide screen. -->
+  <!-- 1.0.1 §1.3 — 设置页的闸门. §1.1's matrix leaves exactly THREE panels available to an
+       unactivated operator (云账号与同步 / 新手教程 / 关于) and marks everything else ❌, including
+       the two rows it names by hand (「检测、引擎、透明度等」).
+       The gate is declared HERE, as a `data-gate` attribute, rather than as a list of ids inside
+       viewer.js: the markup is where a reader looks to find out what a page contains, and a JS list
+       would have to be kept in step with it by hand. viewer.js has exactly one line that reads this
+       attribute, so adding a panel to either side of the line is a one-word change.
+       ⚠ 语言与显示 is gated TOO, even though 语言 is the one setting a locked-out operator might
+       most want. §1.1's ✅ list is exhaustive — it names three panels — and the panel's own name is
+       already in the ❌ column's paraphrase (「透明度等」). Availability by convenience would be a
+       silent amendment to the matrix. -->
   <section class="view" id="view-settings">
     <!-- 0.4.10 §三 — the tutorial, FIRST on the page. It is the one panel whose reader does not
          yet know what any of the others mean, so putting it anywhere else is putting it where the
@@ -1874,7 +1936,7 @@
       </div>
     </div>
 
-    <div class="panel set-panel">
+    <div class="panel set-panel" data-gate="1">
       <h2>检测设置（与页面浮层共享同一份存储）</h2>
       <div class="set-grid">
         <div class="set-item">
@@ -1937,7 +1999,7 @@
          they are grouped come from learn.js's own list. The title, hint, total and reset button
          are static markup; the hint and the button's word are painted from JS like every other
          panel's, because they are prose a translator rewrites as a whole. -->
-    <div class="panel set-panel">
+    <div class="panel set-panel" data-gate="1">
       <h2>检测信号权重</h2>
       <div class="hint" id="swHint">—</div>
       <div class="sw-total" id="swTotal">—</div>
@@ -1953,7 +2015,7 @@
          and the operator who uploaded one had to scroll to a second panel to see whether it had
          loaded. The order below is §5.2.1's: pick the engine, size it (threads / min moves /
          auto-analyse), then the block that adds engines of your own. -->
-    <div class="panel set-panel">
+    <div class="panel set-panel" data-gate="1">
       <h2>引擎与自定义引擎</h2>
       <div class="set-grid">
         <div class="set-item">
@@ -2024,7 +2086,7 @@
     </div>
 
 
-    <div class="panel set-panel">
+    <div class="panel set-panel" data-gate="1">
       <h2>语言与显示</h2>
       <div class="set-grid">
         <div class="set-item">
@@ -2070,7 +2132,7 @@
          every readout needs the same value. Ten hand-written controls would mean ten chances to
          typo a ceiling, and a slider whose max disagrees with the value storage clamps to is a
          control that silently snaps back when released. -->
-    <div class="panel set-panel">
+    <div class="panel set-panel" data-gate="1">
       <h2 id="tpTitle">—</h2>
       <div class="set-grid" id="tpGrid"></div>
       <div class="btn-row" style="margin-top:10px">
@@ -2135,7 +2197,7 @@
     <!-- 0.5.3 §2.2.4 — 回放过滤. Number inputs rather than sliders, which is what §2.2.4 asks
          for: the operator is naming an exact interval (the default ceiling of 54 is the top of
          the 高手玩家 band), and a slider that lands on 53 or 55 makes that impossible to hit. -->
-    <div class="panel set-panel">
+    <div class="panel set-panel" data-gate="1">
       <h2 id="afTitle">回放过滤</h2>
       <div class="set-grid">
         <div class="set-item">
@@ -2166,7 +2228,7 @@
          a literal of the design — the 0–50 range is a product decision, not a table the clamp
          owns — while the ceiling still comes from `STORAGE_FILTER_LIMITS` at runtime via
          `buildStorageFilter()` so the slider and the clamp cannot disagree. -->
-    <div class="panel set-panel">
+    <div class="panel set-panel" data-gate="1">
       <h2 id="sfTitle">存储过滤</h2>
       <div class="set-grid">
         <!-- 0.5.5 — the switch and its name are ONE label. They used to be two flex children of a
@@ -2223,7 +2285,7 @@
     <!-- 0.5.2 §4.1 — 自定义问题. Its own panel rather than a block inside the chat settings:
          it is a small editor (up to 8 rows, each with an original text and a translation list),
          and it is the only place in the settings page where the operator writes prose. -->
-    <div class="panel set-panel">
+    <div class="panel set-panel" data-gate="1">
       <h2>自定义问题</h2>
       <div class="set-grid">
         <div class="set-item">
@@ -2266,7 +2328,7 @@
     <!-- 0.4.4 §十六 — LLM API. The defaults are NOT written into the inputs here: they come from
          GMLLM.DEFAULTS via fillLlmForm(), so the panel and the request code cannot disagree about
          what "unset" means. -->
-    <div class="panel set-panel">
+    <div class="panel set-panel" data-gate="1">
       <h2>LLM API</h2>
       <div class="set-grid">
         <div class="set-item">
@@ -2323,7 +2385,7 @@
       </div>
     </div>
 
-    <div class="panel set-panel">
+    <div class="panel set-panel" data-gate="1">
       <h2>存档与样本</h2>
       <!-- §2.3: statistics as side-by-side cards instead of one long sentence — the numbers
            are the point, and a wrapped paragraph buries them. Filled by renderSettings(). -->
@@ -2347,7 +2409,7 @@
          the same rule 透明度 and 存储过滤 follow.
          The `—` placeholders are not translated: they carry no CJK, so the static pass leaves
          them alone (keys.cjs's inventory only collects CJK-bearing text). -->
-    <div class="panel set-panel">
+    <div class="panel set-panel" data-gate="1">
       <h2 id="ioTitle">—</h2>
       <h3 class="set-sub" id="ioExportTitle">—</h3>
       <div class="btn-row">

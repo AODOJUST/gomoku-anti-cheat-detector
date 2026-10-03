@@ -513,7 +513,33 @@
   // =====================================================================
   // nav
   // =====================================================================
+  // 1.0.1 §1.3 — the views §1.1 marks ❌ for an unactivated operator. `profile`/`account` are in the
+  // list because they belong to an ACCOUNT (§3.3), not because a nav button leads to them: §3.1
+  // removes 我的's tab and reaches both through the drawer, so the drawer is the only door — and a
+  // door into a room the operator may not enter is exactly what this list closes.
+  var GATED_VIEWS = ['replay', 'samples', 'blacklist', 'profile', 'account'];
+
+  /** The gate, in the one form this file asks it in. Sync, because `GMAuth.gateOpen()` is. */
+  function activationOpen() { return !!(GMAuth.gateOpen && GMAuth.gateOpen()); }
+
+  /** Whether the nav is allowed to route to `name` right now. */
+  function viewAllowed(name) {
+    // §6.3's 管理员 needs the activation gate AND the admin flag — two conditions, and the second is
+    // the only one §6.1 lets the client evaluate (for VISIBILITY, never for authorisation).
+    if (name === 'admin') return activationOpen() && !!(GMAdmin.isAdmin && GMAdmin.isAdmin());
+    if (GATED_VIEWS.indexOf(name) !== -1) return activationOpen();
+    return true;
+  }
+
   function showView(name, opts) {
+    // 1.0.1 §1.3 — 「用户点击被隐藏的功能入口（如「回放」）→ 弹出激活引导」. The refusal lives HERE,
+    // at the single door, rather than on each of the three nav buttons: a button that is hidden is
+    // not the only way in (the drawer, a stale handler, a restored scroll position and any future
+    // deep link all land in this function), and per-button guards would be three copies of one rule.
+    if (!viewAllowed(name)) {
+      if (GATED_VIEWS.indexOf(name) !== -1) openActivationGuide();
+      return;
+    }
     var btns = document.querySelectorAll('.navbtn');
     for (var i = 0; i < btns.length; i++) btns[i].classList.toggle('active', btns[i].dataset.view === name);
     document.querySelectorAll('.view').forEach(function (v) { v.classList.remove('active'); });
@@ -534,17 +560,36 @@
     // CREATES the offscreen document and loads a 40 MB engine. A repaint re-paints from the answer
     // already in hand instead of asking again.
     if (name === 'settings') renderSettings(opts && opts.repaint);
-    // 1.0.0 §5/§6 — the two account-aware tabs. 我的 is repainted from the memoised session (a pure
-    // function of state), so it costs nothing to redraw on every visit; 管理员's list is a network
-    // read, so it is fetched only until it has arrived once — `opts.repaint` (a language switch)
-    // must not fire another request, for the same reason the settings pane does not re-ask the
-    // offscreen document.
-    if (name === 'profile') { syncNavForAuth(); renderProfile(); }
+    // 1.0.0 §5/§6 — the account-aware tabs. 主页 is repainted from the memoised session (a pure
+    // function of state), so it costs nothing to redraw on every visit; 账号设置 draws from the same
+    // state but rebuilds a form, and 管理员's list is a network read, so it is fetched only until it
+    // has arrived once — `opts.repaint` (a language switch) must not fire another request, for the
+    // same reason the settings pane does not re-ask the offscreen document.
+    if (name === 'profile') { renderProfile(); }
+    if (name === 'account') { buildAccountPanel(); }
     if (name === 'admin') { renderAdmin(); if (!ADC.loaded) adminLoadUsers(1); }
   }
   document.querySelectorAll('.navbtn').forEach(function (b) {
     b.onclick = function () { showView(b.dataset.view); };
   });
+  // 1.0.1 §3.5 — the account area opens the drawer, anchored under the button it was clicked on.
+  //
+  // ⚠ `stopPropagation()` is REQUIRED here, and it is the same trap `showUserMenu` documents for its
+  // `.it` handlers. The drawer is built on `showCtx`, whose document-level 「clicked outside?」
+  // listener (`if (!ctx.contains(e.target)) closeCtx()`) runs on the SAME click that opened it: the
+  // chip is not inside `#ctx`, so without this guard the menu is populated and then wiped before the
+  // frame is even painted — the drawer opens and closes so fast that the panel looks like a button
+  // that does nothing. `openCardMenu` never hit this because it is opened from `contextmenu`, which
+  // the document `click` listener does not see.
+  if ($('navUser')) {
+    $('navUser').onclick = function (e) {
+      e.stopPropagation();
+      var r = e.currentTarget.getBoundingClientRect();
+      showUserMenu(r.left, r.bottom + 4);
+    };
+  }
+  // §3.4 — 「点击「激活」→ 打开激活界面」.
+  if ($('navActivate')) $('navActivate').onclick = function () { openActivationGuide(); };
 
   // ---- 0.3.6 §1.8: repaint on a language switch, without a reload ----
   // Three groups have to be redrawn: the static markup the implicit pass tagged, the detect
@@ -575,11 +620,13 @@
     // operator's export ticks survive, because buildIoPanel reads `ioChecked` instead of
     // resetting it.
     buildIoPanel();
-    // 1.0.0 §7.1 — the same rule again for the account/sync panel, and for the two account pages:
-    // every word in them is written by JS. `syncNavForAuth` is here as well as in the renderers
-    // because a language switch must not be able to leave a hidden tab looking available.
+    // 1.0.0 §7.1 — the same rule again for the account/sync panel, and for the account pages: every
+    // word in them is written by JS. 1.0.1's gate is here as well as in the renderers because a
+    // language switch must not be able to leave a gated tab looking available, and the drawer's
+    // label is built by JS too.
     buildCloudPanel();
-    syncNavForAuth();
+    buildAccountPanel();
+    applyActivationGate();
     renderProfile();
     renderAdmin();
     renderPrivacyLink();
@@ -3347,33 +3394,136 @@
     return k;
   }
 
+  /**
+   * Which view is ON SCREEN, as a name. Read from the `.view` element that is marked `active`
+   * rather than from `.navbtn.active`.
+   *
+   * ⚠ 1.0.1 is why this matters. 主页 and 账号设置 are reached through §3.2's drawer and have NO nav
+   * button at all, so a nav-button answer is not "the current view" once the operator has opened
+   * one: after `showView('profile')` every nav button is un-highlighted, and a nav-derived answer
+   * collapses to the 'detect' default. The one caller (`applyActivationGate`) uses this to decide
+   * whether the current view is still reachable, so a 'detect' answer there meant 「log out while
+   * reading 主页」 left the page rendering 主页 — the previous operator's name and sample count, from
+   * a session that had just been discarded — with no tab highlighted. Found by `behave-062-cloud`
+   * B8, which logs out from the drawer-only view for exactly this reason.
+   */
   function activeView() {
-    var b = document.querySelector('.navbtn.active');
-    return b ? b.dataset.view : 'detect';
+    var v = document.querySelector('.view.active');
+    return v && v.id.indexOf('view-') === 0 ? v.id.slice('view-'.length) : 'detect';
   }
 
   /**
-   * §5.1 「仅已激活用户可见」 / §6.3 「仅 `is_admin` 可见」.
+   * 1.0.1 §1.3 — the viewer's half of the activation gate, and the ONLY place the viewer applies it.
    *
-   * Two jobs, and the second one is the easy one to forget: when the tab we are STANDING on stops
-   * being visible (登出, 注销, or a revoked code that the boot-time renewal noticed), leaving it on
-   * screen produces a page no nav button points at. Moving to 检测 is the destination the nav
-   * itself would offer, so the two never disagree about where 「not here」 goes.
+   * Four surfaces, one predicate. §1.1's matrix and §1.3's sketch between them say:
+   *   · 回放 / 样本库 / 黑名单 tabs — 「不显示」 for an unactivated operator
+   *   · 设置页 — only 云账号与同步 / 新手教程 / 关于 (declared as `data-gate` in the markup)
+   *   · 管理员 — still needs BOTH §6.3's is_admin and the gate
+   *   · the header's right edge — the account area and the 「激活」 button are mutually exclusive
+   *
+   * Plus the job the 1.0.0 version of this function already had and the easy one to forget: when
+   * the view we are STANDING on stops being reachable (登出, 注销, or a revoked code the boot-time
+   * renewal noticed), leaving it on screen produces a page no nav button points at. Moving to 检测 is
+   * the destination the nav itself would offer, so the two never disagree about where 「not here」
+   * goes.
+   *
+   * `viewAllowed()` is asked for every one of those decisions rather than `activationOpen()` being
+   * re-evaluated per surface, because `admin` is the one view with two conditions and writing them
+   * twice is how a tab ends up visible to a non-admin.
    */
-  function syncNavForAuth() {
+  function applyActivationGate() {
     // ⚠ Bare globals, NOT `g.GMCloud`/`g.GMAuth`. `viewer.js` is a plain IIFE with no `g`
     // parameter (unlike the modules, which all start `(function (g) {`), so `g.GMAuth` is a
     // ReferenceError — and it is one that does not surface as a page error, because `boot()` ends
     // with an awaited `cloudBoot()` whose rejection nobody catches: the cloud half simply never
     // painted and the page looked fine. Found by behave-062-cloud, which asserts on
     // `unhandledrejection` precisely so this class of failure cannot hide as "the panel is empty".
-    var on = !!(GMAuth.isActivated && GMAuth.isActivated());
-    var adm = !!(GMAdmin.isAdmin && GMAdmin.isAdmin());
-    if ($('navProfile')) $('navProfile').classList.toggle('hidden', !on);
-    if ($('navAdmin')) $('navAdmin').classList.toggle('hidden', !adm);
+    if ($('navReplay')) $('navReplay').classList.toggle('hidden', !viewAllowed('replay'));
+    if ($('navSamples')) $('navSamples').classList.toggle('hidden', !viewAllowed('samples'));
+    if ($('navBlacklist')) $('navBlacklist').classList.toggle('hidden', !viewAllowed('blacklist'));
+    // §1.3 — 「其他设置面板（检测、引擎、透明度、导入导出、回放过滤、存储过滤、背景）全部隐藏」.
+    // Read off the markup so the two lists cannot drift; see viewer.html for why the flag lives there.
+    Array.prototype.forEach.call(document.querySelectorAll('.set-panel[data-gate]'), function (p) {
+      p.classList.toggle('hidden', !activationOpen());
+    });
+    if ($('navAdmin')) $('navAdmin').classList.toggle('hidden', !viewAllowed('admin'));
+    // §3.1 vs §3.4 — one of the two is shown, never both, and never neither…
+    //
+    // …EXCEPT on a build with no backend, where it is neither. §3.4's 「激活」 button is an offer to
+    // open a door that a configured server has bolted shut; with no server there is no bolt and no
+    // key issuer, so the offer cannot be honoured, and the alternative — an account chip reading
+    // 「—」 for an account that cannot exist — is a worse lie. `GMCloud.isConfigured()` is the same
+    // predicate `GMAuth.gateOpen()` uses, which is why 「没有门的房间」 shows no door furniture at all.
+    var configured = !!(window.GMCloud && window.GMCloud.isConfigured && window.GMCloud.isConfigured());
+    if ($('navUser')) $('navUser').classList.toggle('hidden', !(configured && activationOpen()));
+    if ($('navActivate')) $('navActivate').classList.toggle('hidden', !(configured && !activationOpen()));
+    renderNavUser();
+
     var v = activeView();
-    if ((v === 'profile' && !on) || (v === 'admin' && !adm)) showView('detect');
+    if (!viewAllowed(v)) showView('detect');
   }
+
+  /**
+   * §3.5's `renderNavUser()`. The avatar falls back to the name's initial rather than to a
+   * `default-avatar.svg` asset: 1.0.0 has no such file, and a broken `<img>` in the sticky header is
+   * worse than a letter. Same fallback, same reason, as `renderProfile`'s `#pfAvatar`.
+   */
+  function renderNavUser() {
+    var st = GMAuth.status();
+    var u = st.user || {};
+    var name = u.username || u.email || '—';
+    if ($('navName')) $('navName').textContent = name;
+    var av = $('navAvatar');
+    if (av) {
+      if (u.avatar_url) av.innerHTML = '<img alt="" src="' + esc(u.avatar_url) + '">';
+      else av.textContent = name.slice(0, 1).toUpperCase();
+    }
+    if ($('navActivate')) $('navActivate').textContent = T('viewer|激活');
+  }
+
+  /**
+   * §3.2's drawer. Built with `showCtx` — the same popup the replay list's right-click menu uses —
+   * because it is the same control: a transient panel anchored to the click that opened it, with
+   * the same outside-click / Escape / blur dismissal. A second popup implementation would be the
+   * sixth time this project paid for one answer living in two places.
+   *
+   * ⚠ Every `.it` handler must `stopPropagation()`. `ctx.innerHTML` is replaced by the handler, so
+   * by the time the document-level 「clicked outside?」 listener runs, `ctx.contains(target)` is
+   * already false and the menu would be wiped the instant it appeared — the same trap
+   * `openCardMenu` documents.
+   */
+  function showUserMenu(x, y) {
+    var u = (GMAuth.status().user) || {};
+    var name = u.username || u.email || '—';
+    var avHtml = u.avatar_url
+      ? '<img alt="" src="' + esc(u.avatar_url) + '">'
+      : esc(name.slice(0, 1).toUpperCase());
+    showCtx(
+      '<div class="user-card">' +
+        '<span class="user-avatar-lg">' + avHtml + '</span>' +
+        '<span style="min-width:0">' +
+          '<span class="user-name" style="display:block">' + esc(name) + '</span>' +
+          '<span class="user-email" style="display:block">' + esc(u.email || '') + '</span>' +
+        '</span>' +
+      '</div>' +
+      '<div class="sep"></div>' +
+      '<div class="it" data-u="profile">' + T('viewer|主页') + '</div>' +
+      '<div class="it" data-u="account">' + T('viewer|账号设置') + '</div>' +
+      '<div class="sep"></div>' +
+      '<div class="it danger" data-u="logout">' + T('viewer|退出登录') + '</div>',
+      x, y);
+    ctx.querySelectorAll('[data-u]').forEach(function (it) {
+      it.onclick = function (e) {
+        e.stopPropagation();               // we are about to replace ctx.innerHTML
+        var a = it.dataset.u;
+        closeCtx();
+        if (a === 'profile') showView('profile');
+        else if (a === 'account') showView('account');
+        else if (a === 'logout') doLogout();
+      };
+    });
+  }
+
 
   // §3.4's four states plus 「no backend at all」, as words. The unconfigured case is first because
   // it is not a state of the ACCOUNT — it is the absence of a server, and saying 「未激活」 would
@@ -3388,7 +3538,8 @@
   }
 
   // §3.2's error vocabulary, as sentences. The codes are the Edge Functions' own and are stable;
-  // the words are what the operator acts on.
+  // the words are what the operator acts on. 1.0.1 adds the registration/login set (§2.3/§2.6) —
+  // kept in THIS one function so the two steps of one flow cannot word the same failure differently.
   function cloudErrText(err) {
     if (err === 'BAD_FORMAT') return T('viewer|激活码格式形如 BS-XXXX-XXXX-XXXX-XXXX');
     if (err === 'INVALID_CODE') return T('viewer|激活码无效');
@@ -3396,8 +3547,22 @@
     if (err === 'CODE_ALREADY_USED') return T('viewer|激活码已被其他账户使用');
     if (err === 'BANNED') return T('viewer|本账户已被封禁');
     if (err === 'DEVICE_LIMIT') return T('viewer|已达设备数上限（{n} 台）', { n: GMAuth.DEVICE_LIMIT });
+    // ---- 1.0.1 §2.3 的字段与唯一性 ----
+    if (err === 'BAD_USERNAME') return T('reg|用户名需 2–20 个字符且不含空格');
+    if (err === 'BAD_EMAIL') return T('reg|邮箱格式不正确');
+    if (err === 'WEAK_PASSWORD') return T('reg|密码至少 8 位，且需同时包含字母和数字');
+    if (err === 'PASSWORD_MISMATCH') return T('reg|两次输入的密码不一致');
+    if (err === 'BAD_EMAIL_CODE') return T('reg|验证码为 6 位数字');
+    if (err === 'INVALID_EMAIL_CODE') return T('reg|验证码错误或已过期');
+    if (err === 'EMAIL_TAKEN') return T('reg|该邮箱已被注册');
+    if (err === 'USERNAME_TAKEN') return T('reg|该用户名已被占用');
+    if (err === 'RATE_LIMITED') return T('reg|发送过于频繁，请 60 秒后再试');
+    // ---- 1.0.1 §2.6 登录 ----
+    if (err === 'BAD_CREDENTIALS') return T('reg|邮箱或密码不正确');
+    if (err === 'NOT_FOUND') return T('viewer|激活码无效');
     return T('viewer|网络错误，请稍后重试');
   }
+
 
   function fmtDateTime(ms) {
     if (!ms) return '—';
@@ -3423,20 +3588,22 @@
       // succeed is worse than no form.
       h += '<div class="hint">' + esc(T('viewer|云端未配置（纯本地模式）')) + '</div>';
     } else if (!st.user) {
-      h += '<div class="btn-row" style="margin-top:10px;line-height:2.2">' +
-        '<input type="text" id="clCode" placeholder="' + esc(T('viewer|输入激活码')) + '" style="width:260px">' +
+      // 1.0.1 §二 — 「激活」 opens the TWO-STEP flow (§1.3's modal) instead of calling
+      // `auth-activate` directly. The code must first be VALIDATED and only then exchanged for a
+      // registration (§2.1), so an inline box that did both in one press would be a second
+      // implementation of the flow — and the one that skips §2.2's reason vocabulary.
+      h += '<div class="hint" style="margin-top:10px">' +
+        esc(T('viewer|输入激活码解锁完整功能。如果你还没有激活码，请联系管理员。')) + '</div>' +
+        '<div class="btn-row" style="margin-top:10px;line-height:2.2">' +
         '<button id="clActivate">' + esc(T('viewer|激活')) + '</button>' +
+        '<button class="sec" id="clLogin">' + esc(T('reg|已有账户？点此登录')) + '</button>' +
         '</div>' +
-        '<div class="hint" style="margin-top:6px">' + esc(T('viewer|激活码格式形如 BS-XXXX-XXXX-XXXX-XXXX')) + '</div>' +
-        '<div class="hint" id="clMsg" style="margin-top:6px"></div>' +
-        // §9.2 「明确同意：首次激活时勾选『我同意隐私政策』」. The checkbox is required, not
-        // pre-ticked: a consent box that arrives already ticked is not consent.
-        '<label class="hint" style="display:flex;align-items:center;gap:8px;margin-top:8px">' +
-        '<input type="checkbox" id="clAgree" style="flex:0 0 auto;width:auto;min-width:0;margin:0">' +
-        '<span>' + esc(T('viewer|我同意隐私政策')) + '</span></label>';
+        '<div class="hint" id="clMsg" style="margin-top:6px"></div>';
     } else {
-      h += '<div class="hint" style="margin-top:10px">' + esc(st.user.username || st.user.email || '—') +
-        ' · ' + esc(cloudStateText(st)) + '</div>';
+      h += '<div class="rowline" style="margin-top:10px">' +
+        '<span class="em">' + esc(st.user.username || st.user.email || '—') + ' · ' +
+        esc(cloudStateText(st)) + '</span>' +
+        '<button class="sec" id="clAccount">' + esc(T('viewer|账号设置')) + '</button></div>';
     }
 
     // The sync half is only meaningful once there is an account to sync (§7.1: 「用户主动开启」).
@@ -3493,34 +3660,10 @@
    * function has to be WIRED by one, and the wiring goes in the same place as the markup.**
    */
   function wireCloudPanel() {
-    var go = $('clActivate');
-    var agree = $('clAgree');
-    var code = $('clCode');
-    if (go) {
-      go.onclick = async function () {
-        var msg = $('clMsg');
-        // §9.2 「明确同意：首次激活时勾选『我同意隐私政策』」. A gate that fails SILENTLY is not
-        // consent — from the operator's side it is a button that looks broken — so the refusal is
-        // printed where they are looking rather than swallowed.
-        if (agree && !agree.checked) {
-          if (msg) msg.textContent = T('viewer|请先勾选同意隐私政策');
-          return;
-        }
-        go.disabled = true;
-        if (msg) msg.textContent = T('viewer|正在激活…');
-        var res = await GMAuth.activate(code ? code.value : '');
-        go.disabled = false;
-        if (!res.ok) {
-          if (msg) msg.textContent = cloudErrText(res.error);
-          return;
-        }
-        if (msg) msg.textContent = '';
-        afterAuthChange();
-      };
-    }
-    if (code && go) {
-      code.onkeydown = function (e) { if (e.key === 'Enter') go.click(); };
-    }
+    // 1.0.1 §二 — both doors lead into the flow, not into a bare `GMAuth.activate()`.
+    if ($('clActivate')) $('clActivate').onclick = function () { openActivationGuide(); };
+    if ($('clLogin')) $('clLogin').onclick = function () { openLoginFlow(); };
+    if ($('clAccount')) $('clAccount').onclick = function () { showView('account'); };
     // §7.1's switch. Retoggling rebuilds the panel because the eight category rows and the
     // 「立即同步」 row only exist while sync is on — drawing them disabled would be a second
     // rendering of the same rule.
@@ -3577,22 +3720,20 @@
   }
 
   // ---------------------------------------------------------------------
-  // 我的 (§5.1)
+  // 主页 (§3.3, READ-ONLY)
   // ---------------------------------------------------------------------
+  // §3.3's table gives 主页 exactly four things (头像 / 用户名 / 加入时间 / 样本库总数) plus the
+  // 预留接口 block, and marks the page **只读**. That is why there is no button anywhere in this
+  // function: everything an operator can change about themselves lives one page over, in 账号设置,
+  // and a second editable copy of a field is how two pages start disagreeing about it.
   function renderProfile() {
     var st = GMAuth.status();
-    if ($('pfResvTitle')) $('pfResvTitle').textContent = T('viewer|即将推出');
-    if ($('pfSyncTitle')) $('pfSyncTitle').textContent = T('viewer|云同步');
-    if ($('pfDevTitle')) $('pfDevTitle').textContent = T('viewer|设备');
-    if ($('pfDangerTitle')) $('pfDangerTitle').textContent = T('viewer|注销账户');
-    if ($('pfEdit')) $('pfEdit').textContent = T('viewer|编辑资料');
-    if ($('pfLogout')) $('pfLogout').textContent = T('viewer|退出登录');
-
     var u = st.user || {};
     var name = u.username || u.email || '—';
     if ($('pfName')) $('pfName').textContent = name;
-    // Avatar: §4.4 stores a URL, but the shipped state has none, so the letter is the fallback that
-    // keeps the header from collapsing to a hole.
+    // §4.4 stores a URL, but the shipped state has none, so the letter is the fallback that keeps
+    // the header from collapsing to a hole. `renderNavUser` uses the same fallback for the same
+    // reason — there is no `default-avatar.svg` asset to point at.
     var av = $('pfAvatar');
     if (av) {
       if (u.avatar_url) av.innerHTML = '<img alt="" src="' + esc(u.avatar_url) + '">';
@@ -3610,6 +3751,7 @@
 
     // §5.1's 「─── 预留接口 ───」 block, drawn from §5.2's four accessors. They resolve to empty
     // today and the panel says so, which is the whole point: 「未来实现时只需替换数据源」.
+    if ($('pfResvTitle')) $('pfResvTitle').textContent = T('viewer|即将推出');
     var resv = $('pfResv');
     if (resv) {
       var items = [T('viewer|徽章'), T('viewer|成就'), T('viewer|判断正确率'), T('viewer|好友')];
@@ -3617,37 +3759,6 @@
         return '<span class="resv-item">' + esc(t) + '</span>';
       }).join('');
     }
-
-    var sync = $('pfSyncBody');
-    if (sync) {
-      sync.innerHTML = '<div class="hint">' +
-        esc(S.cloud.syncEnabled ? syncStateText(S.cloud) : T('viewer|从未同步')) + '</div>' +
-        '<div class="btn-row" style="margin-top:8px"><button class="sec" id="pfSyncGo">' +
-        esc(T('viewer|云同步')) + '</button></div>';
-    }
-
-    var dev = $('pfDev');
-    if (dev) {
-      // §7.5 「一个用户最多 3 台活跃设备」 + 「设备列表在用户主页显示，可手动登出某台设备」. The list
-      // itself comes from the server; until a profile load has run there is one row — this machine —
-      // which is the only device the client can name for certain.
-      dev.innerHTML = PFC.devices.map(function (d) {
-        return '<div class="rowline"><span class="em">' + esc(d.label || d.device_id || '—') + '</span>' +
-          (d.current ? '<span class="hint">' + esc(T('viewer|本机')) + '</span>' : '') +
-          '</div>';
-      }).join('') +
-        '<div class="hint" style="margin-top:8px">' +
-        esc(T('viewer|已达设备数上限（{n} 台）', { n: GMAuth.DEVICE_LIMIT })) + '</div>';
-    }
-
-    var danger = $('pfDanger');
-    if (danger) {
-      danger.innerHTML = '<div class="hint">' + esc(T('viewer|注销后 30 天内数据仍可恢复，30 天后彻底删除')) +
-        '<br>' + esc(T('viewer|本地数据保留，云端数据将删除')) + '</div>' +
-        '<div class="btn-row" style="margin-top:10px"><button class="sec" id="pfDelete">' +
-        esc(T('viewer|注销账户')) + '</button></div>';
-    }
-    wireProfile();
   }
 
   // The 我的 page's async half. `§5.3`: 「全部通过 Edge Function `profile-get` 一次拉取」.
@@ -3665,41 +3776,202 @@
     renderProfile();
   }
 
-  function wireProfile() {
-    if ($('pfLogout')) $('pfLogout').onclick = async function () {
-      await GMAuth.logout();
-      afterAuthChange();
-    };
-    if ($('pfEdit')) $('pfEdit').onclick = openProfileEditor;
-    if ($('pfSyncGo')) $('pfSyncGo').onclick = function () { showView('settings'); };
-    if ($('pfDelete')) $('pfDelete').onclick = openDeleteAccount;
+  // ---------------------------------------------------------------------
+  // 账号设置 (§3.3 EDITABLE / §3.7 / §3.8)
+  // ---------------------------------------------------------------------
+  // §3.3's other half: everything about the account that CAN be changed. Built by a function and
+  // wired by the function right after it — the rule 1.0.0 paid for when `buildCloudPanel` drew a
+  // complete-looking form and connected none of it.
+  function acMsg(text) {
+    var el = $('acMsg');
+    if (el) el.textContent = text || '';
   }
 
-  function openProfileEditor() {
+  function buildAccountPanel() {
+    var body = $('acBody');
+    if (!body) return;
+    if ($('acTitle')) $('acTitle').textContent = T('viewer|账号设置');
     var u = (GMAuth.status().user) || {};
-    var h = '<div class="rowline"><span>' + esc(T('viewer|用户名')) + '</span>' +
-      '<input type="text" id="peName" style="flex:1" value="' + esc(u.username || '') + '"></div>' +
-      '<div class="rowline"><span>' + esc(T('viewer|简介')) + '</span>' +
-      '<input type="text" id="peBio" style="flex:1" value="' + esc(u.bio || '') + '"></div>' +
-      '<div class="rowline"><span>' + esc(T('viewer|头像')) + '</span>' +
-      '<input type="file" id="peFile" accept="image/jpeg,image/png,image/webp">' +
-      '<span class="hint" id="peAvHint">' + esc(T('viewer|选择图片')) + '</span></div>' +
-      '<div class="hint" id="peErr" style="margin-top:8px"></div>';
-    openModal(T('viewer|编辑资料'), h, function (bd) {
-      // §4.4's client-side gate runs HERE, before the file is read: 2MB / jpg-png-webp, and the
-      // compression is 256×256 JPEG. Nothing is uploaded by this dialog — it only stages the blob.
-      var f = bd.querySelector('#peFile');
-      if (f) f.addEventListener('change', function (ev) {
-        var file = ev.target.files && ev.target.files[0];
-        if (!file) return;
-        var v = GMProfile.validateAvatar(file);
-        bd.querySelector('#peAvHint').textContent = v.ok ? file.name : cloudErrText(v.error);
-      });
+    var name = u.username || u.email || '—';
+    var av = u.avatar_url
+      ? '<img alt="" src="' + esc(u.avatar_url) + '">'
+      : esc(name.slice(0, 1).toUpperCase());
+
+    var h = '';
+    // ---- 资料 (§3.3「用户名、简介、头像」) ----
+    h += '<div class="rowline"><span>' + esc(T('viewer|用户名')) + '</span>' +
+      '<input type="text" id="acName" style="flex:1" value="' + esc(u.username || '') + '">' +
+      '<button class="sec" id="acNameSave">' + esc(T('viewer|保存')) + '</button></div>';
+    h += '<div class="rowline"><span>' + esc(T('viewer|简介')) + '</span>' +
+      '<input type="text" id="acBio" style="flex:1" value="' + esc(u.bio || '') + '">' +
+      '<button class="sec" id="acBioSave">' + esc(T('viewer|保存')) + '</button></div>';
+    // The file input stays in the DOM and is `display:none`; a file input that is not in the
+    // document cannot be clicked on some builds (same note as 导入与导出's `#ioFile`).
+    h += '<div class="rowline"><span>' + esc(T('viewer|头像')) + '</span>' +
+      '<span class="acct-av" style="width:40px;height:40px;font-size:14px">' + av + '</span>' +
+      '<input type="file" id="acAvatar" accept="image/jpeg,image/png,image/webp" style="display:none">' +
+      '<button class="sec" id="acAvatarPick">' + esc(T('viewer|更换')) + '</button>' +
+      '<span class="hint" id="acAvatarHint"></span></div>';
+
+    // ---- 邮箱与密码 (§3.7 / §3.8) ----
+    h += '<h3 class="set-sub">' + esc(T('viewer|邮箱与密码')) + '</h3>';
+    h += '<div class="rowline"><span>' + esc(T('viewer|邮箱')) + '</span>' +
+      '<span class="em">' + esc(u.email || '—') + '</span>' +
+      '<button class="sec" id="acEmail">' + esc(T('viewer|更换')) + '</button></div>';
+    h += '<div class="rowline"><span>' + esc(T('viewer|密码')) + '</span><span class="em"></span>' +
+      '<button class="sec" id="acPw">' + esc(T('viewer|修改密码')) + '</button></div>';
+
+    // ---- 设备 ----
+    // 1.0.0 §7.5 puts the device list 「在用户主页」 and adds 「可手动登出某台设备」. 1.0.1 §3.3 makes
+    // 主页 只读, and an action is not read-only — so the list moved here, next to the other things an
+    // operator can change, rather than being dropped or left on a page that may not offer buttons.
+    h += '<h3 class="set-sub">' + esc(T('viewer|设备')) + '</h3><div id="acDev"></div>';
+
+    // ---- 危险操作 (§4.2) ----
+    h += '<h3 class="set-sub">' + esc(T('viewer|危险操作')) + '</h3>' +
+      '<div class="hint">' + esc(T('viewer|注销后 30 天内数据仍可恢复，30 天后彻底删除')) +
+      '<br>' + esc(T('viewer|本地数据保留，云端数据将删除')) + '</div>' +
+      '<div class="btn-row" style="margin-top:10px"><button class="sec danger" id="acDelete">' +
+      esc(T('viewer|注销账户')) + '</button></div>';
+    h += '<div class="hint" id="acMsg" style="margin-top:12px"></div>';
+
+    body.innerHTML = h;
+
+    var dev = $('acDev');
+    if (dev) {
+      // §7.5 「一个用户最多 3 台活跃设备」. The list itself comes from the server; until a profile
+      // load has run there is one row — this machine — which is the only device the client can name
+      // for certain.
+      dev.innerHTML = PFC.devices.map(function (d) {
+        return '<div class="rowline"><span class="em">' + esc(d.label || d.device_id || '—') + '</span>' +
+          (d.current ? '<span class="hint">' + esc(T('viewer|本机')) + '</span>' : '') + '</div>';
+      }).join('') + '<div class="hint" style="margin-top:8px">' +
+        esc(T('viewer|已达设备数上限（{n} 台）', { n: GMAuth.DEVICE_LIMIT })) + '</div>';
+    }
+    wireAccountPanel();
+  }
+
+  function wireAccountPanel() {
+    if ($('acNameSave')) $('acNameSave').onclick = async function () {
+      var v = String(($('acName') || {}).value || '').trim();
+      // §2.3's username rule is the same one registration enforces; asking it here is what keeps a
+      // rename from being the one door that accepts a 21-character name.
+      if (!GMAuth.isValidUsername(v)) { acMsg(cloudErrText('BAD_USERNAME')); return; }
+      var r = await GMProfile.updateProfile({ username: v });
+      if (!r.ok) { acMsg(cloudErrText(r.error)); return; }
+      acMsg(T('viewer|已保存'));
+      renderNavUser();
+      renderProfile();
+      // The cached session now carries the new name, so the field is rebuilt from the truth rather
+      // than left showing what was typed.
+      $('acName').value = v;
+    };
+    if ($('acBioSave')) $('acBioSave').onclick = async function () {
+      var v = String(($('acBio') || {}).value || '');
+      var r = await GMProfile.updateProfile({ bio: v });
+      acMsg(r.ok ? T('viewer|已保存') : cloudErrText(r.error));
+      if (r.ok) renderProfile();
+    };
+    var pick = $('acAvatarPick');
+    var file = $('acAvatar');
+    if (pick && file) {
+      pick.onclick = function () { file.click(); };
+      file.onchange = async function () {
+        var f = file.files && file.files[0];
+        if (!f) return;
+        // §4.4's client-side gate runs BEFORE the file is read: 2MB / jpg-png-webp, then 256×256.
+        var v = GMProfile.validateAvatar(f);
+        if (!v.ok) { if ($('acAvatarHint')) $('acAvatarHint').textContent = cloudErrText(v.error); return; }
+        if ($('acAvatarHint')) $('acAvatarHint').textContent = T('viewer|正在上传…');
+        var r = await GMProfile.uploadAvatar(f);
+        if (!r.ok) {
+          if ($('acAvatarHint')) $('acAvatarHint').textContent = cloudErrText(r.error);
+          return;
+        }
+        buildAccountPanel();
+        renderNavUser();
+        renderProfile();
+        acMsg(T('viewer|已保存'));
+      };
+    }
+    if ($('acEmail')) $('acEmail').onclick = openChangeEmail;
+    if ($('acPw')) $('acPw').onclick = openChangePassword;
+    if ($('acDelete')) $('acDelete').onclick = openDeleteAccount;
+  }
+
+  // §3.7 修改密码
+  function openChangePassword() {
+    var h = '<div class="rowline"><span>' + esc(T('viewer|当前密码')) + '</span>' +
+      '<input type="password" id="cpNow" style="flex:1"></div>' +
+      '<div class="rowline"><span>' + esc(T('viewer|新密码')) + '</span>' +
+      '<input type="password" id="cpNew" style="flex:1">' +
+      '<span class="pwbar" id="cpBar"></span></div>' +
+      '<div class="rowline"><span>' + esc(T('viewer|确认新密码')) + '</span>' +
+      '<input type="password" id="cpNew2" style="flex:1"></div>' +
+      '<div class="hint" id="cpErr" style="margin-top:8px"></div>';
+    openModal(T('viewer|修改密码'), h, function (bd) {
+      // §2.3's strength bar, the same predicate registration uses — a password strong enough to
+      // register with must not be rejected here.
+      var bar = bd.querySelector('#cpBar');
+      var paint = function () { paintStrengthBar(bar, GMAuth.passwordStrength(bd.querySelector('#cpNew').value)); };
+      bd.querySelector('#cpNew').addEventListener('input', paint);
+      paint();
+      var go = document.createElement('button');
+      go.textContent = T('viewer|修改密码');
+      go.onclick = async function () {
+        var p1 = bd.querySelector('#cpNew').value;
+        var p2 = bd.querySelector('#cpNew2').value;
+        var err = bd.querySelector('#cpErr');
+        if (p1 !== p2) { err.textContent = cloudErrText('PASSWORD_MISMATCH'); return; }
+        go.disabled = true;
+        var r = await GMProfile.changePassword(bd.querySelector('#cpNow').value, p1);
+        go.disabled = false;
+        if (!r.ok) { err.textContent = cloudErrText(r.error); return; }
+        // §3.7 「提示『密码已修改，请重新登录』」. The server revokes every device's token, so the
+        // session this page holds is already dead — saying so and taking them to the login screen is
+        // the only honest ending.
+        closeAllModals();
+        afterAuthChange();
+        openLoginFlow(T('viewer|密码已修改，请重新登录'));
+      };
+      var ft = bd.closest('.modal').querySelector('.ft');
+      ft.insertBefore(go, ft.querySelector('[data-close]'));
     });
   }
 
+  // §3.8 修改邮箱
+  function openChangeEmail() {
+    var u = (GMAuth.status().user) || {};
+    var h = '<div class="rowline"><span>' + esc(T('viewer|新邮箱')) + '</span>' +
+      '<input type="text" id="ceEmail" style="flex:1"></div>' +
+      '<div class="rowline"><span>' + esc(T('viewer|验证码')) + '</span>' +
+      '<input type="text" id="ceCode" style="flex:1" maxlength="6">' +
+      '<button class="sec" id="ceSend">' + esc(T('viewer|发送验证码')) + '</button></div>' +
+      '<div class="rowline"><span>' + esc(T('viewer|当前密码')) + '</span>' +
+      '<input type="password" id="cePw" style="flex:1"></div>' +
+      '<div class="hint" id="ceErr" style="margin-top:8px"></div>';
+    openModal(T('viewer|更换邮箱'), h, function (bd) {
+      wireSendCode(bd, bd.querySelector('#ceEmail'), bd.querySelector('#ceSend'), bd.querySelector('#ceErr'));
+      var go = document.createElement('button');
+      go.textContent = T('viewer|更换邮箱');
+      go.onclick = async function () {
+        var err = bd.querySelector('#ceErr');
+        go.disabled = true;
+        var r = await GMProfile.changeEmail(
+          bd.querySelector('#ceEmail').value, bd.querySelector('#ceCode').value, bd.querySelector('#cePw').value);
+        go.disabled = false;
+        if (!r.ok) { err.textContent = cloudErrText(r.error); return; }
+        closeAllModals();
+        afterAuthChange();
+        GmToast.show(T('viewer|邮箱已修改'), 'info');
+      };
+      var ft = bd.closest('.modal').querySelector('.ft');
+      ft.insertBefore(go, ft.querySelector('[data-close]'));
+    });
+  }
+
+  /** §4.2's 注销账户. The modal itself is the 「二次确认」; the code box is 「输入激活码或邮箱验证」. */
   function openDeleteAccount() {
-    // §4.2's 「二次确认」 is the modal itself; the code box is the 「输入激活码或邮箱验证」 step.
     var h = '<div class="hint">' + esc(T('viewer|注销后 30 天内数据仍可恢复，30 天后彻底删除')) + '</div>' +
       '<div class="hint" style="margin-top:6px">' + esc(T('viewer|本地数据保留，云端数据将删除')) + '</div>' +
       '<div class="rowline" style="margin-top:10px"><span>' + esc(T('viewer|激活码')) + '</span>' +
@@ -3725,6 +3997,12 @@
       var daFt = bd.closest('.modal').querySelector('.ft');
       daFt.insertBefore(btn, daFt.querySelector('[data-close]'));
     });
+  }
+
+  /** The drawer's 退出登录. One function so the drawer and the account page cannot diverge. */
+  async function doLogout() {
+    await GMAuth.logout();
+    afterAuthChange();
   }
 
   // ---------------------------------------------------------------------
@@ -3827,54 +4105,304 @@
   }
 
   // ---------------------------------------------------------------------
-  // 激活引导 (§1.2) 与状态联动
+  // 激活 / 注册 / 登录 (§1.3, §2.2, §2.3, §2.6)
   // ---------------------------------------------------------------------
-  function openActivateGuide() {
-    // §1.2: 「首次启动弹出引导：『激活码解锁云功能，核心检测仍然免费』」 and 「用户可选择『暂不激活，
-    // 继续本地使用』」. The two buttons are the two answers that sentence offers.
-    var h = '<div class="hint">' + esc(T('viewer|激活码解锁云功能，核心检测仍然免费')) + '</div>' +
-      '<div class="btn-row" style="margin-top:12px;line-height:2.2">' +
-      '<input type="text" id="agCode" placeholder="' + esc(T('viewer|输入激活码')) + '" style="width:260px">' +
-      '<button id="agGo">' + esc(T('viewer|激活')) + '</button></div>' +
+  // ONE flow, three doors: the header's 「激活」 button, the 云账户与同步 panel's button, and
+  // `showView`'s refusal when a gated entry is clicked. All three land in `openActivationGuide`.
+
+  /** §2.3's 强度条 — three segments, filled by band. A BAR rather than coloured text, so the
+   *  indicator reads the same in the light and dark themes. */
+  function paintStrengthBar(el, strength) {
+    if (!el) return;
+    var n = strength === 'strong' ? 3 : strength === 'medium' ? 2 : 1;
+    el.className = 'pwbar s' + n;
+    el.innerHTML = '<i></i><i></i><i></i>';
+    el.title = n === 3 ? T('reg|强') : n === 2 ? T('reg|中') : T('reg|弱');
+  }
+
+  /** Trailing-edge debounce. §2.3's 「实时检查唯一」 means 「while typing」, not 「per keystroke」. */
+  function debounce(fn, ms) {
+    var t = null;
+    return function () {
+      var self = this, args = arguments;
+      clearTimeout(t);
+      t = setTimeout(function () { fn.apply(self, args); }, ms);
+    };
+  }
+
+  /**
+   * §2.4's 发送验证码, ONE implementation shared by 注册 / 更换邮箱 / 忘记密码.
+   *
+   * The 60-second countdown is §2.4's server-side 「同一邮箱 60 秒内只能发一次」 mirrored onto the
+   * button: the server is still the authority, and this only stops the operator spending the next
+   * minute discovering that.
+   */
+  function wireSendCode(emailInput, btn, msgEl) {
+    if (!btn) return;
+    var left = 0, timer = null;
+    var tick = function () {
+      if (left <= 0) {
+        if (timer) { clearInterval(timer); timer = null; }
+        btn.disabled = false;
+        btn.textContent = T('reg|发送验证码');
+        return;
+      }
+      btn.textContent = T('reg|发送验证码') + ' · ' + left;
+      left--;
+    };
+    btn.onclick = async function () {
+      var email = emailInput ? emailInput.value : '';
+      if (!GMAuth.isValidEmail(email)) {
+        if (msgEl) msgEl.textContent = cloudErrText('BAD_EMAIL');
+        return;
+      }
+      btn.disabled = true;
+      btn.textContent = T('reg|正在发送…');
+      var r = await GMAuth.sendCode(email);
+      if (!r.ok) {
+        btn.disabled = false;
+        btn.textContent = T('reg|发送验证码');
+        if (msgEl) msgEl.textContent = cloudErrText(r.error);
+        return;
+      }
+      if (msgEl) msgEl.textContent = T('reg|验证码已发送，10 分钟内有效');
+      left = 60;
+      tick();
+      timer = setInterval(tick, 1000);
+    };
+  }
+
+  /** §1.3's 「此功能需要激活」 modal — 第一步 by another name. */
+  function openActivationGuide() {
+    var h = '<div class="hint">' +
+      esc(T('viewer|输入激活码解锁完整功能。如果你还没有激活码，请联系管理员。')) + '</div>' +
+      // 1.0.0 answered 「暂不激活」 with a button labelled 「暂不激活，继续本地使用」. 1.0.1 §1.3's
+      // mock has a shorter 「暂不」, and ONE modal serves both the boot guide and the locked-entry
+      // guide — so the reassurance moves into the body, where it is also visible to somebody who
+      // arrived here by clicking a locked tab and never saw the boot version. Same promise, said
+      // once, in the place both audiences read.
+      '<div class="hint" style="margin-top:4px">' +
+      esc(T('viewer|不激活也可以继续使用本地检测与存档。')) + '</div>' +
+      '<div class="rowline" style="margin-top:12px"><span>' + esc(T('viewer|激活码')) + '</span>' +
+      '<input type="text" id="agCode" style="flex:1" placeholder="' + esc(T('viewer|输入激活码')) + '"></div>' +
       '<div class="hint" style="margin-top:6px">' + esc(T('viewer|激活码格式形如 BS-XXXX-XXXX-XXXX-XXXX')) + '</div>' +
-      '<label class="hint" style="display:flex;align-items:center;gap:8px;margin-top:10px">' +
-      '<input type="checkbox" id="agAgree" style="flex:0 0 auto;width:auto;min-width:0;margin:0">' +
-      '<span>' + esc(T('viewer|我同意隐私政策')) + '</span></label>';
-    openModal(T('viewer|云账户与同步'), h, function (bd) {
+      '<div class="hint" id="agErr" style="margin-top:6px"></div>' +
+      '<div class="hint" style="margin-top:10px">' +
+      '<a href="#" id="agLogin">' + esc(T('reg|已有账户？点此登录')) + '</a></div>';
+    openModal(T('viewer|此功能需要激活'), h, function (bd) {
+      var err = bd.querySelector('#agErr');
+      var codeIn = bd.querySelector('#agCode');
+      var go = document.createElement('button');
+      go.textContent = T('viewer|验证');
+      go.onclick = async function () {
+        go.disabled = true;
+        err.textContent = T('viewer|正在验证…');
+        // §2.2 第一步. A query — the guide stays open on failure so the operator can fix a typo
+        // without retyping the whole code.
+        var r = await GMAuth.validateCode(codeIn.value);
+        go.disabled = false;
+        if (!r.ok) { err.textContent = cloudErrText(r.error); return; }
+        closeAllModals();
+        openRegisterFlow(r.code);
+      };
       var later = document.createElement('button');
       later.className = 'sec';
-      later.textContent = T('viewer|暂不激活，继续本地使用');
+      later.textContent = T('viewer|暂不');
       later.onclick = function () { closeAllModals(); };
-      var go = document.createElement('button');
-      go.textContent = T('viewer|激活');
-      go.onclick = async function () {
-        var code = (bd.querySelector('#agCode') || {}).value || '';
-        if (!(bd.querySelector('#agAgree') || {}).checked) return;
-        go.disabled = true; go.textContent = T('viewer|正在激活…');
-        var res = await GMAuth.activate(code);
-        go.disabled = false; go.textContent = T('viewer|激活');
-        if (!res.ok) {
-          var e = bd.querySelector('.hint');
-          if (e) e.textContent = cloudErrText(res.error);
-          return;
-        }
+      var ft = bd.closest('.modal').querySelector('.ft');
+      ft.insertBefore(later, ft.querySelector('[data-close]'));
+      ft.insertBefore(go, ft.querySelector('[data-close]'));
+      bd.querySelector('#agLogin').onclick = function (e) {
+        e.preventDefault();
         closeAllModals();
-        afterAuthChange();
+        openLoginFlow();
       };
-      var agFt = bd.closest('.modal').querySelector('.ft');
-      agFt.insertBefore(later, agFt.querySelector('[data-close]'));
-      agFt.insertBefore(go, agFt.querySelector('[data-close]'));
+      codeIn.onkeydown = function (e) { if (e.key === 'Enter') go.click(); };
+      codeIn.focus();
     });
   }
 
-  // One entry point for 「the account state changed」, whether from 激活 / 登出 / 注销 or from a
-  // boot-time renewal that discovered a revoked code. Repainting from a single place is what keeps
-  // the nav, the settings panel and the 我的 page from disagreeing.
+  /** §2.3 第二步：注册窗口. Five fields, a live strength bar, a live uniqueness check and a
+   *  resend countdown — every one of them §2.3's own table. */
+  function openRegisterFlow(code) {
+    var h =
+      '<div class="rowline"><span>' + esc(T('reg|用户名')) + '</span>' +
+      '<input type="text" id="rgName" style="flex:1"><span class="hint mark" id="rgNameMark"></span></div>' +
+      '<div class="rowline"><span>' + esc(T('reg|邮箱')) + '</span>' +
+      '<input type="text" id="rgEmail" style="flex:1"><span class="hint mark" id="rgEmailMark"></span></div>' +
+      '<div class="rowline"><span>' + esc(T('reg|密码')) + '</span>' +
+      '<input type="password" id="rgPw" style="flex:1"><span class="pwbar" id="rgBar"></span></div>' +
+      '<div class="rowline"><span>' + esc(T('reg|确认密码')) + '</span>' +
+      '<input type="password" id="rgPw2" style="flex:1"><span class="hint mark" id="rgPw2Mark"></span></div>' +
+      '<div class="rowline"><span>' + esc(T('reg|验证码')) + '</span>' +
+      '<input type="text" id="rgCode" style="flex:1" maxlength="6">' +
+      '<button class="sec" id="rgSend">' + esc(T('reg|发送验证码')) + '</button></div>' +
+      // §9.2's 「明确同意：首次激活时勾选『我同意隐私政策』」. 1.0.1 moved the consent from the settings
+      // panel to THIS step, because this is the step that actually creates the account — consenting
+      // in front of a form that only validates a code would consent to nothing.
+      '<label class="hint" style="display:flex;align-items:center;gap:8px;margin-top:12px">' +
+      '<input type="checkbox" id="rgAgree" style="flex:0 0 auto;width:auto;min-width:0;margin:0">' +
+      '<span>' + esc(T('viewer|我同意隐私政策')) + '</span></label>' +
+      '<div class="hint" id="rgErr" style="margin-top:8px"></div>';
+
+    openModal(T('reg|完成注册'), h, function (bd) {
+      var err = bd.querySelector('#rgErr');
+      var nameIn = bd.querySelector('#rgName');
+      var mailIn = bd.querySelector('#rgEmail');
+      var pwIn = bd.querySelector('#rgPw');
+      var pw2In = bd.querySelector('#rgPw2');
+
+      // §2.3's 「实时检查唯一」. The mark is a SYMBOL, not a sentence: a row that re-wraps while the
+      // operator types is worse than no mark at all. The sentence goes in `title`.
+      var checkName = debounce(async function () {
+        var el = bd.querySelector('#rgNameMark'), v = nameIn.value.trim();
+        if (!v) { el.textContent = ''; return; }
+        if (!GMAuth.isValidUsername(v)) { el.textContent = '✕'; el.title = cloudErrText('BAD_USERNAME'); return; }
+        el.textContent = '…';
+        var r = await GMAuth.checkAvailable('username', v);
+        var good = r.ok && r.available;
+        el.textContent = good ? '✓' : '✕';
+        el.title = good ? T('reg|用户名可用') : cloudErrText(r.ok ? 'USERNAME_TAKEN' : r.error);
+      }, 400);
+      nameIn.addEventListener('input', checkName);
+
+      var checkMail = debounce(async function () {
+        var el = bd.querySelector('#rgEmailMark'), v = mailIn.value.trim();
+        if (!v) { el.textContent = ''; return; }
+        if (!GMAuth.isValidEmail(v)) { el.textContent = '✕'; el.title = cloudErrText('BAD_EMAIL'); return; }
+        el.textContent = '…';
+        var r = await GMAuth.checkAvailable('email', v);
+        var good = r.ok && r.available;
+        el.textContent = good ? '✓' : '✕';
+        el.title = good ? T('reg|邮箱可用') : cloudErrText(r.ok ? 'EMAIL_TAKEN' : r.error);
+      }, 400);
+      mailIn.addEventListener('input', checkMail);
+
+      // The bar and the confirm mark repaint together: they are the same question (「is this
+      // password usable, and did you type it twice?」) asked of two fields.
+      var paintPw = function () {
+        paintStrengthBar(bd.querySelector('#rgBar'), GMAuth.passwordStrength(pwIn.value));
+        var el = bd.querySelector('#rgPw2Mark');
+        el.textContent = pw2In.value ? (pw2In.value === pwIn.value ? '✓' : '✕') : '';
+        el.title = el.textContent === '✕' ? cloudErrText('PASSWORD_MISMATCH') : '';
+      };
+      pwIn.addEventListener('input', paintPw);
+      pw2In.addEventListener('input', paintPw);
+      paintPw();
+
+      wireSendCode(mailIn, bd.querySelector('#rgSend'), err);
+
+      var go = document.createElement('button');
+      go.textContent = T('reg|完成注册');
+      go.onclick = async function () {
+        err.textContent = '';
+        if (!bd.querySelector('#rgAgree').checked) { err.textContent = T('viewer|请先勾选同意隐私政策'); return; }
+        go.disabled = true;
+        err.textContent = T('viewer|正在注册…');
+        var r = await GMAuth.register({
+          code: code,
+          username: nameIn.value,
+          email: mailIn.value,
+          password: pwIn.value,
+          confirm: pw2In.value,
+          emailCode: bd.querySelector('#rgCode').value,
+        });
+        go.disabled = false;
+        if (!r.ok) { err.textContent = cloudErrText(r.error); return; }
+        closeAllModals();
+        afterAuthChange();
+        GmToast.show(T('viewer|激活成功'), 'info');
+      };
+      var ft = bd.closest('.modal').querySelector('.ft');
+      ft.insertBefore(go, ft.querySelector('[data-close]'));
+      nameIn.focus();
+    });
+  }
+
+  /** §2.6 已有账户的登录. `reason` is the sentence the caller wants said first (e.g. the one
+   *  §3.7 demands after a password change). */
+  function openLoginFlow(reason) {
+    var h = (reason ? '<div class="hint">' + esc(reason) + '</div>' : '') +
+      '<div class="rowline"' + (reason ? ' style="margin-top:10px"' : '') + '>' +
+      '<span>' + esc(T('reg|邮箱')) + '</span>' +
+      '<input type="text" id="lgEmail" style="flex:1"></div>' +
+      '<div class="rowline"><span>' + esc(T('reg|密码')) + '</span>' +
+      '<input type="password" id="lgPw" style="flex:1"></div>' +
+      '<div class="hint" id="lgErr" style="margin-top:8px"></div>';
+    openModal(T('reg|登录白身'), h, function (bd) {
+      var err = bd.querySelector('#lgErr');
+      var go = document.createElement('button');
+      go.textContent = T('reg|登录');
+      go.onclick = async function () {
+        go.disabled = true;
+        err.textContent = T('viewer|正在登录…');
+        var r = await GMAuth.login(bd.querySelector('#lgEmail').value, bd.querySelector('#lgPw').value);
+        go.disabled = false;
+        if (!r.ok) { err.textContent = cloudErrText(r.error); return; }
+        closeAllModals();
+        afterAuthChange();
+      };
+      var forgot = document.createElement('button');
+      forgot.className = 'sec';
+      forgot.textContent = T('reg|忘记密码？');
+      forgot.onclick = function () { closeAllModals(); openForgotFlow(); };
+      var ft = bd.closest('.modal').querySelector('.ft');
+      ft.insertBefore(forgot, ft.querySelector('[data-close]'));
+      ft.insertBefore(go, ft.querySelector('[data-close]'));
+      bd.querySelector('#lgEmail').focus();
+    });
+  }
+
+  /** §2.6 忘记密码 — the same email-code mechanism as registration, then back to the login door. */
+  function openForgotFlow() {
+    var h = '<div class="hint">' + esc(T('reg|通过邮箱验证码重置密码')) + '</div>' +
+      '<div class="rowline" style="margin-top:10px"><span>' + esc(T('reg|邮箱')) + '</span>' +
+      '<input type="text" id="fpEmail" style="flex:1">' +
+      '<button class="sec" id="fpSend">' + esc(T('reg|发送验证码')) + '</button></div>' +
+      '<div class="rowline"><span>' + esc(T('reg|验证码')) + '</span>' +
+      '<input type="text" id="fpCode" style="flex:1" maxlength="6"></div>' +
+      '<div class="rowline"><span>' + esc(T('reg|新密码')) + '</span>' +
+      '<input type="password" id="fpPw" style="flex:1"><span class="pwbar" id="fpBar"></span></div>' +
+      '<div class="rowline"><span>' + esc(T('reg|确认密码')) + '</span>' +
+      '<input type="password" id="fpPw2" style="flex:1"></div>' +
+      '<div class="hint" id="fpErr" style="margin-top:8px"></div>';
+    openModal(T('reg|重置密码'), h, function (bd) {
+      var err = bd.querySelector('#fpErr');
+      wireSendCode(bd.querySelector('#fpEmail'), bd.querySelector('#fpSend'), err);
+      var bar = bd.querySelector('#fpBar');
+      var paint = function () { paintStrengthBar(bar, GMAuth.passwordStrength(bd.querySelector('#fpPw').value)); };
+      bd.querySelector('#fpPw').addEventListener('input', paint);
+      paint();
+      var go = document.createElement('button');
+      go.textContent = T('reg|重置密码');
+      go.onclick = async function () {
+        go.disabled = true;
+        var r = await GMAuth.resetPassword({
+          email: bd.querySelector('#fpEmail').value,
+          emailCode: bd.querySelector('#fpCode').value,
+          password: bd.querySelector('#fpPw').value,
+          confirm: bd.querySelector('#fpPw2').value,
+        });
+        go.disabled = false;
+        if (!r.ok) { err.textContent = cloudErrText(r.error); return; }
+        closeAllModals();
+        openLoginFlow(T('reg|密码已重置，请使用新密码登录'));
+      };
+      var ft = bd.closest('.modal').querySelector('.ft');
+      ft.insertBefore(go, ft.querySelector('[data-close]'));
+    });
+  }
+
+  // One entry point for 「the account state changed」, whether from 激活 / 注册 / 登录 / 登出 / 注销 or
+  // from a boot-time renewal that discovered a revoked code. Repainting from a single place is what
+  // keeps the nav, the gate, the settings panel and the two account pages from disagreeing.
   async function afterAuthChange() {
     S = await G.loadSettings();
-    syncNavForAuth();
+    applyActivationGate();
     await buildCloudPanel();
+    // `profileLoad` first: it sets `PFC.devices`, which `buildAccountPanel` reads.
     await profileLoad();
+    buildAccountPanel();
     renderAdmin();
     renderPrivacyLink();
   }
@@ -3913,22 +4441,24 @@
   async function cloudBoot() {
     renderPrivacyLink();
     try { await GMAuth.boot(); } catch (e) { /* a dead network is an expected outcome, not a failure */ }
-    syncNavForAuth();
+    applyActivationGate();
     await buildCloudPanel();
     await profileLoad();
+    buildAccountPanel();
     renderAdmin();
     GMAuth.onChange(function () { afterAuthChange(); });
 
-    // §1.2's 升级引导: 「0.5.x 用户升级到 1.0.0 后，首次启动弹出引导」. Three conditions, and each
-    // one is load-bearing — no backend means there is nothing to activate against, an activated
-    // account has already answered the question, and `guideSeen` is what stops 「暂不激活」 from
-    // being asked again on every single boot.
-    var st = GMAuth.status();
-    if (st.configured && !GMAuth.isActivated() && !S.cloud.guideSeen) {
+    // §1.2's 升级引导: 「0.5.x 用户升级到 1.0.0 后，首次启动弹出引导」. Two conditions now, and both
+    // are load-bearing — an operator who can already use everything has answered the question, and
+    // `guideSeen` is what stops 「暂不」 from being asked again on every single boot.
+    // 1.0.1 — the test is the GATE rather than `status().configured && !isActivated()`, so the modal
+    // and the nav cannot disagree about whether this operator is locked out. It also means the
+    // shipped unconfigured build never opens it, which is 1.0.0's 「没有后端就没有什么可激活」.
+    if (!GMAuth.gateOpen() && !S.cloud.guideSeen) {
       var next = Object.assign({}, S.cloud, { guideSeen: true });
       S.cloud = next;
       await G.saveSetting('cloud', next);
-      openActivateGuide();
+      openActivationGuide();
     }
   }
 

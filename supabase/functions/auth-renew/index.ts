@@ -14,15 +14,16 @@ import { serve } from "https://deno.land/std/http/server.ts";
 import { handlePreflight } from "../_shared/cors.ts";
 import { badRequest, fail, internal, json, methodNotAllowed } from "../_shared/errors.ts";
 import {
+  accountRefusal,
   bearerToken,
   serviceClient,
+  SESSION_DAYS,
   signJwt,
+  touchDevice,
   verifyJwtAllowExpired,
   type UserRow,
 } from "../_shared/client.ts";
 
-const MAX_DEVICES = 3;
-const JWT_DAYS = 30;
 /** How far past `exp` a token may be and still be exchanged. */
 const RENEW_GRACE_DAYS = 30;
 
@@ -62,47 +63,24 @@ serve(async (req: Request): Promise<Response> => {
     if (userError) throw userError;
     const userRow = (found as UserRow | null) ?? null;
 
-    // A token for a row that no longer exists is worthless.
-    if (!userRow) return fail("UNAUTHORIZED", 401, "Account not found");
-    // A deleted account is on its way to purging -- do not resurrect it.
-    if (userRow.deleted_at) return fail("UNAUTHORIZED", 401, "Account has been deleted");
-    if (userRow.is_banned === true) return fail("BANNED", 403, "Account is banned");
+    // A token for a row that no longer exists is worthless; a deleted account is on its way to
+    // purging and must not be resurrected; a banned one is §6.2's reversible kill switch, which the
+    // client keeps the session for so it can say so. All three verdicts come from `accountRefusal`,
+    // shared with the four other doors that hand out a session.
+    const refusal = accountRefusal(userRow);
+    if (refusal) return refusal;
 
     // Keep the device binding honest: register if new (respecting the limit), touch if
     // known. Deleting the device rows (as auth-delete-account does) is what forces a
     // user off every device.
-    const nowIso = new Date().toISOString();
-    const { data: existingDevice, error: deviceLookupError } = await sb
-      .from("devices")
-      .select("id")
-      .eq("user_id", userRow.id)
-      .eq("device_id", deviceId)
-      .maybeSingle();
-    if (deviceLookupError) throw deviceLookupError;
-
-    if (!existingDevice) {
-      const { count, error: countError } = await sb
-        .from("devices")
-        .select("id", { count: "exact", head: true })
-        .eq("user_id", userRow.id);
-      if (countError) throw countError;
-      if ((count ?? 0) >= MAX_DEVICES) {
-        return fail("DEVICE_LIMIT", 409, `At most ${MAX_DEVICES} devices may be active`);
-      }
-      const { error: insertError } = await sb
-        .from("devices")
-        .insert({ user_id: userRow.id, device_id: deviceId, user_agent: userAgent, last_seen: nowIso });
-      if (insertError) throw insertError;
-    } else {
-      const { error: touchError } = await sb
-        .from("devices")
-        .update({ last_seen: nowIso, user_agent: userAgent })
-        .eq("id", existingDevice.id);
-      if (touchError) throw touchError;
-    }
+    const limitHit = await touchDevice(sb, userRow.id, deviceId, userAgent);
+    if (limitHit) return limitHit;
 
     // Fresh full-length token, signed the same way as in auth-activate.
-    const { jwt, expiresAt } = await signJwt({ id: userRow.id, email: userRow.email }, JWT_DAYS);
+    const { jwt, expiresAt } = await signJwt(
+      { id: userRow.id, email: userRow.email, epoch: userRow.token_epoch },
+      SESSION_DAYS,
+    );
     return json({ jwt, expiresAt });
   } catch (err) {
     console.error("auth-renew failed:", err);
