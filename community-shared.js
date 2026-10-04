@@ -33,9 +33,27 @@ var CHAT_PAGE_SIZE = 50;
 /** §2.3.5 「历史保留 最近 7 天（定时清理）」. Used for the read window; the cron deletes for real. */
 var CHAT_RETENTION_DAYS = 7;
 
-// ---- §2.3.5 「频率限制 每分钟最多 10 条」 -----------------------------------------------------
-var CHAT_RATE_MAX = 10;
+// ---- §2.3.5 「频率限制 每分钟最多 20 条」 -----------------------------------------------------
+// ⚠ 1.0.6 §1.10.1 RAISED THIS FROM 10. The number lives HERE and nowhere else: `chat-send` reads it
+// and so does the client, the latter through the mirrored `community-shared.js`. §2.3.5 asks for
+// 「客户端 + 服务端双重」检查, and two halves of one rule that can disagree is the shape this
+// project has shipped by accident five times — so raising the cap is this line plus a regeneration,
+// never an edit in the caller.
+var CHAT_RATE_MAX = 20;
 var CHAT_RATE_WINDOW_MS = 60 * 1000;
+
+// ---- §1.11 「消息撤回（2 分钟内）」 ---------------------------------------------------------------
+/** §1.11.2's window: 「仅 2 分钟内可撤回」. ⚠ IT LIVES HERE BECAUSE TWO REALMS ASK THE SAME
+ *  QUESTION and they must answer it the same way: `chat-recall` asks it about a stored row (the
+ *  answer that holds), and the room asks it about a drawn row to decide whether the 撤回 row belongs
+ *  in the right-click menu at all (the answer that keeps a button from offering something the server
+ *  will refuse). Two literals would drift the moment one of them was touched. */
+var RECALL_WINDOW_MS = 2 * 60 * 1000;
+/** §1.11.1's `recall_reason` — 「可选」 in the 定稿, and nothing fills it today: a recall is a
+ *  WITHDRAWAL the author performs on themselves, and asking them why would be a form in the way of
+ *  an undo. It is capped and accepted anyway so the column has a writer the day §2.6's admin needs to
+ *  withdraw someone else's message and say why. */
+var RECALL_REASON_MAX = 200;
 
 // ---- §2.5 Bug 与建议. The spec gives no limits, so these are choices, and they are stated as
 // choices rather than left implicit: an unbounded `content` is an unbounded row in the operator's
@@ -488,6 +506,35 @@ function messageType(row) {
 }
 
 /**
+ * §1.11.2 「仅 2 分钟内可撤回」 — the ONE predicate behind it, asked by both realms.
+ *
+ * `chat-recall` asks it about the row it just read (this is the answer that HOLDS, together with the
+ * `recalled = false` and the cutoff baked into the UPDATE it then issues), and the room asks it about
+ * a drawn row to decide whether 「撤回」 belongs in the right-click menu at all — a button that
+ * offers something the server will refuse is one of the shapes §1.11 would otherwise ship.
+ *
+ * ⚠ THE ANSWER IS THREE FACTS, NOT ONE, and that is why it is not just a clock comparison. 「是
+ * 我发的」 excludes everyone else's message (the confirm dialog would be a lie), 「还没撤回过」
+ * excludes a second recall, and the window excludes the rest. A caller that asked only about time
+ * would offer 撤回 on a stranger's message and on one already withdrawn.
+ *
+ * ⚠ `String(row.user_id) !== String(meId)` RATHER THAN `!==`: the two realms hand this in different
+ * types on purpose — the server gets a `uuid` column and the client gets a JSON string — and 1.0.x
+ * has already paid once for an id compared across those two shapes.
+ *
+ * An unparsable `created_at` is `false`, never `true`: a row whose age cannot be established is not
+ * one to offer an undo on, and the server's own UPDATE would refuse it anyway.
+ */
+function canRecall(row, meId, nowMs) {
+  if (!row || !meId) return false;
+  if (String(row.user_id == null ? '' : row.user_id) !== String(meId)) return false;
+  if (row.recalled) return false;
+  var t = Date.parse(String(row.created_at == null ? '' : row.created_at));
+  if (!isFinite(t)) return false;
+  return (nowMs - t) < RECALL_WINDOW_MS;
+}
+
+/**
  * §1.6.4 「发送时解析 `@用户名`」 — the NAMES a message mentions, in order, deduplicated.
  *
  * It deliberately returns NAMES and not ids: resolving a name to an account is the SERVER's job
@@ -596,7 +643,15 @@ function serverDate(nowMs) {
  * old row over the wire for nothing, and `chat_messages` is the one table here that grows large.
  */
 var REALTIME_TABLES = [
-  { table: 'chat_messages', event: 'INSERT' },
+  // ⚠⚠ 1.0.6 §1.11 CHANGED THIS FROM 'INSERT' TO '*', AND THE REASON IT WAS 'INSERT' HAD TO STOP
+  // BEING TRUE. 013_realtime.sql subscribed the room INSERT-only on an explicit premise: 「a message
+  // is never edited」, which is why it also kept the default replica identity and paid no extra WAL
+  // (it is the one table here that grows to millions of rows). §1.11 makes a message editable — a
+  // recall is an UPDATE — and there is no fallback that could cover it: the room's poller asks for
+  // `created_at > RT.since` (community.js `rtPollOnce`), so an updated row is never re-fetched, and
+  // the other reader would keep drawing 「你好」 for a message its author had withdrawn until they
+  // reloaded the page. A flag nobody can see is not a withdrawn message.
+  { table: 'chat_messages', event: '*' },
   { table: 'friendships', event: '*' },
   { table: 'friend_shares', event: '*' },
   { table: 'notifications', event: '*' },
@@ -659,6 +714,8 @@ function realtimeChanges() {
     REPORT_RATE_WINDOW_MS: REPORT_RATE_WINDOW_MS,
     REPORT_STATUSES: REPORT_STATUSES,
     REALTIME_TABLES: REALTIME_TABLES,
+    RECALL_REASON_MAX: RECALL_REASON_MAX,
+    RECALL_WINDOW_MS: RECALL_WINDOW_MS,
     SHARE_DAILY_ARCHIVE_MAX: SHARE_DAILY_ARCHIVE_MAX,
     SHARE_DAILY_CONFIG_MAX: SHARE_DAILY_CONFIG_MAX,
     SHARE_INLINE_MAX_BYTES: SHARE_INLINE_MAX_BYTES,
@@ -672,6 +729,7 @@ function realtimeChanges() {
     censorNormalize: censorNormalize,
     chatClock: chatClock,
     chatRetentionCutoff: chatRetentionCutoff,
+    canRecall: canRecall,
     countryFlag: countryFlag,
     countryFlagChinaUnified: countryFlagChinaUnified,
     isMuted: isMuted,

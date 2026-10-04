@@ -91,9 +91,25 @@
    * cannot notice a missing `select=` term — the fixture is the second thing under test, and this
    * one disagreed with production for the whole 1.0.3 cycle. `verify-066` reads this list against
    * `publicChatMessage`'s keys instead, which is the comparison a stub cannot make.
+   *
+   * ⚠ 1.0.6 §1.11 — ALL THREE RECALL COLUMNS, INCLUDING THE TWO THE ROOM DOES NOT DRAW, and that is
+   * the same lesson rather than a contradiction of it. `recalled` is the flag `cmMsgHtml` renders;
+   * `recalled_at` / `recall_reason` are the audit trail behind it. Withholding those two would leave
+   * them one `select('*')` from public on a table whose entire read policy is 「every member reads
+   * every row」 — an audit field that must never be read does not belong on a public table — and it
+   * would break the invariant that makes a forgotten column impossible: a column Realtime pushes and
+   * PostgREST drops is a value that changes when the reader refreshes. 021 adds three, so three go
+   * here, and `verify-066` §2 pins the equality.
+   *
+   * ⚠ THE STATEMENT BELOW CARRIES NO COMMENTS, AND `verify-066` §2's extractor is why: it reads the
+   * quoted halves of `var CHAT_COLS = …;` and an apostrophe inside a trailing comment ("the TABLE's")
+   * reads as an opening quote and drags the comment into the expected column set. Keep the reasons up
+   * here; keep the concatenation plain. (The suite now strips line comments before it matches, so
+   * this is belt as well as braces.)
    */
   var CHAT_COLS = 'id,user_id,username,avatar_url,content,created_at,' +
-    'attachment,mentioned_users,reply_to,reply_preview';
+    'attachment,mentioned_users,reply_to,reply_preview,' +
+    'recalled,recalled_at,recall_reason';
 
   /**
    * The room's scrollback: §2.3.5's 「历史保留 最近 7 天」 as a read window, newest page first.
@@ -159,6 +175,29 @@
       });
   }
 
+  /**
+   * §1.11's recall. `id` is the message to withdraw; `reason` is §1.11.1's optional one and nothing
+   * in 1.0.6 sends it.
+   *
+   * ⚠ THE DECISION IS NOT TAKEN HERE — NOT EVEN 「is it still inside the two minutes」. The server
+   * holds the clock and the row, `canRecall` is what it asks, and the room asks the SAME function
+   * before it draws the menu row. Re-checking here would be a second answer to one question, and the
+   * copy in the client is the one that cannot be trusted anyway.
+   *
+   * The stored row comes back like `chatSend`'s, so the author's own view is drawn from the answer
+   * rather than from a Realtime round trip — which in the polling fallback may take seconds.
+   */
+  function chatRecall(id, reason) {
+    if (!jwt()) return Promise.resolve(noSession());
+    var body = { id: String(id == null ? '' : id) };
+    if (reason) body.reason = String(reason);
+    return cloud().call('chat-recall', body, { jwt: jwt() })
+      .then(function (r) {
+        if (!r.ok) return r;
+        return { ok: true, status: r.status, row: (r.data && r.data.message) || null };
+      });
+  }
+
   // ---- the Realtime client -------------------------------------------------------------------
   // The four constants below are protocol choices, not §2.3.5 limits; the limits live in the shared
   // block (`_tools/gen-community-shared.cjs` mirrors them from the Edge Function).
@@ -174,6 +213,11 @@
    *  by a room that updates than by a spinner that retries forever. */
   var RT_MAX_ATTEMPTS = 2;
   var RT_POLL_MS = 6000;
+  /** 1.0.6 §1.11 — how many poll ticks between two FULL page re-reads, while the socket is down. The
+   *  incremental poll cannot carry a recall (see `rtPollOnce`), so the fallback converges on an
+   *  edit within five ticks — half a minute, against the six seconds a new message takes. The
+   *  asymmetry is the point: an edit is rarer than a message and a reader is not watching for it. */
+  var RT_SWEEP_TICKS = 5;
 
   /**
    * 1.0.4 §P1 — how often an OPEN poll re-reads its tallies, while it is on screen.
@@ -217,10 +261,13 @@
   function joinFrame(ref, token) {
     var S = (g.GMCommunityShared) || {};
     // The fallback is `chat_messages` alone rather than `[]`: a build where the shared block failed
-    // to load should still get the room it had before, not a subscription to nothing.
+    // to load should still get the room it had before, not a subscription to nothing. ⚠ 1.0.6 §1.11
+    // widened it from `'INSERT'` for the same reason the shared block was widened: the fallback's
+    // job is 「the room as it is meant to work」, and a room that cannot be told a message was
+    // withdrawn is not that.
     var changes = typeof S.realtimeChanges === 'function'
       ? S.realtimeChanges()
-      : [{ event: 'INSERT', schema: 'public', table: 'chat_messages' }];
+      : [{ event: '*', schema: 'public', table: 'chat_messages' }];
     return {
       topic: CHAT_TOPIC,
       event: 'phx_join',
@@ -353,9 +400,11 @@
     poll: null,
     pollBusy: false,
     since: null,        // newest created_at delivered, for the polling fallback's `gt` bound
+    sweepTicks: 0,      // 1.0.6 §1.11 — see `RT_SWEEP_TICKS`
     attempts: 0,
     closed: true,
     onRow: null,
+    onChange: null,     // 1.0.6 §1.11 — a row already in hand was EDITED (a recall)
     onState: null,
   };
 
@@ -391,10 +440,45 @@
     if (RT.onRow) { try { RT.onRow(row); } catch (e) { /* same */ } }
   }
 
+  /**
+   * 1.0.6 §1.11 — a frame for the ROOM, split by what it says happened.
+   *
+   * ⚠ THE ROOM WAS `INSERT`-ONLY UNTIL §1.11, IN CODE AND IN THE PUBLICATION ALIKE. `rtFrame` used
+   * to hand every `chat_messages` frame to `rtEmit` without looking at `c.event`, which was correct
+   * only while the subscription asked for INSERT: 「a message is never edited」 was the premise
+   * (013_realtime.sql, verbatim). A recall IS an edit, so the same line would have appended the
+   * UPDATED row as if it were a new message — every reader would see a withdrawn message twice, once
+   * showing its old text and once showing 「该消息已被撤回」.
+   *
+   * ⇒ INSERT is an arrival (`onRow`, the 1.0.2 contract, unchanged) and everything else is a change
+   * to a row the reader may already hold (`onChange`). DELETE has no handler and needs none: the
+   * retention cron is the only deleter and a client holding a purged row is already outside
+   * §2.3.5's seven days.
+   *
+   * ⚠ `RT.since` IS NOT TOUCHED ON A CHANGE. It is the polling fallback's `gt` bound — a high-water
+   * mark for NEW rows — and an edited row carries an old `created_at`. Advancing it from a change
+   * would skip every message sent between that row and now.
+   */
+  function rtRoom(c) {
+    if (c.event === 'INSERT') { rtEmit(c.row); return; }
+    if (c.event !== 'UPDATE' || !c.row || !RT.onChange) return;
+    try { RT.onChange(c.row); } catch (e) { /* a repaint must not kill the socket */ }
+  }
+
   function rtPollOnce() {
     if (RT.pollBusy) return;
     RT.pollBusy = true;
-    chatLoad({ since: RT.since }).then(function (r) {
+    // ⚠ 1.0.6 §1.11 — EVERY `RT_SWEEP_TICKS`-TH TICK RE-READS THE PAGE INSTEAD OF ASKING FOR
+    // 「everything newer」. The incremental query is a forward scan (`created_at gt since`) and by
+    // construction can never see an UPDATE: without this, a room running in the polling fallback —
+    // a blocked socket, a proxy, a browser that refused the join — would keep showing a withdrawn
+    // message until the reader reloaded the page. The sweep re-uses `chatLoad` with no bound, i.e.
+    // the same 50-row page the room already renders, and hands each row to `rtEmit`; the viewer's
+    // `cmPush` is an upsert by id, so the rows it already has are replaced rather than duplicated.
+    // ONE reader, ONE shape — the 1.0.4 rule that the caller owns a reload path and not a patch path.
+    RT.sweepTicks = (RT.sweepTicks || 0) + 1;
+    var full = (RT.sweepTicks % RT_SWEEP_TICKS) === 0;
+    (full ? chatLoad() : chatLoad({ since: RT.since })).then(function (r) {
       RT.pollBusy = false;
       if (!r || !r.ok || !r.rows) return;
       for (var i = 0; i < r.rows.length; i++) rtEmit(r.rows[i]);
@@ -439,7 +523,7 @@
     if (f.event === 'postgres_changes') {
       var c = changeFromFrame(f);
       if (!c) return;
-      if (c.table === 'chat_messages') { rtEmit(c.row); return; }
+      if (c.table === 'chat_messages') { rtRoom(c); return; }
       realtimeEmit(c.table, c.event, c.row, c.old);
       return;
     }
@@ -505,7 +589,17 @@
    * so the caller keeps ONE list-building path. `opts.onState(s)` reports `'off' | 'connecting' |
    * 'live' | 'polling'`. Both may fire several times; both are called synchronously.
    *
-   * The socket is opened BEFORE the load, on purpose: an INSERT that lands during the load would
+   * 1.0.6 §1.11 adds `opts.onChange(row)`: the same row shape, delivered when a message the reader
+   * may already hold was EDITED — a recall, today the only editor. It is a separate callback rather
+   * than a flag on `onRow` because the two callers in the view do different things (append versus
+   * replace in place), and `onRow`'s contract is pinned by `verify-064` as the 1.0.2 one. Rows
+   * arrive here from BOTH transports: the socket's UPDATE frames, and the polling fallback's
+   * periodic full-page re-read, which is the only way an edit reaches a reader with no socket. Note
+   * that the full re-read hands those rows to `onRow`, not here — the caller de-duplicates by id
+   * (`cmPush` upserts), so 「a row I already have, re-read」 and 「a row I already have, edited」 both
+   * land in the one place that can tell them apart.
+   *
+   * ⚠ The socket is opened BEFORE the load, on purpose: an INSERT that lands during the load would
    * otherwise be missed by both halves. Delivering it twice is fine — the caller de-duplicates by
    * `id`, which it has to do anyway because a reconnect re-delivers — while missing it is not.
    */
@@ -513,11 +607,13 @@
     chatUnsubscribe();
     var o = opts || {};
     RT.onRow = o.onRow || null;
+    RT.onChange = o.onChange || null;
     RT.onState = o.onState || null;
     RT.closed = false;
     RT.attempts = 0;
     RT.since = null;
     RT.pollBusy = false;
+    RT.sweepTicks = 0;
 
     var C = cloud();
     if (!C || typeof C.isConfigured !== 'function' || !C.isConfigured() || !jwt()) {
@@ -539,9 +635,11 @@
     rtKillSocket();
     if (RT.poll) { clearInterval(RT.poll); RT.poll = null; }
     RT.onRow = null;
+    RT.onChange = null;
     RT.onState = null;
     RT.since = null;
     RT.pollBusy = false;
+    RT.sweepTicks = 0;
     RT.status = 'off';
     // The §P1 listeners go with the room. They repaint a view that is being left, and one that
     // outlived it would call `cmLoadMsgs()` into a hidden pane on every change the socket delivers
@@ -1601,6 +1699,9 @@
 
     chat: { load: chatLoad, send: chatSend, subscribe: chatSubscribe,
             unsubscribe: chatUnsubscribe, state: chatState,
+            // 1.0.6 §1.11. `subscribe`'s contract grew an `onChange` beside its `onRow` in the same
+            // release — see that function for why the two are not one callback.
+            recall: chatRecall,
             TOPIC: CHAT_TOPIC, POLL_MS: RT_POLL_MS },
 
     // 1.0.4 §P1 — the fan-out half of the SAME socket. `chat` keeps its 1.0.2 shape on purpose

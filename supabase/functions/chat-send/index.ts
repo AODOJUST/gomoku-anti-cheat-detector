@@ -10,7 +10,7 @@
 //   -> 403 { error: 'BANNED' }              §6.2
 //   -> 404 { error: 'TARGET_NOT_FOUND' }    §1.7.4's `reply_to` names no message in the window
 //   -> 409 { error: 'CHAT_DISABLED' }       §2.3.2 「关闭聊天室 / 全体禁言」
-//   -> 409 { error: 'RATE_LIMITED' }        §2.3.5 「每分钟最多 10 条」
+//   -> 409 { error: 'RATE_LIMITED' }        §2.3.5 「每分钟最多 20 条」
 //   -> 500 { error: 'INTERNAL' }
 //
 // ---------------------------------------------------------------------------------------------
@@ -18,9 +18,9 @@
 // ---------------------------------------------------------------------------------------------
 // §2.3.3 gives `chat_messages` a `chat_insert` policy that lets an activated client write its own
 // row through PostgREST. 005_community.sql deliberately does NOT create it, and 1.0.3 sharpens the
-// reason: §2.3.5's two safeguards one section below (「每分钟最多 10 条」 / 「敏感词过滤」) cannot be
+// reason: §2.3.5's two safeguards one section below (「每分钟最多 20 条」 / 「敏感词过滤」) cannot be
 // evaluated by RLS, which sees a row and not a history and not a word list — AND the three columns
-// §1.6/§1.7 add are resolved data. A client able to INSERT directly can post an 11th message, or a
+// §1.6/§1.7 add are resolved data. A client able to INSERT directly can post a 21st message, or a
 // filtered one, or a `mentioned_users` array nobody resolved, by simply not calling this function.
 //
 // The read half stays on PostgREST under RLS, and that is what keeps the room realtime: Realtime
@@ -185,10 +185,12 @@ serve(async (req: Request): Promise<Response> => {
       return fail("CONTENT_REJECTED", HttpStatus.BAD_REQUEST, `Blocked term: ${term}`);
     }
 
-    // §2.3.5 「频率限制 每分钟最多 10 条」. Counted from the TABLE, not from a client-supplied
+    // §2.3.5 「频率限制 每分钟最多 20 条」. Counted from the TABLE, not from a client-supplied
     // counter, and it only counts messages that were actually stored — a refused or censored message
-    // is not one of the ten. `>=` rather than `>`: the 10th message inside the window is allowed and
-    // the 11th is the one refused, which is what 「每分钟最多 10 条」 says.
+    // is not one of the twenty. `>=` rather than `>`: the 20th message inside the window is allowed
+    // and the 21st is the one refused, which is what 「每分钟最多 20 条」 says. (1.0.6 §1.10.1
+    // raised the cap; the comparison shape did not need to change, because it never named the
+    // number — it reads `CHAT_RATE_MAX`.)
     const recent = await recentCount(sb, "chat_messages", caller.id, CHAT_RATE_WINDOW_MS);
     if (recent >= CHAT_RATE_MAX) {
       return fail("RATE_LIMITED", HttpStatus.CONFLICT,
@@ -295,7 +297,7 @@ serve(async (req: Request): Promise<Response> => {
       }
       const { data: quoted, error: quoteError } = await sb
         .from("chat_messages")
-        .select("id, user_id, username, content, created_at")
+        .select("id, user_id, username, content, created_at, recalled")
         .eq("id", rawReply.trim())
         .maybeSingle();
       if (quoteError) throw quoteError;
@@ -306,15 +308,34 @@ serve(async (req: Request): Promise<Response> => {
       if (!quoted) {
         return fail("TARGET_NOT_FOUND", HttpStatus.NOT_FOUND, "The quoted message is gone");
       }
-      const q = quoted as { id: string; user_id: string; username: string | null; content: string; created_at: string };
+      const q = quoted as { id: string; user_id: string; username: string | null; content: string; created_at: string; recalled: boolean };
       replyTo = q.id;
       replyPreview = {
         user_id: q.user_id,
         username: q.username,
         // `previewLine` collapses whitespace then truncates then marks the cut — shared with §2.5.5's
         // 我的提交 list, so 「一行预览」 means the same thing in both places.
-        content: previewContent(q.content),
+        //
+        // ⚠⚠ 1.0.6 §1.11 — A QUOTE OF A WITHDRAWN MESSAGE CARRIES NO TEXT. 021 KEEPS `content` on a
+        // recalled row (the row is marked, not deleted — §1.11.3, and §2.1's 举报 review needs it),
+        // so snapshotting it here would take the withdrawn words and put them back on screen inside
+        // a NEW message — the quote card would render them under the quoting author's name. 「撤回」
+        // that republishes the text one line later is not a recall.
+        //
+        // ⇒ The snapshot is built empty and marked, and `cmMsgHtml` draws 「[该消息已被撤回]」 for it,
+        // which is the same card §1.11.4 asks for on a quote made BEFORE the recall. Deeper than the
+        // UI hiding the menu row: this is the half that holds when someone calls the endpoint by hand.
+        content: q.recalled ? "" : previewContent(q.content),
         created_at: q.created_at,
+        // ⚠ 1.0.6 §1.11 — THE SNAPSHOT CARRIES THE RECALL FLAG, AND IT IS WRITTEN HERE SO IT ALWAYS
+        // EXISTS. §1.11.4 asks the quote card to say 「[该消息已被撤回]」, and the card cannot ask the
+        // original: `reply_preview` exists precisely because the original may be out of the loaded
+        // page, or deleted (`on delete set null` leaves `reply_to` empty while this preview keeps the
+        // text). So `chat-recall` patches every quoting row's preview when it withdraws one, and that
+        // patch is a `jsonb_set` on `{recalled}` — which is only meaningful if the key is part of the
+        // shape from the first write. A row that quotes something unrecallable is `false`, and only
+        // `true` is ever drawn as withdrawn.
+        recalled: q.recalled === true,
       };
     }
 

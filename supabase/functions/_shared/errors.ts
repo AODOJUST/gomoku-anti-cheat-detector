@@ -86,7 +86,16 @@ export type ErrorCode =
   | "BLOCKED_BY_USER"
   | "VOTE_CLOSED"
   | "VOTE_ALREADY_CAST"
-  | "TARGET_NOT_FOUND";
+  | "TARGET_NOT_FOUND"
+  // --- 1.0.6 §1.11 消息撤回 ---------------------------------------------------------------------
+  // ONE code for the whole of §1.11.2's predicate — 「是我发的」 / 「还没撤回过」 / 「在 2 分钟窗口内」 —
+  // and that is deliberate rather than a merge of convenience. The three facts are ONE question
+  // (`canRecall`, which both realms call), the client answers it before it draws the menu row, so
+  // the only caller who can reach this answer is one who called the endpoint by hand — and telling
+  // them WHICH half failed would tell a stranger whether an id exists and how old it is. The
+  // sentence names both halves at once (「只能撤回自己 2 分钟内的消息」), which is why one branch in
+  // `cloudErrText` is all this needs.
+  | "NOT_RECALLABLE";
 
 /** HTTP status constants used across the functions. */
 export const HttpStatus = {

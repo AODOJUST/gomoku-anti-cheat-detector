@@ -750,6 +750,58 @@
   .bg-prev-empty{position:absolute;inset:0;z-index:1;display:flex;align-items:center;justify-content:center;
                  color:var(--dim);font-size:var(--ui-detail-small)}
   .bg-prev.has-bg .bg-prev-empty{display:none}
+  /* ---- 1.0.6 §1.1.3 浮层样式预览 ----
+     The picture preview above answers 「我选的图对不对」. This one answers the report behind §1.1 —
+     「我的背景为什么看不见」 — by drawing a MOCK of the in-page panel from the SAME variables the
+     real one reads, so it can only be wrong if the real panel is wrong:
+
+       · `--gm-bg-image` / `--gm-bg-pos` / `--gm-bg-dim` / `--gm-bg-blur`, written by `bgVars()` —
+         the very call the picture preview uses, so 「30% / 5px / 拖到左上」 renders identically in
+         both.
+       · `--ov-bg-opacity` / `--ov-elem-bg-alpha` / `--ov-elem-blur` / `--ov-btn-bg-alpha`, written
+         by `GMStorage.applyOverlayTransparencyVars()` — the same map content.js applies to its
+         shadow host.
+
+     ⚠ The LAYERING is part of the answer, not decoration. In the real panel the picture and the
+     panel's own fill are ONE layer (`.gm` carries both, and `background-image` paints OVER
+     `background-color`), so with a picture set, 浮层→背景透明度 changes nothing. The preview keeps
+     that order — fill on `.ov-prev` itself, picture on its `::before`, scrim on its `::after`, the
+     wireframe as the only child above them — because a preview that gave 背景透明度 an effect the
+     real panel does not have would send the operator hunting for a setting that does nothing.
+
+     It is deliberately NOT a drag target: the picture preview owns that gesture, and two drag
+     targets writing one offset is a second opinion about the same number. */
+  .bg-previews{display:flex;flex-wrap:wrap;gap:14px;align-items:flex-start}
+  .ov-prev{position:relative;width:320px;height:240px;max-width:100%;flex:none;overflow:hidden;
+           border:1px solid var(--line);border-radius:var(--ui-detail-radius);
+           background:rgba(var(--bg-rgb),var(--ov-bg-opacity,1))}
+  .ov-prev::before{content:"";position:absolute;pointer-events:none;
+           inset:calc(-1 * (var(--gm-bg-blur,0px) + 2px));
+           background-image:var(--gm-bg-image);background-size:cover;background-repeat:no-repeat;
+           background-position:var(--gm-bg-pos,50% 50%);filter:blur(var(--gm-bg-blur,0px))}
+  .ov-prev::after{content:"";position:absolute;inset:0;pointer-events:none;
+           background:rgba(0,0,0,var(--gm-bg-dim,0))}
+  .ov-prev .mk{position:absolute;inset:16px 16px 26px;z-index:1;
+           display:flex;flex-direction:column;border:2px solid var(--line);border-radius:8px;
+           background:transparent;overflow:hidden;box-shadow:0 6px 18px rgba(0,0,0,.35)}
+  .ov-prev .mk-hd{display:flex;align-items:center;gap:6px;padding:6px 8px;
+           background:rgba(var(--panel-rgb),var(--ov-elem-bg-alpha,1));
+           border-bottom:1px solid var(--line);
+           -webkit-backdrop-filter:blur(var(--ov-elem-blur,0px));backdrop-filter:blur(var(--ov-elem-blur,0px))}
+  .ov-prev .mk-sp{flex:1}
+  .ov-prev .mk-t{display:block;width:46%;height:8px;border-radius:4px;background:var(--mut);opacity:.55}
+  .ov-prev .mk-i{display:block;width:10px;height:8px;border-radius:3px;background:var(--mut);opacity:.45}
+  .ov-prev .mk-bd{flex:1;min-height:0;display:flex;flex-direction:column;gap:6px;padding:8px}
+  .ov-prev .mk-row{display:block;height:16px;border-radius:5px;
+           background:rgba(var(--panel-rgb),var(--ov-elem-bg-alpha,1));
+           -webkit-backdrop-filter:blur(var(--ov-elem-blur,0px));backdrop-filter:blur(var(--ov-elem-blur,0px))}
+  .ov-prev .mk-row.short{width:62%}
+  .ov-prev .mk-btns{display:flex;gap:6px;margin-top:auto}
+  .ov-prev .mk-btn{display:block;width:52px;height:16px;border:1px solid var(--line);border-radius:5px;
+           background:rgba(var(--btn-rgb),var(--ov-btn-bg-alpha,1))}
+  .ov-prev .mk-btn.p{border-color:var(--blue);background:rgba(var(--blue-rgb),var(--ov-btn-bg-alpha,1))}
+  .ov-prev .mk-cap{position:absolute;inset-inline:0;bottom:6px;text-align:center;z-index:1;
+           color:var(--dim);font-size:var(--ui-detail-small)}
   /* 0.5.2 §4.1 — the custom-question list. A row per question, like .cst-list: each carries up to
      two actions and a variable number of translation lines. */
   .cq-list{margin-top:4px}
@@ -961,6 +1013,10 @@
   .ctx .it.on{color:var(--lk);font-weight:600}  .ctx .sep{height:1px;background:var(--line);margin:6px 4px}
   .ctx .ti{padding:6px 16px 10px;color:var(--mut);font-size:var(--ui-detail-small);letter-spacing:.4px}
   .ctx .it .k{margin-inline-start:auto;color:var(--mut);font-size:var(--ui-detail-small)}
+  /* 1.0.6 §1.3.2 — the drawer's 好友 / 消息 counts reuse `.cm-badge` (the sidebar's red pill), so
+     this rule only places it. A scoped rule rather than an inline style: the mark is drawn from
+     data, and a row that had to restyle itself from JS would put the same decision in two places. */
+  .ctx .it .cm-badge{margin-inline-start:auto}
 
   /* ---- modal ---- */
   .mask{position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9998;display:flex;align-items:center;justify-content:center}
@@ -1115,6 +1171,23 @@
      documents at length. Same rule for `.cm-bub`: shorthand is safe because nothing downstream
      restates it. */
   .cm{display:flex;gap:var(--ui-shell-gap);align-items:flex-start}
+  /* ---- 1.0.6 §1.8 — 「聊天室窗口高度」: the community area is ONE window-height box ----
+     §1.8's sketch is `height:calc(100vh - 头部 - 外边距)`, and the two numbers it subtracts are
+     measured rather than hard-coded here:
+
+     · `--wrap-top` is `.wrap`'s own top in the document (viewer.js, `syncChromeMetrics`). It
+       already contains the sticky header AND 0.4.0's update banner, so the room does not grow a
+       page scrollbar the moment an update is announced — the exact bug a `--header-h` subtraction
+       would have shipped, since the banner is in the page flow above `.wrap`.
+     · `2 * var(--ui-shell-gap)` is `.wrap`'s vertical padding, which sits OUTSIDE the box (the
+       measurement above is the border box's top), so both halves are subtracted.
+
+     ⚠ `.cm` is NOT told to stretch its children. §1.8 also says 「左侧次级导航不变」: the nav keeps
+     its content height, and only `.cm-body` is stretched to fill the row (below). Stretching the
+     container would have quietly turned a 5-row tab strip into a full-height panel. */
+  #view-community.active{display:flex;flex-direction:column;
+    height:calc(100vh - var(--wrap-top,0px) - 2 * var(--ui-shell-gap))}
+  #view-community > .cm{flex:1 1 auto;min-height:0}
   /* The sidebar carries `.panel` in the markup, so this is only its own layout. */
   .cm-nav{display:flex;flex-direction:column;gap:4px;flex:0 0 auto;min-width:164px;padding:6px}
   .cm-nav .cm-tab{display:flex;align-items:center;gap:8px;width:100%;text-align:start;
@@ -1128,16 +1201,57 @@
   .cm-ico{flex:0 0 auto;font-size:1.15em;line-height:1}
   .cm-lbl{min-width:0;overflow-wrap:anywhere}
 
-  .cm-body{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;gap:var(--ui-shell-gap)}
+  /* ⚠ 1.0.6 §1.8 — `align-self:stretch` + `min-height:0` are what carry §1.8's chain down to the
+     log. `.cm` is `align-items:flex-start` (see the §1.8 note above), so without the stretch the
+     body would be CONTENT height, `flex:1` on every box below it would resolve against an auto
+     height, and the whole chain would collapse back to 「as tall as the messages」 — the log would
+     grow without bound and nothing would scroll. */
+  .cm-body{flex:1 1 auto;min-width:0;min-height:0;align-self:stretch;
+    display:flex;flex-direction:column;gap:var(--ui-shell-gap)}
   .cm-pane{display:none}
-  .cm-pane.active{display:flex;flex-direction:column;gap:var(--ui-shell-gap)}
+  .cm-pane.active{display:flex;flex-direction:column;gap:var(--ui-shell-gap);flex:1 1 auto;min-height:0}
+  /* Every pane now lives inside §1.8's fixed-height box, so a pane whose content is longer than
+     the window has to scroll ITSELF — without this the overflow would simply spill out of the box
+     and the page would scroll instead, which is the thing §1.8 is trying to stop.
+     ⚠ `:not(#cmPane-chat)` is NOT cosmetic. `overflow` clips, and the chat pane is the one pane
+     with a popup anchored INSIDE it (`.cm-atlist` rises out of `.cm-atbox` at the bottom edge), so
+     giving it a scrollport would cut the @-autocomplete off at the pane boundary. */
+  #view-community .cm-pane.active:not(#cmPane-chat){overflow-y:auto}
 
   /* ---- 聊天室 (§2.3.6) ----
      Height is capped in `vh` so the send row stays on screen on a laptop, which is the one thing
-     §2.3.6's sketch gets wrong: it draws a fixed-height log with no scroll. */
-  .cm-log{display:flex;flex-direction:column;gap:10px;height:min(52vh,440px);overflow-y:auto;
+     §2.3.6's sketch gets wrong: it draws a fixed-height log with no scroll.
+
+     ⚠ 1.0.6 §1.8 REPLACED that cap with the flex chain. `min(52vh,440px)` was a SECOND answer to
+     「how tall is the room?」 that disagreed with the window: on a tall display the room stopped
+     growing at 440px and left a band of empty panel under the hints, and on a short one it was
+     52vh of an already-short viewport. Now the log takes exactly what is left after the header
+     row, the 加载更多 bar, the quote strip and the send row — the same box §1.8 draws. The `vh`
+     cap that remains on this page is the column menu's (`.colmenu`), which is a floating panel and
+     not part of this chain. */
+  .cm-log{display:flex;flex-direction:column;gap:10px;overflow-y:auto;flex:1 1 auto;min-height:0;
     padding:var(--ui-detail-padding);border:1px solid var(--line-soft);
     border-radius:var(--ui-detail-radius)}
+  /* ---- 1.0.6 §1.2.2 — 「回到底部」 ----
+     The button is a child of a WRAPPER, not of `.cm-log`: the log is its own scrollport, so an
+     absolutely-positioned child of it is part of the scrolled content and would ride up with the
+     history — pinned to the oldest line instead of to the corner. `.cm-logbox` is that wrapper, and
+     it is `flex:1 1 auto`/`min-height:0` so it and the log share the one height §1.8 gives the pane.
+     The offsets are the spec's, expressed LOGICALLY: `inset-inline-end` mirrors in Arabic, where the
+     physical `right` of the sketch would park the button on the wrong side (verify-046 forbids the
+     physical form outright, comments included). The inset is 16px rather than the sketch's 80px
+     because the sketch measures from the whole community view, and this wrapper is the log's box. */
+  .cm-logbox{position:relative;flex:1 1 auto;min-height:0;display:flex;flex-direction:column}
+  .cm-tobottom{position:absolute;inset-inline-end:16px;inset-block-end:14px;width:40px;height:40px;
+    padding:0;border-radius:50%;border:1px solid var(--blue);background:var(--blue);color:#fff;
+    font-size:16px;line-height:1;cursor:pointer;z-index:2;
+    display:flex;align-items:center;justify-content:center;box-shadow:0 2px 10px rgba(0,0,0,.35)}
+  .cm-tobottom:hover{filter:brightness(1.12)}
+  /* The chat pane's own panel is the flex column the log lives in (§1.8). Scoped by `>` from the
+     pane rather than written on `.panel`: that class is the shell's shared card, and every other
+     pane in this view — and twenty-odd other panels on the page — draw their children as ordinary
+     blocks. A `.panel{display:flex}` would have been one answer applied everywhere. */
+  #cmPane-chat > .panel{display:flex;flex-direction:column;flex:1 1 auto;min-height:0}
   /* §2.3.1 「自己的消息在右侧，他人的在左侧」 — `align-self` on the row, and `row-reverse` so the
      avatar follows the bubble to the right edge instead of being a second layout. */
   .cm-msg{display:flex;gap:8px;align-items:flex-start;max-width:min(78%,560px)}
@@ -1155,7 +1269,20 @@
     background:var(--inset);font-size:var(--ui-detail-small);line-height:1.55;
     white-space:pre-wrap;overflow-wrap:anywhere}
   .cm-msg.me .cm-bub{background:rgba(var(--blue-rgb),.16);border-color:var(--blue)}
-  .cm-send{display:flex;gap:8px;align-items:flex-end}
+  /* ---- 1.0.6 §1.4 — gomoku.com links in a message ----
+     `.btn` is the modifier for §1.4.2's two NAMED shapes (「加入房间 #N」 / 「查看对局」): they carry a
+     destination rather than a URL, so they are drawn as a chip the operator can press instead of a
+     string they have to read. The plain shape is an ordinary link. Both wrap (`anywhere`) because a
+     message is user text and a long room URL must break rather than widen the bubble. */
+  .cm-link{color:var(--lk);text-decoration:underline;overflow-wrap:anywhere}
+  .cm-link:hover{color:var(--blue)}
+  .cm-link.btn{display:inline-block;padding:2px 10px;border:1px solid var(--blue);border-radius:999px;
+    background:rgba(var(--blue-rgb),.10);color:var(--blue);text-decoration:none}
+  .cm-link.btn:hover{background:rgba(var(--blue-rgb),.22)}
+  /* §1.8's `.chat-input-area{flex-shrink:0}`: the send row and the three hint lines under it keep
+     their height whatever the log does. Without the zero basis a long draft in the textarea would
+     be allowed to squeeze them off the bottom of a short window. */
+  .cm-send{display:flex;gap:8px;align-items:flex-end;flex:0 0 auto}
   /* Beats the global `textarea{height:110px}` (0,1,1 > 0,0,1); the room's box grows with its
      content up to a ceiling rather than reserving a third of the panel for two lines. */
   .cm-send textarea{height:auto;min-height:44px;max-height:120px;resize:vertical;
@@ -1230,6 +1357,18 @@
     border-radius:6px;background:rgba(var(--blue-rgb),.10);font-size:var(--ui-detail-small);
     color:var(--mut);cursor:pointer;overflow-wrap:anywhere}
   .cm-quote .cm-qwho{color:var(--txt);font-weight:600;margin-inline-end:6px}
+  /* ---- 1.0.6 §1.11 — 「该消息已被撤回」 -------------------------------------------------------
+     ⚠ GREY AND ITALIC PER §1.11.2, and the two properties are the whole message: it has to be
+     OBVIOUSLY not a thing anyone said while still holding the row's place (§1.11.3 「会留下撤回
+     记录」, which is why the row is marked rather than deleted). `font-style:italic` on the line
+     rather than on `.cm-msg`, so the author's name and avatar above it stay upright — the row is
+     still attributed, only its content is gone. */
+  .cm-recall{font-style:italic;color:var(--mut);font-size:var(--ui-detail-small);padding:3px 0}
+  /* A quote whose ORIGINAL was withdrawn. The card keeps its place and its author (§1.11.4
+     「引用卡片显示 [该消息已被撤回]」) and loses the one thing that was copied out of it — see
+     `chat-recall`'s snapshot patch and `cmMsgHtml`'s `cm-qgone` branch. Muted further than a live
+     quote so the two never read alike, and NOT italic: the placeholder is already bracketed. */
+  .cm-quote.cm-qgone{background:var(--hover);border-inline-start-color:var(--line);color:var(--mut)}
   /* §1.6.4 「把 `@用户名` 高亮」. A tint, not a chip: the name is part of the sentence and has to
      keep the bubble's own line-height and wrapping. */
   .cm-at-x{color:var(--blue);font-weight:600}
@@ -1237,6 +1376,18 @@
      animation and cannot be forgotten by a caller. `cmJumpToMessage` uses the same 2000 ms. */
   @keyframes cmFlash{0%{background:rgba(var(--blue-rgb),.34)}100%{background:transparent}}
   .cm-flash{animation:cmFlash 2s ease-out 1}
+  /* ---- 1.0.6 §1.9 — 「新消息自下而上出现」 ----------------------------------------------------
+     ⚠ THE CLASS IS ONE-SHOT AND THE VIEW OWNS THAT, not the stylesheet. `cmPaintChat` replaces the
+     whole log's `innerHTML` on every read, so a row that kept `cm-new` would replay this on the next
+     unrelated repaint — a presence heartbeat calling `cmPaintChat` is enough. `cmNewId` is set by
+     `cmPush` (the one-arrival path) and consumed by the paint that immediately follows; the batch
+     path (`cmLoadMore`) and the first page never set it, which is §1.9.2's 「历史消息不应用」.
+     ⚠ The `prefers-reduced-motion` rule below is written for THIS animation only. `toast-in` and
+     `cmFlash` predate it and have no such guard — a standing gap, not a decision, and one rule is
+     how it starts getting closed rather than how it gets papered over. */
+  @keyframes cmMsgIn{from{transform:translateY(12px);opacity:0}to{transform:translateY(0);opacity:1}}
+  .cm-msg.cm-new{animation:cmMsgIn .25s ease-out}
+  @media (prefers-reduced-motion: reduce){.cm-msg.cm-new{animation:none}}
   /* §1.1.3's attachment card, inside a message: an icon column and a name column. */
   .cm-share{margin-top:5px;padding:7px 10px;border:1px solid var(--line);
     border-radius:var(--ui-detail-radius);background:var(--panel);display:flex;gap:10px;
@@ -1322,7 +1473,12 @@
   .cm-item.unread{border-inline-start:3px solid var(--blue)}
   /* The chat input row, with the 📎 button and the quote strip above the textarea. */
   .cm-sendcol{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;gap:6px}
-  .cm-attach{flex:0 0 auto;padding:0 12px;height:44px;font-size:1.15em;line-height:1}
+  /* 1.0.6 §1.12 — the button is 「📎 文件」, not a bare 📎. The icon keeps its own size so the label
+     matches the type beside it, and the label is its OWN text node on purpose: `keys.cjs` collects a
+     text node as one key, so 「📎 文件」 would have demanded the emoji in all twelve languages. */
+  .cm-attach{flex:0 0 auto;padding:0 12px;height:44px;font-size:1em;line-height:1;
+    display:inline-flex;align-items:center;gap:6px}
+  .cm-attach .ico{font-size:1.15em}
   /* §1.7.1's quote strip: 「引用 张三：… [×]」. */
   .cm-qstrip{display:flex;align-items:center;gap:8px;padding:5px 10px;border-radius:6px;
     border-inline-start:3px solid var(--blue);background:rgba(var(--blue-rgb),.10);
@@ -2225,7 +2381,18 @@
             <div class="cm-morebar">
               <button class="sec hidden" id="cmChatMore">加载更多</button>
             </div>
-            <div class="cm-log" id="cmChatLog"></div>
+            <!-- 1.0.6 §1.2.2 — the log and its 「回到底部」 button share ONE box (`.cm-logbox`).
+                 ⚠ The button is NOT a child of `#cmChatLog`: the log is its own scrollport, so a
+                 button inside it belongs to the scrolled content and rides up with the history
+                 instead of staying in the corner. `cmPaintToBottom` owns its visibility — see
+                 there for the threshold, which is the SAME number that decides whether an
+                 arriving message follows the reader down. -->
+            <div class="cm-logbox">
+              <div class="cm-log" id="cmChatLog"></div>
+              <!-- `↓` and not a word: it is the same glyph in all thirteen languages, so it needs
+                   no dictionary row of its own (`title` does, and has one). -->
+              <button class="cm-tobottom hidden" id="cmToBottom" title="回到底部">↓</button>
+            </div>
             <!-- 1.0.4 §P1 — §1.2.4's 「展示预览」 for a room 附件. Filled by `cmPaintCloudPreview`
                  from `cmPayloadHtml`; hidden while empty. The SAME builder writes `#cmMsgsPreview`
                  in the 消息 pane, so one payload cannot be described two ways. -->
@@ -2241,10 +2408,12 @@
               <button class="sec" id="cmQuoteClear">×</button>
             </div>
             <div class="cm-send" style="margin-top:10px">
-              <!-- §1.1.2's 「📎 附件」 button. `type=button` so it can never submit anything, and the
-                   picker is a modal built by the view rather than a native <input type=file> —
-                   §1.1.2's content comes from the LOCAL archives/samples, not from disk. -->
-              <button class="sec cm-attach" id="cmChatAttach" title="附件">📎</button>
+              <!-- §1.1.2's attachment button, renamed by 1.0.6 §1.12 from a bare 📎 to 「📎 文件」.
+                   `type=button` so it can never submit anything, and the picker is a modal built by
+                   the view rather than a native <input type=file> — §1.1.2's content comes from the
+                   LOCAL archives/samples, not from disk. The second-level 回放/样本/配置 picker is
+                   kept as it is; §1.12.2 allows exactly that. -->
+              <button class="sec cm-attach" id="cmChatAttach" title="文件"><span class="ico" aria-hidden="true">📎</span>文件</button>
               <div class="cm-sendcol">
                 <!-- `maxlength` is set from `GMCommunityShared.CHAT_MAX_LEN` at boot rather than
                      written here: the counter beside it and the Edge Function's own check are the
@@ -3045,12 +3214,41 @@
       </div>
       <!-- §5.1.3 — the preview. Fixed 400×300 and drawn with `background-image`, so what the
            operator drags is what the panel will show: the offset they set here IS the
-           `background-position` the overlay and the viewer get. -->
+           `background-position` the overlay and the viewer get.
+
+           1.0.6 §1.1.3 — and beside it, the 浮层样式预览. The picture preview above answers 「我选
+           的图对不对」; this one answers 「我的背景为什么看不见」, which is the actual report. It is a
+           MOCK of the in-page panel built from the same variables the real one reads, so it can
+           only be wrong if the real panel is. -->
       <div class="btn-row" style="margin-top:10px">
         <span class="hint">在预览图上按住拖动可调整位置</span>
       </div>
-      <div class="bg-prev" id="bgPreview" title="按住拖动调整位置">
-        <span class="bg-prev-empty" id="bgPreviewEmpty">还没有背景图</span>
+      <div class="bg-previews">
+        <div class="bg-prev" id="bgPreview" title="按住拖动调整位置">
+          <span class="bg-prev-empty" id="bgPreviewEmpty">还没有背景图</span>
+        </div>
+        <div class="ov-prev" id="overlayPreview">
+          <!-- A WIREFRAME, not a screenshot: grey bars stand in for the header title, the two
+               figures and the buttons. Two reasons, and the second one is the load-bearing one.
+               (1) A mock that spells out real wording rots the day the wording changes. (2) Every
+               CJK text node in this file is harvested as an i18n key by `_tools/keys.cjs` — a mock
+               reading 「状态：分析中」 would have asked for thirteen translations of a string no
+               operator can ever click. Bars ask for none, and they are read as 示意 by construction. -->
+          <div class="mk">
+            <div class="mk-hd">
+              <span class="mk-t"></span><span class="mk-sp"></span>
+              <span class="mk-i"></span><span class="mk-i"></span>
+            </div>
+            <div class="mk-bd">
+              <span class="mk-row"></span>
+              <span class="mk-row short"></span>
+              <div class="mk-btns">
+                <span class="mk-btn"></span><span class="mk-btn"></span><span class="mk-btn p"></span>
+              </div>
+            </div>
+          </div>
+          <span class="mk-cap">浮层样式</span>
+        </div>
       </div>
     </div>
 

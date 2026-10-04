@@ -269,6 +269,14 @@
     root.style.setProperty('--viewer-elem-bg-alpha', String(G.cssOpacity(v ? v.element : 0)));
     root.style.setProperty('--viewer-elem-blur', (v ? v.elementBlur : 0) + 'px');
     root.style.setProperty('--viewer-btn-bg-alpha', String(G.cssOpacity(v ? v.button : 0)));
+    // 1.0.6 §1.1.3 — the 浮层预览 reads the OVERLAY's half of this setting, which is not applied
+    // to the document at all (the overlay lives in the game tab, not here). Without this call the
+    // preview would only move when the operator touched the background panel, and the transparency
+    // sliders — the ones that actually answer 「为什么看不见」 — would leave it frozen.
+    // `$()` returns null before the markup is reachable, and the preview guards on that.
+    // ⚠ `t`, not `S.transparency`: see the note on `paintOverlayPreview` — this call is the one
+    // that has to show the value the operator is holding, not the last one that was written.
+    paintOverlayPreview(null, t);
     return t;
   }
 
@@ -1838,6 +1846,11 @@
   var bgTimer = null;
   var bgUrl = '';                      // object URL for the PREVIEW, revoked on replacement
   var bgViewUrl = '';                  // object URL for the live page's own backdrop
+  // 1.0.6 §1.1.3 — the `bg-overlay` slot, held separately from `bgCur`. The 浮层样式预览 always
+  // shows the OVERLAY, whatever slot the dropdown is editing, so it cannot reuse `bgCur`/`bgUrl`:
+  // those follow the dropdown, and the preview would then change identity every time the operator
+  // flipped it. A second object URL is the price of one screen answering one question.
+  var ovPrev = { rec: null, url: '' };
 
   function bgSlot() {
     var sel = $('bgSlot');
@@ -1903,13 +1916,57 @@
     setTxt('bgBlurVal', cfg.blur + 'px');
     setTxt('bgPreviewEmpty', T('viewer|还没有背景图'));
     var prev = $('bgPreview');
-    if (prev) {
-      prev.classList.toggle('has-bg', !!bgUrl);
-      bgVars(prev, cfg, bgUrl);
-    }
+    if (prev) prev.classList.toggle('has-bg', !!bgUrl);
+    // 1.0.6 §1.1.3 — both previews, from one snapshot. Every path that repaints the picture
+    // preview (load a slot, import, clear, drag-commit) has to reach the 浮层预览 too, or the two
+    // boxes sitting side by side would disagree about the same picture.
+    paintBgPreviews(cfg);
     setBgStatus(bgCur
       ? T('viewer|已设置（{kb} KB）', { kb: Math.max(1, Math.round(((bgCur.blob && bgCur.blob.size) || 0) / 1024)) })
       : T('viewer|未设置背景图'));
+  }
+
+  // 1.0.6 §1.1.3 — 浮层样式预览.
+  //
+  // Two independent inputs, and keeping them straight is the whole function:
+  //   · the PICTURE comes from whatever slot the operator is editing, so that dragging a just-
+  //     imported file moves the preview in the same frame (the drag is not saved yet);
+  //   · the FILLS come from the overlay's transparency group, always, because the thing being
+  //     previewed is the 浮层 and only the 浮层 has those five variables.
+  //
+  // ⚠ `applyOverlayTransparencyVars` rather than three hand-written `setProperty` calls: the
+  // mapping 「哪个设置喂哪个面」 has exactly one home (storage.js) and content.js applies the same
+  // map to its shadow host. A preview is the worst possible place for a second copy — it would go
+  // on looking right while the panel it claims to describe had already changed.
+  //
+  // `cfg` is optional and only ever honoured while the dropdown is on `bg-overlay`, because that
+  // is the only case where the sliders describe the slot being previewed. A caller holding a
+  // snapshot from a drag passes it so the readout and the two previews all show one instant.
+  //
+  // ⚠ `transp` is optional too, and it is NOT a convenience. `S.transparency` is module state that
+  // only catches up after `G.saveSetting` resolves, while the transparency panel deliberately
+  // previews the value the operator is HOLDING — so a preview that read `S` would lag one write
+  // behind the slider being dragged, and the 浮层预览 would show the previous setting for as long
+  // as the drag lasted. `applyTransparency` hands its own normalised copy down for that reason.
+  function paintOverlayPreview(cfg, transp) {
+    var el = $('overlayPreview');
+    if (!el) return;
+    var editing = (bgSlot() === 'bg-overlay');
+    var c = editing ? (cfg || bgCfg()) : G.clampBgConfig(ovPrev.rec || null);
+    var url = editing ? bgUrl : ovPrev.url;
+    bgVars(el, c, url);
+    G.applyOverlayTransparencyVars(el, transp || S.transparency);
+  }
+
+  // ONE writer for the two boxes that sit side by side. They are painted from the same `cfg` on
+  // purpose: four call sites (load a slot / import / clear / slider / drag) each used to repaint
+  // the picture preview by hand, and the moment there were two previews that was four chances for
+  // them to describe different pictures.
+  function paintBgPreviews(cfg, transp) {
+    var c = cfg || bgCfg();
+    var prev = $('bgPreview');
+    if (prev) bgVars(prev, c, bgUrl);
+    paintOverlayPreview(c, transp);
   }
 
   // Loads the slot the dropdown names into the panel. Revokes the previous preview URL: a
@@ -1923,6 +1980,16 @@
       if (bgUrl) { try { URL.revokeObjectURL(bgUrl); } catch (e) {} bgUrl = ''; }
       if (bgCur && bgCur.blob) {
         try { bgUrl = URL.createObjectURL(bgCur.blob); } catch (e) { bgUrl = ''; }
+      }
+      // 1.0.6 §1.1.3 — the 浮层预览's own copy. `loadBackground` resolves `null` rather than
+      // rejecting on every failure path, so there is no error branch to write here: "no picture
+      // for this slot" and "the read failed" are the same thing to a preview.
+      return G.loadBackground('bg-overlay');
+    }).then(function (ovRec) {
+      ovPrev.rec = ovRec || null;
+      if (ovPrev.url) { try { URL.revokeObjectURL(ovPrev.url); } catch (e) {} ovPrev.url = ''; }
+      if (ovPrev.rec && ovPrev.rec.blob) {
+        try { ovPrev.url = URL.createObjectURL(ovPrev.rec.blob); } catch (e) { ovPrev.url = ''; }
       }
       paintBgPanel();
       return bgCur;
@@ -2000,8 +2067,7 @@
     var cfg = bgCfg();
     setTxt('bgOpacityVal', cfg.opacity + '%');
     setTxt('bgBlurVal', cfg.blur + 'px');
-    var prev = $('bgPreview');
-    if (prev) bgVars(prev, cfg, bgUrl);
+    paintBgPreviews(cfg);
     if (!bgCur) return;
     var slot = bgSlot();
     G.saveBackgroundConfig(slot, cfg).then(function (ok) {
@@ -2037,7 +2103,10 @@
       var w = r.width || 1, h = r.height || 1;
       bgOff.x = Math.max(0, Math.min(100, ox - (ev.clientX - sx) / w * 100));
       bgOff.y = Math.max(0, Math.min(100, oy - (ev.clientY - sy) / h * 100));
-      bgVars(prev, bgCfg(), bgUrl);
+      // 1.0.6 §1.1.3 — both previews follow the DRAG, not the debounced write. The operator is
+      // dragging to see where the picture lands, so a 250ms lag here would be the one place the
+      // preview is visibly behind the gesture that drives it.
+      paintBgPreviews();
       if (bgTimer) clearTimeout(bgTimer);
       bgTimer = setTimeout(commitBgCfg, BG_SAVE_DELAY);
     });
@@ -2543,6 +2612,11 @@
       '<span class="blk" data-upd="open">' + esc(T('update.view')) + '</span>' +
       '<span class="blk" data-upd="dismiss">' + esc(T('update.dismiss')) + '</span>';
     el.classList.remove('hidden');
+    // 1.0.6 §1.8 — the strip is in the page flow, so showing or hiding it MOVES `.wrap` and the
+    // community view's height is derived from where `.wrap` starts. Without this the room would be
+    // sized for a page with no banner (or for one that has just been dismissed) until the next
+    // resize. Safe to call at any point: `syncChromeMetrics` only writes two custom properties.
+    syncChromeMetrics();
   }
 
   var updNowBusy = false;
@@ -3019,8 +3093,7 @@
       var cfg = bgCfg();
       setTxt(id === 'bgOpacity' ? 'bgOpacityVal' : 'bgBlurVal',
              id === 'bgOpacity' ? cfg.opacity + '%' : cfg.blur + 'px');
-      var prev = $('bgPreview');
-      if (prev) bgVars(prev, cfg, bgUrl);
+      paintBgPreviews(cfg);
       if (bgTimer) clearTimeout(bgTimer);
       bgTimer = setTimeout(commitBgCfg, BG_SAVE_DELAY);
     });
@@ -3519,6 +3592,38 @@
   /** The room's rows, ascending by `created_at`, and the one de-duplicator that fills them. */
   var cmRows = [];
   var cmSeen = {};
+  /** 1.0.6 §1.9 — the ONE row that may still play the entrance animation, or null.
+   *
+   *  ⚠ A SLOT, NOT A CLASS ON THE ROW, and that is forced by how the room paints: `cmPaintChat`
+   *  replaces the log's whole `innerHTML`, so any class a row carried is gone one repaint later —
+   *  and a class that SURVIVED (by being re-emitted from the row data, say) would replay the
+   *  animation on every unrelated repaint. Set by `cmPush` (one arrival at a time, and the paint it
+   *  triggers), consumed at the end of that paint. */
+  var cmNewId = null;
+  /** §1.9.2's 「历史消息渲染时不应用动画」. `chatSubscribe` delivers the FIRST PAGE through the same
+   *  `onRow` callback a live message arrives on (community.js), so without this flag walking into a
+   *  busy room plays fifty animations at once — the exact thing the spec rules out, and the reason
+   *  `cmLoadMore`'s batch path is excluded for the same purpose. */
+  var cmChatPrimed = false;
+  /**
+   * 1.0.6 §1.10.2 — the timestamps of the messages I have ACTUALLY SENT, newest last. The spec calls
+   * this `messageTimestamps`; it is `cmSentAt` here because every other piece of chat state in this
+   * closure is `cm`-prefixed, and a bare noun reads like it belongs to the shared block.
+   *
+   * ⚠ IT COUNTS ONLY MESSAGES THAT WERE STORED. The stamp goes on at the moment `chat-send` says
+   * `ok`, never when the button is pressed: a refused send — too long, censored, muted, or refused
+   * by the very limit this array exists to enforce — must not spend an entry, which is also how the
+   * server counts (`recentCount` reads the table, not a client counter). Counting attempts would let
+   * a run of failures lock the operator out of a room they had barely written in.
+   *
+   * ⚠ AND IT IS NOT THE HALF THAT HOLDS. Anyone can edit a file in an unpacked extension directory;
+   * `chat-send` is the door. This exists only so the common refusal costs no round trip.
+   *
+   * ⚠ IT IS NOT CLEARED BY `cmLeave`. The quota belongs to the ACCOUNT and is counted by the server
+   * across rooms and across a full page reload; an array that emptied when the operator stepped out
+   * of the room would be a client half that can be walked around by stepping out of the room.
+   */
+  var cmSentAt = [];
   var cmNews = null;          // null = never arrived; [] = arrived and empty
   var cmNewsFilter = '';      // '' = §2.4.4's 「全部」
   var cmNewsOpen = {};        // id -> true, the cards showing their full text
@@ -3644,12 +3749,19 @@
       case 'loading': return T('community|加载中…');
       case 'loadFailed': return T('community|加载失败（{err}）', { err: err });
       case 'sendFailed': return T('community|发送失败（{err}）', { err: err });
+      // 1.0.6 §1.11 — a RECALL that failed is not a SEND that failed; see `cmRecall`.
+      case 'recallFailed': return T('community|撤回失败（{err}）', { err: err });
       case 'submitFailed': return T('community|提交失败（{err}）', { err: err });
       case 'submitted': return T('community|已提交，管理员会尽快处理。');
       case 'tooLong': return T('community|单条最多 {n} 个字符。', { n: m.n });
       case 'tooLongForm': return T('community|超出长度上限，请精简后重试。');
       case 'censorChat': return T('community|内容包含敏感词：{word}', { word: m.word });
       case 'censorForm': return T('community|提交内容包含敏感词：{word}', { word: m.word });
+      // ⚠ 1.0.6 §1.10.3 asks for 「发送过于频繁，请稍后再试」 and this line says 「发送太频繁，请稍后再试
+      // （每分钟最多 {n} 条）」. It is the SAME sentence plus the cap, it is already in twelve tables,
+      // and re-wording it would buy the operator nothing but a second copy of one answer. What the
+      // 定稿 is asking for is that an over-limit send SAYS SO instead of waiting for a 409 — and that
+      // is what the §1.10.2 client gate above is for.
       case 'rateChat': return T('community|发送太频繁，请稍后再试（每分钟最多 {n} 条）', { n: m.n });
       case 'pickCat': return T('community|请选择类型。');
       case 'needTitleBody': return T('community|标题和内容都不能为空。');
@@ -3750,7 +3862,18 @@
    *  over the message, so a bare `@` in prose stays prose and a name that is not an account is not
    *  dressed up as one. */
   function cmHighlightMentions(text) {
-    var out = esc(text);
+    return cmMentionHtml(esc(text));
+  }
+
+  /** §1.6.4's mention highlight, on text that has ALREADY been escaped.
+   *
+   *  ⚠ Split out of `cmHighlightMentions` by 1.0.6 §1.4, and not for tidiness: the link pass has to
+   *  run over the same escaped string, and the two passes must not reach inside each other. A
+   *  mention pass running AFTER the links would happily match an `@name` inside an `href`, and a
+   *  link pass running after the mentions would stop its URL at the `<` of the `cm-at-x` span it
+   *  just produced — either order mangles both. So `cmBodyHtml` splits the message on the link
+   *  shape FIRST and hands only the segments between links to this function. */
+  function cmMentionHtml(out) {
     var names = [];
     ((cmFriends && cmFriends.friends) || []).forEach(function (f) { names.push(cmFriendLabel(f)); });
     cmRows.forEach(function (r) { if (r.username) names.push(String(r.username)); });
@@ -3766,21 +3889,124 @@
     return out;
   }
 
-  /** §1.1.3's card, §1.7.3's quote block, §1.6.4's highlight — one builder, one message. */
-  function cmMsgHtml(row) {
+  // ---- 1.0.6 §1.4 — gomoku.com links in a message ------------------------------------------------
+  //
+  // ⚠§1.4.4: gomoku.com AND NOTHING ELSE. The room is a public wall that any account can post to,
+  // so a general linkifier would turn it into a phishing surface — 「点这个链接领激活码」 pointing at
+  // a lookalike domain is exactly the message a general one would make clickable. One host, one
+  // shape, and every other domain in a message stays the text it always was.
+  //
+  // ⚠ The regex is §1.4.1's, WITH THE CJK RANGES TAKEN OUT OF THE CHARACTER CLASS, and that is a
+  // real defect rather than a refinement. §1.4.1 writes the tail as `[^\s<>"']+`, which swallows
+  // everything up to the next whitespace — and Chinese puts no space after a full stop:
+  //
+  //     https://gomoku.com/room/123。后面还有字
+  //
+  // is ONE match, so the href becomes `…/room/123。后面还有字` and the link 404s while looking right.
+  // No URL contains a CJK character (a non-ASCII path is percent-encoded), so excluding the CJK
+  // blocks is what makes the URL end where the language says it ends. The ranges are i18n.js's CJK
+  // test minus the Latin-adjacent ones: CJK punctuation, ideographs, kana, hangul, full-width forms.
+  //
+  // ⚠ It is also a SHARED `g` regex driven by `exec` in a loop, which is why `cmBodyHtml` resets
+  // `lastIndex` before it starts: a `g` regex carries the previous call's position, and the second
+  // message rendered would otherwise begin its scan wherever the first one stopped.
+  var CM_LINK_RE = /https?:\/\/(?:www\.)?gomoku\.com\/[^\s<>"'\u3000-\u303f\u4e00-\u9fff\uff00-\uffef\u3040-\u30ff\uac00-\ud7af]+/gi;
+
+  /** Trailing ASCII punctuation a sentence may put after a URL, and which is not part of it.
+   *
+   *  ⚠ NOT IN §1.4's SKETCH either: 「see https://gomoku.com/room/123.」 ends in a period, and unlike
+   *  `。` that character IS legal inside a URL. The tail is trimmed from the HREF and left in the
+   *  text where the sentence put it. */
+  var CM_LINK_TAIL = /[.,;:!?)\]}」』】》”’…]+$/;
+
+  /** One link, as one of §1.4.2's three shapes. */
+  function cmLinkHtml(url) {
+    var room = /\/room\/(\d+)/.exec(url);
+    var game = room ? null : /\/game\/([a-zA-Z0-9]+)/.exec(url);
+    // §1.4.2's two NAMED links read as buttons; §1.4.2's third is shown as itself.
+    // ⚠ The third branch is NOT escaped here: the whole message went through `esc()` before the
+    // link pass, so this URL is already escaped, and escaping it a second time would print
+    // `&amp;amp;` for every `&` a room id ever carries. The first two branches translate from the
+    // dictionary, so those DO need it.
+    var label = room ? esc(T('community|加入房间 #{n}', { n: room[1] }))
+              : game ? esc(T('community|查看对局'))
+              : url;
+    return '<a class="cm-link' + (room || game ? ' btn' : '') + '" href="' + url +
+      '" target="_blank" rel="noopener noreferrer">' + label + '</a>';
+  }
+
+  /** §1.4's `renderMessageContent`, in the shape the rest of this file uses: the mention pass and
+   *  the link pass are applied to ONE escaped string, links first, mentions on the segments between
+   *  them. `esc()` runs once, here, and every branch below is careful about which side of it it is
+   *  on — that is the whole trick of this function. */
+  function cmBodyHtml(text) {
+    var s = esc(text);
+    var out = '';
+    var last = 0;
+    var m;
+    CM_LINK_RE.lastIndex = 0;
+    while ((m = CM_LINK_RE.exec(s)) !== null) {
+      var url = m[0];
+      var tail = CM_LINK_TAIL.exec(url);
+      // The tail is punctuation only, so it never needs escaping on the way back into the markup.
+      if (tail) url = url.slice(0, url.length - tail[0].length);
+      out += cmMentionHtml(s.slice(last, m.index)) + cmLinkHtml(url) + (tail ? tail[0] : '');
+      last = m.index + m[0].length;
+    }
+    out += cmMentionHtml(s.slice(last));
+    return out;
+  }
+
+  /** §1.1.3's card, §1.7.3's quote block, §1.6.4's highlight, §1.11.2's withdrawal — one builder,
+   *  one message. */
+  function cmMsgHtml(row, isNew) {
     var S = GMCommunity.shared() || {};
     var name = row.username || '—';
     var when = S.chatClock ? S.chatClock(row.created_at) : '';
     var HTML = '';
 
-    if (row.reply_preview) {
-      var q = row.reply_preview || {};
-      HTML += '<div class="cm-quote" data-cm-goto="' + esc(String(q.message_id || '')) + '">' +
-        '<span class="cm-qwho">' + esc(String(q.username || '—')) + '</span>' +
-        '<span class="cm-qbody">' + esc(cmPreview(String(q.content || ''), CM_PREVIEW)) + '</span></div>';
-    }
+    // ⚠⚠ 1.0.6 §1.11 — A WITHDRAWN MESSAGE DRAWS NOTHING OF WHAT IT SAID, AND THAT IS THE ENTIRE
+    // FEATURE. Placing this FIRST is the point: `content`, the §1.1.3 attachment card and the
+    // §1.7.4 quote are all still IN THE ROW (021 keeps them — §1.11.3 「会留下撤回记录」, and §2.1's
+    // 举报 review needs what was actually said), so every one of them would render unless the
+    // withdrawal is checked before them. A withdrawn message that kept its attachment card would
+    // leave the file reachable — 「撤回」 that hands the thing out anyway is the failure this branch
+    // exists to prevent. The avatar and name stay: the row keeps its place, and §1.11.3 says so.
+    if (row.recalled) {
+      HTML = '<div class="cm-recall">' + esc(T('community|该消息已被撤回')) + '</div>';
+    } else {
+      if (row.reply_preview) {
+        var q = row.reply_preview || {};
+        // ⚠ 1.0.6 §1.11.4 — 「被引用时引用卡片显示 [该消息已被撤回]」, and `q.recalled` is how the card
+        // learns it. A quote is a SNAPSHOT (`reply_preview`, §1.7.4's 「冗余存储，避免每次 join」), so
+        // there is no original to ask: it may be outside the loaded page — which is precisely the
+        // case the snapshot exists for — or deleted. `chat-recall` re-marks every quoting row's
+        // snapshot when a message is withdrawn; this is the reading half of that write.
+        var qGone = q.recalled === true;
+        // ⚠⚠ THE JUMP TARGET IS `row.reply_to`, AND IT USED TO BE `q.message_id` — A KEY NOTHING EVER
+        // WROTE. It was `reply_preview.message_id` here while `chat-send` stores
+        // `{user_id, username, content, created_at}` (and now `recalled`), so `data-cm-goto` was
+        // ALWAYS the empty string and every click on a quote answered 「这条消息不在当前加载的范围内。」
+        // — including for the message sitting three lines above it. Nothing caught it because the
+        // attribute was present and non-empty-looking, and `cmJumpToMessage('')` is a well-defined
+        // call that reports a truthful-sounding miss. `reply_to` is the id `008_community_ext.sql`
+        // added for exactly this (「§1.7.3's click target」) and it is already in `CHAT_COLS`, so it
+        // is also the copy that cannot go stale — the snapshot must not carry a second one.
+        // Rendered only when there IS something to jump to: `on delete set null` empties `reply_to`
+        // while the snapshot keeps drawing, and a card that claims to be a link and is not is worse
+        // than one that is plainly text.
+        HTML += '<div class="cm-quote' + (qGone ? ' cm-qgone' : '') + '"' +
+          (row.reply_to ? ' data-cm-goto="' + esc(String(row.reply_to)) + '"' : '') + '>' +
+          '<span class="cm-qwho">' + esc(String(q.username || '—')) + '</span>' +
+          '<span class="cm-qbody">' + (qGone
+            ? esc(T('community|[该消息已被撤回]'))
+            : esc(cmPreview(String(q.content || ''), CM_PREVIEW))) + '</span></div>';
+      }
 
-    if (row.content) HTML += '<div class="cm-bub">' + cmHighlightMentions(row.content) + '</div>';
+    // 1.0.6 §1.4 — `cmBodyHtml`, not `cmHighlightMentions`: the bubble is where §1.4's links live,
+    // and the two passes are ordered inside it. ⚠ The signed-in QR/JSON code panes are NOT the room
+    // and do not come through here, so a `gomoku.com` URL pasted into 棋谱代码 is still plain text.
+    if (row.content) HTML += '<div class="cm-bub">' + cmBodyHtml(row.content) + '</div>';
 
     // §1.1.3's attachment card. `messageType()` (the shared block) derives which of the three it is
     // from `attachment.kind` — the spec carries the same fact twice and 008 dropped the duplicate.
@@ -3819,8 +4045,11 @@
               '<div class="cm-vslot"></div></div>'
           : '');
     }
+    // ---- end of §1.11's else: everything above is what a message that still STANDS draws -------
+    }
 
     return '<div class="cm-msg' + (row.user_id && row.user_id === cmUid() ? ' me' : '') +
+      (isNew ? ' cm-new' : '') +
       '" data-cm-msg="' + esc(row.id) + '">' +
       cmAvatarHtml(row.avatar_url, name, row.user_id, cmRowForUser(row.user_id)) +
       '<div class="cm-txt">' +
@@ -3830,16 +4059,80 @@
       '</div></div>';
   }
 
+  // ---- 1.0.6 §1.2 — where the room's scroll position lives --------------------------------------
+  //
+  // ONE number answers BOTH of §1.2's questions: 「should an arriving message follow the reader
+  // down?」 (§1.2.1) and 「should 回到底部 be on screen?」 (§1.2.2). They were two constants in the
+  // sketch — the live-follow test used 24px and the button used 50px — which is the shape this
+  // project has already shipped five times as a defect: two thresholds for one boundary means the
+  // band between them where the room follows you down while the button says you are at the bottom.
+  //
+  // `cmStickBottom` is the maintained answer, and it is maintained by the LOG'S OWN `scroll`
+  // listener — every position change goes through one rule, whoever caused it (a wheel, a
+  // keyboard, `cmLoadMore`'s compensation, or our own scroll-to-bottom).
+  var CM_BOTTOM_EPS = 50;
+  var cmStickBottom = true;
+
+  /**
+   * Re-derives 「is the room following its newest line?」 from the log's real box, and keeps
+   * 回到底部 in step with it. Called from the log's `scroll` listener and at the end of every
+   * repaint.
+   */
+  function cmPaintToBottom() {
+    var log = $('cmChatLog');
+    if (!log) return;
+    // ⚠ A BOX WITH NO HEIGHT HAS NO OPINION. `#cmChatLog` measures 0 × 0 whenever another pane or
+    // another view is up (`display:none`), and 「0 + 0 is not within 50px of 0」 is false — so the
+    // naive test would answer 「the reader is at the bottom」 for an operator who is actually
+    // halfway up the history, and the next arrival would yank them to the newest line. Returning
+    // early leaves the last real answer in place.
+    if (!log.clientHeight) return;
+    cmStickBottom = (log.scrollTop + log.clientHeight) >= (log.scrollHeight - CM_BOTTOM_EPS);
+    var btn = $('cmToBottom');
+    if (btn) btn.classList.toggle('hidden', cmStickBottom);
+  }
+
+  /**
+   * §1.2.1 「进入聊天室时自动滚动到底部」 and §1.2.3's smooth variant, in one place.
+   *
+   * ⚠ It must be called AFTER the pane is on screen. `scrollHeight` of a `display:none` box is 0,
+   * so a scroll issued while the room is still hidden sets `scrollTop = 0` and the room opens on
+   * its oldest line — the very symptom §1.2 is about. Both callers (`cmShowTab`, `refreshCommunity`)
+   * run after the class flip for that reason.
+   */
+  function cmScrollBottom(smooth) {
+    var log = $('cmChatLog');
+    if (!log) return;
+    cmStickBottom = true;
+    if (smooth && log.scrollTo) log.scrollTo({ top: log.scrollHeight, behavior: 'smooth' });
+    else log.scrollTop = log.scrollHeight;
+    // Written directly rather than left to the `scroll` event: a smooth scroll has not moved yet
+    // when this returns, so the button would sit there for the length of the animation.
+    var btn = $('cmToBottom');
+    if (btn) btn.classList.add('hidden');
+  }
+
   function cmPaintChat() {
     var log = $('cmChatLog');
     if (!log) return;
-    // Stick to the bottom only when the reader was already there. A room that jumps to its newest
-    // line while someone is scrolling back is a room whose history cannot be read.
-    var stick = (log.scrollTop + log.clientHeight) >= (log.scrollHeight - 24);
+    // §1.2.1 — stick to the bottom when the reader is following the room, which `cmStickBottom`
+    // answers. ⚠ The ORIGINAL code recomputed it here from the live box, and that is exactly what
+    // §1.2 is a bug report about: on the first paint `scrollTop` is still 0 against a full page,
+    // so 「the reader is 500px from the bottom」 was read as 「the reader wants to be at the top」
+    // and the room opened on its oldest line. Entering the room now FORCES the flag on
+    // (`cmScrollBottom`), so the two cases are told apart by history rather than by arithmetic.
+    var stick = cmStickBottom;
+    // §1.9.2 — the slot is READ here and CLEARED right after, so exactly one paint per arrival
+    // animates. `cmNewId` is a row id; `cmMsgHtml` turns it into `cm-new` on that row's own node.
+    var isNew = cmNewId;
     log.innerHTML = cmRows.length
-      ? cmRows.map(cmMsgHtml).join('')
+      ? cmRows.map(function (r) { return cmMsgHtml(r, !!isNew && r.id === isNew); }).join('')
       : '<div class="cm-empty">' + esc(T('community|还没有消息，来说第一句吧。')) + '</div>';
+    cmNewId = null;
     if (stick) log.scrollTop = log.scrollHeight;
+    // After the repaint, not before: replacing `innerHTML` can clamp `scrollTop` (a deleted row, a
+    // shorter page) and the button must describe the box that is actually on screen now.
+    cmPaintToBottom();
     var c = $('cmChatCount');
     if (c) c.textContent = T('community|{n} 条消息', { n: cmRows.length });
     // The button's own label is language-dependent, and `cmPaintChat` is what every repaint path
@@ -3874,9 +4167,34 @@
    * for (an insert during the load would otherwise be missed by both halves), our own send is drawn
    * immediately AND pushed back, and a reconnect re-delivers the page. Three ordinary paths, one
    * message each.
+   *
+   * ⚠⚠ 1.0.6 §1.11 — IT IS AN UPSERT NOW, AND THE CHANGE IS WHAT MAKES A RECALL VISIBLE AT ALL.
+   * Until §1.11 a duplicate `id` was always a re-delivery of an identical row, so dropping it was
+   * free. A message can now be EDITED, and 「same id」 no longer means 「same row」: the socket
+   * delivers the recall as an UPDATE (community.js `rtRoom`), and the polling fallback re-reads the
+   * whole page every `RT_SWEEP_TICKS` ticks because its incremental query (`created_at gt since`)
+   * can never see one. Both land here, and a `return` on `cmSeen` would have thrown both away —
+   * leaving the room showing 「你好」 for a withdrawn message while every box on screen said the
+   * update had been applied.
+   *
+   * ⚠ A REPLACED ROW NEVER ANIMATES AND NEVER ADVANCES `cmNewId`. §1.9's entrance is for a line that
+   * APPEARED; a line whose text changed did not appear. The sweep in particular re-delivers 50
+   * unchanged rows every half minute, so it also skips the repaint entirely when nothing differs.
+   * (The comparison is a stringify, and it is allowed to be conservative in one direction only: two
+   * rows that stringify alike are equal, which is all a skip needs. Key ORDER can differ between the
+   * socket's record and PostgREST's projection, and that only costs a repaint.)
    */
   function cmPush(row) {
-    if (!row || typeof row.id !== 'string' || cmSeen[row.id]) return;
+    if (!row || typeof row.id !== 'string') return;
+    var at = cmIndexOf(row.id);
+    if (at >= 0) {
+      var was = cmRows[at];
+      if (JSON.stringify(was) === JSON.stringify(row)) return;
+      cmRows[at] = row;
+      cmNewId = null;
+      cmPaintChat();
+      return;
+    }
     cmSeen[row.id] = true;
     cmRows.push(row);
     // Sorted on insert rather than trusting arrival order: the live socket and the scrollback
@@ -3885,7 +4203,44 @@
       var x = String(a.created_at || ''), y = String(b.created_at || '');
       return x < y ? -1 : (x > y ? 1 : 0);
     });
+    // ---- 1.0.6 §1.9 — this arrival may animate ------------------------------------------------
+    // ⚠ THIS IS THE ONLY PLACE THE ENTRANCE ANIMATION IS ARMED, and it is arming-by-path rather than
+    // by predicate: `cmLoadMore` (fifty rows at once) and the first page (see `cmChatPrimed`) do not
+    // come through here, so 「history does not animate」 needs no second rule to state it.
+    // ⚠ OUR OWN SENT MESSAGE ANIMATES TOO. `cmSend` draws it with `cmPush` because waiting for the
+    // Realtime echo would make the room look broken on a slow socket, and from the reader's side it
+    // is a line that just appeared — excluding it would mean a second predicate on the one path, to
+    // make one case worse.
+    if (cmChatPrimed) cmNewId = row.id;
     cmPaintChat();
+  }
+
+  /** The position of a row already in hand, or -1. ONE lookup for the four readers that need it —
+   *  `cmRowOf` (the gestures), `cmJumpToMessage`, `cmPush` and `cmPersonOf`'s sibling search all
+   *  used to spell it out, and a list that grows a second search rule per caller is how a row ends
+   *  up findable by one gesture and not by the next. */
+  function cmIndexOf(id) {
+    if (id == null) return -1;
+    var key = String(id);
+    for (var i = 0; i < cmRows.length; i++) {
+      if (cmRows[i] && String(cmRows[i].id) === key) return i;
+    }
+    return -1;
+  }
+
+  /**
+   * 1.0.6 §1.11 — a message the reader may already hold was EDITED. Today the only editor is a
+   * recall.
+   *
+   * ⚠ A CHANGE TO A ROW THAT IS NOT ON SCREEN IS NOT AN ARRIVAL. `cmPush` would append it, at its
+   * sorted position, with §1.9's entrance animation — so recalling a message from outside the loaded
+   * page would make an old line slide into the room. Ignoring it is the whole difference between
+   * 「this row changed」 and 「a row appeared」, which is why the two callbacks are not one.
+   */
+  function cmRowChanged(row) {
+    if (!row || typeof row.id !== 'string') return;
+    if (cmIndexOf(row.id) < 0) return;
+    cmPush(row);
   }
 
   // ---- 1.0.4 §P1 — 「加载更多」 (the older half of the room) -------------------------------------
@@ -3953,6 +4308,28 @@
   }
 
   /**
+   * §2.3.5's CLIENT half of 「每分钟最多 20 条」. Read `cmSentAt` above for why it exists and why it
+   * is not the half that holds.
+   *
+   * ⚠ NO SECOND COPY OF EITHER NUMBER. Both come out of the mirrored shared block, and a missing
+   * half means 「nothing to enforce」 rather than a guessed 20 / 60000 — the cap and its window are
+   * ONE rule, and half of a rule is not a rule. The failure direction is deliberate: fail OPEN, so a
+   * shared block that did not load cannot lock the operator out of a room. `chat-send` still holds.
+   */
+  function cmRateOk(S) {
+    var max = (S && S.CHAT_RATE_MAX) || 0;
+    var win = (S && S.CHAT_RATE_WINDOW_MS) || 0;
+    if (!max || !win) return true;
+    var now = Date.now();
+    cmSentAt = cmSentAt.filter(function (t) { return now - t < win; });
+    return cmSentAt.length < max;
+  }
+
+  /** One stamp per message the server actually STORED. Text and §1.1.2's attachment are both rows in
+   *  `chat_messages`, and `recentCount` counts rows, so both spend one. */
+  function cmStampSend() { cmSentAt.push(Date.now()); }
+
+  /**
    * §2.3's send, behind §2.3.5's CLIENT half of the filter.
    *
    * Not decoration either: §2.3.5 says 「客户端 + 服务端双重」, and the client half is what turns a
@@ -3980,6 +4357,16 @@
       cmPaintChatMsg();
       return;
     }
+    // ⚠ 1.0.6 §1.10.2 — THE RATE GATE SITS BELOW THE CONTENT CHECKS, AND THAT ORDER IS NOT FREE.
+    // `chat-send` runs `content(BAD_REQUEST, TOO_LONG, REJECTED) → RATE_LIMITED` (see its header),
+    // so a client that asked about the clock first would answer 「太频繁」 for a message the server
+    // would have refused as 「有敏感词」. The two halves of §2.3.5's double check must give ONE
+    // verdict, and the only way to keep them doing that is to keep their questions in one order.
+    if (!cmRateOk(S)) {
+      cmChatMsg = { code: 'rateChat', n: S.CHAT_RATE_MAX, tone: 'err' };
+      cmPaintChatMsg();
+      return;
+    }
 
     var btn = $('cmChatSend');
     if (btn) btn.disabled = true;
@@ -3993,7 +4380,7 @@
       if (!r || !r.ok) {
         // ⚠ RATE_LIMITED is NOT handed to `cloudErrText`. That shared vocabulary words this code as
         // 「发送过于频繁，请 60 秒后再试」 — the EMAIL-VERIFICATION window, which is a different
-        // answer to a different question. §2.3.5's window is 「每分钟最多 10 条」, and a chat room
+        // answer to a different question. §2.3.5's window is 「每分钟最多 20 条」, and a chat room
         // that tells the operator to wait a minute when the wait is seconds is worse than no
         // sentence at all. One code, two windows, so the sentence is chosen by the caller.
         cmChatMsg = (r && r.error === 'RATE_LIMITED')
@@ -4002,6 +4389,7 @@
         cmPaintChatMsg();
         return;
       }
+      cmStampSend();
       i.value = '';
       cmQuote = null;
       cmPaintQuote();
@@ -4099,6 +4487,9 @@
     // TO and switched back FROM. It is in this list (rather than a second router) so the pane
     // toggle and the tab toggle stay one statement.
     if (CM_TABS.indexOf(name) < 0 && name !== 'user') return;
+    // ⚠ BEFORE the assignment below. 「Was the room already on screen?」 is what tells a tab SWITCH
+    // (which must land on the newest line, §1.2.1) apart from `cmPaintAll` re-entering the same tab.
+    var wasChat = (CM_TAB === 'chat');
     CM_TAB = name;
     Array.prototype.forEach.call(document.querySelectorAll('#cmNav .cm-tab'), function (b) {
       b.classList.toggle('active', b.getAttribute('data-cm') === name);
@@ -4109,6 +4500,10 @@
     Array.prototype.forEach.call(document.querySelectorAll('#view-community .cm-pane'), function (p) {
       p.classList.toggle('active', p.id === 'cmPane-' + name);
     });
+    // 1.0.6 §1.2.1 — the second door into the room (the first is `refreshCommunity`). AFTER the
+    // pane flip: `#cmChatLog` is `display:none` while 好友 is up, and `scrollHeight` of a hidden box
+    // is 0, so scrolling before this line would mean scrolling to the top.
+    if (name === 'chat' && !wasChat) cmScrollBottom(false);
     // A poll's countdown follows the pane it is drawn in. Leaving 聊天室 for 好友 must stop the
     // tick, or it keeps formatting a clock for a node nobody can see.
     if (name !== 'chat') cmStopVoteTick();
@@ -4319,10 +4714,16 @@
       };
       // The list must close when the caret leaves the token by CLICK too, not only by typing.
       input.onblur = function () { cmMention = null; cmPaintMentions(); };
-      // §1.6.1's 「右键头像」 is handled on the avatar, but a right-click ON THE INPUT is the other
-      // place a browser offers its own menu; suppressing it here is what lets the room's own
-      // gestures be the only ones that appear.
-      input.oncontextmenu = function (e) { e.preventDefault(); };
+      // ⚠⚠ 1.0.6 §1.5 — THE INPUT BOX KEEPS THE BROWSER'S OWN MENU, AND THAT IS THE FIX.
+      // This used to be `input.oncontextmenu = function (e) { e.preventDefault(); };`, added on the
+      // theory that the room's own gestures should be the only ones that appear. What it actually
+      // suppressed was 剪切 / 复制 / **粘贴** — and the third one is the loss an operator notices in
+      // the first second, because no in-room gesture can replace it. The suppression was never
+      // needed in the first place: `cmRootContext` answers for `[data-cm-av]` and `[data-cm-msg]`
+      // and nothing else, so a right-click that lands on neither already falls through to the
+      // native menu on its own. The guard that DOES matter — 「an un-activated reader gets no popup
+      // whose every row does nothing」 — lives in that one handler, which is where it belongs; see
+      // the note there about what a new claim must check before swallowing a right-click.
     }
     // ⚠⚠ §1.6.2's LIST WAS BUILT AND NEVER WIRED. `cmPaintMentions` has always written
     // `data-at="<name>"` on every suggestion, and NOTHING in the file ever dispatched it: a mouse
@@ -4371,6 +4772,18 @@
     // 1.0.4 §P1 — §1.1.2's 「加载更多」. A plain handler is right here (unlike the lists, which
     // delegate): the node is in `viewer.html`, never rebuilt, and has no per-row identity.
     if ($('cmChatMore')) $('cmChatMore').onclick = cmLoadMore;
+    // ---- 1.0.6 §1.2 — the room's scroll position ------------------------------------------------
+    // The log's OWN listener is the single place the position is read, so nothing else in the file
+    // has to guess whether the reader is following along: `cmPaintChat` reads `cmStickBottom`
+    // (written here), and `#cmToBottom`'s visibility follows the same answer.
+    if ($('cmChatLog')) $('cmChatLog').onscroll = cmPaintToBottom;
+    if ($('cmToBottom')) $('cmToBottom').onclick = function () { cmScrollBottom(true); };
+    // ---- 1.0.6 §1.6 — double-click a message to quote it ----------------------------------------
+    // On the LOG, not on `#view-community`: the gesture belongs to the room, and a listener one
+    // level up would also fire over the friend list and the news cards, where a double-click is a
+    // double-click and nothing else. Delegated through the row node for the same reason every other
+    // list here is (the rows are rebuilt on every read and on every language switch).
+    if ($('cmChatLog')) $('cmChatLog').ondblclick = cmDblClickMessage;
     if ($('cmUserBack')) $('cmUserBack').onclick = function () { cmShowTab('chat'); };
     if ($('cmUserReport')) $('cmUserReport').onclick = function () {
       if (cmUser) cmReportOpen(cmUser.id, cmUser.user && cmUser.user.username);
@@ -4448,7 +4861,8 @@
     var sa = t.closest('[data-sa]');
     if (sa) {
       var sid = sa.getAttribute('data-sid');
-      if (sa.getAttribute('data-sa') === 'fetch') cmShareFetch(sid); else cmShareConsume(sid);
+      if (sa.getAttribute('data-sa') === 'fetch') cmShareFetch(sid);
+      else cmShareConsume(sid, sa.getAttribute('data-sk'));
       return;
     }
 
@@ -4522,6 +4936,10 @@
     // the browser's own menu, which is an honest 「这里没有东西」, rather than a popup whose every row
     // does nothing when clicked — the shape 1.0.0's 「画了没接」 defect took.
     if (cmReadOnly()) return;
+    // ⚠ 1.0.6 §1.5 — ANY CLAIM ADDED BELOW MUST LEAVE FORM FIELDS ALONE. The rule the two claims
+    // here happen to satisfy by accident (the chat box is neither an avatar nor a message row) is
+    // the rule itself: 剪切/复制/粘贴 belong to whoever is typing. A future claim written as a bare
+    // `.closest('.cm-…')` over a wider region is exactly how the input's menu disappears again.
     var av = t.closest('[data-cm-av]');
     if (av) {
       e.preventDefault();
@@ -4532,9 +4950,47 @@
     var msg = t.closest('[data-cm-msg]');
     if (msg) {
       e.preventDefault();
-      var row = cmRows.filter(function (r) { return r.id === msg.getAttribute('data-cm-msg'); })[0];
+      var row = cmRowOf(msg);
       if (row) cmMessageMenu(row, e);
     }
+  }
+
+  /** The row behind a `[data-cm-msg]` node. ONE lookup for the two gestures that need it — the
+   *  right-click above (§1.7.1's 引用/举报) and the double-click below (§1.6's quote) — because a
+   *  second copy is how one of the two ends up matching on a different field after a schema change.
+   *  A miss is possible and expected: the node is in the DOM from a repaint, while `cmRows` is
+   *  whatever the last read landed. */
+  function cmRowOf(el) {
+    if (!el) return null;
+    var at = cmIndexOf(el.getAttribute('data-cm-msg'));
+    return at < 0 ? null : cmRows[at];
+  }
+
+  /** 1.0.6 §1.6 — 「双击消息行快捷引用」. The same act as the right-click menu's FIRST row, reached
+   *  without a menu; so it shares both the lookup (`cmRowOf`) and the entry point (`cmStartQuote`)
+   *  with it rather than re-implementing either. 「与右键引用行为完全一致」 is a statement about the
+   *  code having one path, not merely about the outcome looking alike.
+   *
+   *  ⚠ It DOES override the browser's 「double-click selects this word」, on purpose — that is what
+   *  the gesture is being spent on — so the selection is cleared rather than left behind: otherwise
+   *  a highlighted scrap stays inside the bubble while the caret moves to the input, and the reader
+   *  is looking at two selections, one of which they are not quoting.
+   *
+   *  ⚠ `cmReadOnly()` returns before anything else, `preventDefault()` included, so an un-activated
+   *  reader keeps the native word selection — the same answer, at the same place in the order, as
+   *  `cmRootContext` one function up.
+   */
+  function cmDblClickMessage(e) {
+    var t = e.target;
+    if (!t || !t.closest) return;
+    var msg = t.closest('[data-cm-msg]');
+    if (!msg) return;
+    if (cmReadOnly()) return;
+    var row = cmRowOf(msg);
+    if (!row) return;
+    var sel = window.getSelection ? window.getSelection() : null;
+    if (sel && sel.removeAllRanges) sel.removeAllRanges();
+    cmStartQuote(row);
   }
 
   /** §1.5.2's row buttons. The row is looked up by friendship id so the handler does not depend on
@@ -4569,7 +5025,8 @@
    *  rather than about the notice. Marked by matching `data.message_id` on the loaded rows, and
    *  ONLY when that row is still unread — a second jump must not re-PATCH. */
   function cmJumpToMessage(messageId) {
-    var hit = cmRows.filter(function (r) { return r.id === messageId; })[0];
+    var at = cmIndexOf(messageId);
+    var hit = at < 0 ? null : cmRows[at];
     cmShowTab('chat');
     var notice = (cmNotices || []).filter(function (n) {
       return !n.read && n.data && String(n.data.message_id || '') === String(messageId);
@@ -4681,11 +5138,54 @@
                              : GMCommunity.shares.fetchCloud(id);
   }
 
+  /**
+   * §1.7.2 — 「这个文件你已经导入过了」 — asked BEFORE the payload is fetched.
+   *
+   * ⚠ THE ORDER IS A DELIBERATE REVERSAL OF THE OBVIOUS ONE, and it exists because of what the KEY
+   * is made of. Fetching first would let the kind come from the server row (`r.kind`), which looks
+   * tidier — but it would also put `confirm()` inside a promise continuation, i.e. after a network
+   * round-trip, and a dialog raised outside the browser's transient-activation window is SUPPRESSED
+   * and returns `false`. A suppressed dialog is indistinguishable from 「取消」, so the failure would
+   * be 「我点了导入，什么都没发生」 with nothing on screen to explain it. Asking here keeps the
+   * question in the click's own stack, and lets the kind come from the button that was pressed —
+   * which is the same string either way: `attachment.kind` in a room message and `cloud_shares.kind`
+   * on a 分享 row are both the value the sender's client wrote, and the 消息 inbox now passes its
+   * own (`data-sk`) instead of the `''` it used to, which is what made this possible at all.
+   *
+   * ⚠ 「NOT IMPORTED」 WHEN THERE IS NO ID TO KEY ON. `G.checkAlreadyImported` answers `false` for an
+   * empty `cloud_id` rather than comparing a string that can never match — see `importKey` in
+   * storage.js. §1.7.3's 「本地导入不检测」 falls out of the same fact: the settings page's file
+   * picker has no `cloud_id` and never reaches this function.
+   */
+  function cmImportAsk(kind, id) {
+    return G.checkAlreadyImported(kind, id).then(function (seen) {
+      if (!seen) return true;
+      return !!confirm(T('viewer|你已经导入过这个文件了。\n\n再次导入会产生重复数据，确定继续吗？'));
+    });
+  }
+
   function cmImportShare(id, kind, door) {
     if (!id || cmCloudBusy) return Promise.resolve();
     if (cmReadOnly()) return Promise.resolve();
     var d = (door === 'friend') ? 'friend' : 'cloud';
+    // `cmCloudBusy` is held across the question as well as the import: it is one operation from the
+    // operator's point of view, and two clicks in the time it takes to read a dialog must not land
+    // as two imports. Released on every exit, INCLUDING a rejection — a guard that can only be
+    // cleared by success is a feature that dies once and stays dead.
     cmCloudBusy = true;
+    return cmImportAsk(kind, id).then(function (go) {
+      if (!go) return null;
+      return cmImportDo(id, kind, d);
+    }).then(function (res) {
+      cmCloudBusy = false;
+      return res;
+    }, function () {
+      cmCloudBusy = false;
+      return null;
+    });
+  }
+
+  function cmImportDo(id, kind, d) {
     cmNote({ code: 'loading' });
     var have = (cmCloud && cmCloud.id === id && cmCloud.door === d) ? cmCloud.payload : null;
     var got = have ? Promise.resolve({ ok: true, payload: have, kind: cmCloud.kind || kind })
@@ -4697,7 +5197,6 @@
       return cmApplyPayload(r.payload, r.kind || kind);
     }).then(function (res) {
       if (!res || !res.ok) {
-        cmCloudBusy = false;
         cmNote({ code: 'loadFailed', err: (res && res.error) || 'INTERNAL', tone: 'err' });
         return null;
       }
@@ -4705,13 +5204,20 @@
       // The friend door marks the row taken, and only a successful local write does so.
       return GMCommunity.shares.consume(id).then(function () { return res; });
     }).then(function (res) {
-      cmCloudBusy = false;
       if (!res) return;
       cmNote({ code: 'imported', tone: 'ok' });
+      // ---- 1.0.6 §1.7.1 — the note is written LAST, and only for an import that LANDED -----------
+      // After `cmApplyPayload`, so a failed or rejected import leaves no trace and the next attempt
+      // asks nothing; and the kind recorded is the one the import itself used (`r.kind || kind` at
+      // the line above), read back off `cmCloud` — NOT a second expression that could disagree with
+      // it. A note filed under a different key than the one §1.7.2 looks up is a reminder that never
+      // reminds, which is precisely the silent shape this project keeps paying for.
+      G.recordImport(cmCloud ? cmCloud.kind : kind, id);
       // The panels the import touched are re-read, not guessed: importing settings changes the
       // settings page, and importing archives changes the 回放 list this same view draws.
       cmRefreshAfterImport(res.what);
       if (d === 'friend') cmLoadMsgs();
+      return res;
     });
   }
 
@@ -4946,10 +5452,19 @@
     cmBoot();
     cmPaintAll();
     if (repaint) return;
+    // ---- 1.0.6 §1.2.1 — 「进入聊天室时自动滚动到底部」 ------------------------------------------
+    // HERE, and not inside `cmPaintChat`, because this is the function that knows the difference
+    // between ENTERING the room and merely repainting it (`was === 'community'` at the call site):
+    // a language switch must not throw away the reader's place, and an entry must not land on the
+    // oldest line of a full page. Both panes and view are already `active` by now — `showView`
+    // flips the class before it calls this — so the log has a real height to scroll to.
+    cmScrollBottom(false);
     // ⚠ THE RESULT IS GUARDED, not assumed: `chat.subscribe` answers with a promise in every real
     // path, but this call is also the seam every behaviour suite stubs, and a stub that returns
     // nothing would turn a missing page length into a thrown TypeError on view entry.
-    var sub = GMCommunity.chat.subscribe({ onRow: cmPush, onState: cmStateChanged });
+    var sub = GMCommunity.chat.subscribe({
+      onRow: cmPush, onState: cmStateChanged, onChange: cmRowChanged,
+    });
     if (sub && sub.then) {
       sub.then(function (r) {
         // 1.0.4 §P1 — the first page IS the newest `CHAT_PAGE_SIZE`, so a SHORT one means the whole
@@ -4958,6 +5473,10 @@
         var S = GMCommunity.shared() || {};
         cmMoreDone = !!(r && r.ok) && (r.rows || []).length < (S.CHAT_PAGE_SIZE || 0);
         cmPaintChatMore();
+        // 1.0.6 §1.9 — PRIMED HERE, which is 「the first page has finished arriving」. `cmPush` fires
+        // for every row of that page synchronously inside the promise above, so the flag has to be
+        // set after it resolves and not before; from here on a `cmPush` is a live message.
+        cmChatPrimed = true;
       });
     }
     cmLiveStart();
@@ -5001,6 +5520,14 @@
     cmLiveStop();
     cmStopVoteTick();
     closeCtx();
+    // 1.0.6 §1.9 — UN-PRIMED ON THE WAY OUT, so the next entry's catch-up (the rows that arrived
+    // while the reader was elsewhere, which `chatSubscribe` delivers through `onRow` like any other
+    // page) is treated as history. It IS history: the reader is arriving at the bottom of it.
+    cmChatPrimed = false;
+    cmNewId = null;
+    // ⚠ AND `cmSentAt` IS DELIBERATELY NOT IN THIS LIST. It looks like room state next to those two
+    // and it is not: §1.10's quota belongs to the ACCOUNT and is counted by the server across rooms
+    // and across reloads. Clearing it here would hand the operator a one-keystroke way around it.
   }
 
   // =====================================================================
@@ -5021,8 +5548,15 @@
   // ---- small derivations ----------------------------------------------------------------------
 
   /** `userId -> users row`, for `presence.forUser()`. Filled by whichever read brought the name:
-   *  the room's own `chat_messages` rows carry `user_id` and `username` but no `last_seen_at`, so
-   *  without this the dot column can only answer for people the friend list already fetched. */
+   *  the friend list, and a profile card.
+   *
+   *  ⚠⚠ 1.0.6 — THE ROOM'S OWN ROWS WERE NEVER IN HERE, and this comment used to say they were.
+   *  `cmPeoplePut` keys by `row.id`, which is the shape of a `users` / `user_directory` row, while a
+   *  `chat_messages` row carries the same person under `user_id`; nothing adapted the two, so the
+   *  sentence 「without this the dot column can only answer for people the friend list already
+   *  fetched」 described the bug rather than the fix. The adaptation now happens once, in
+   *  `cmPersonOf` below — not at each of the (three) places a read lands, because a fourth would
+   *  forget again. */
   function cmPeoplePut(rows) {
     var list = rows || [];
     for (var i = 0; i < list.length; i++) {
@@ -5031,13 +5565,30 @@
     }
   }
 
-  function cmRowForUser(id) {
+  /** The person record behind an id, from the two shapes this file holds them in.
+   *
+   *  ⚠ WHY THE FALLBACK IS NOT AN EDGE CASE: §1.6.1's 「右键头像 @提及」 reads the name from here,
+   *  and the room is the one screen where the reader sees people the friend list never fetched. So
+   *  `cmPeople` missing is the COMMON answer there — right-clicking a stranger's avatar used to
+   *  insert the literal `@—`, and the server then matched it against nobody, silently, because
+   *  `parseMentions` simply has no id for a name that is a dash.
+   *
+   *  `cmRows` is the right second source rather than a new read: it is already the list of everyone
+   *  in the room — `cmMentionNames` builds the `@` autocomplete out of it for exactly that reason —
+   *  and both readers below go through this one function instead of each growing its own. */
+  function cmPersonOf(id) {
     var p = cmPeople[id];
-    return p || null;
+    if (p) return p;
+    for (var i = 0; i < cmRows.length; i++) {
+      if (cmRows[i] && cmRows[i].user_id === id) return cmRows[i];
+    }
+    return null;
   }
 
+  function cmRowForUser(id) { return cmPersonOf(id); }
+
   function cmNameOf(id) {
-    var p = cmPeople[id];
+    var p = cmPersonOf(id);
     return (p && p.username) || '—';
   }
 
@@ -5089,8 +5640,13 @@
     });
   }
 
-  function cmItem(act, label) {
-    return '<div class="it" data-a="' + esc(act) + '">' + esc(label) + '</div>';
+  /** `danger` is the `.ctx .it.danger` row — 1.0.6 §1.11's 「撤回」, and the only destructive verb the
+   *  context menus offer. A third argument rather than a second builder: a menu row is one thing, and
+   *  two functions producing `<div class="it">` is how the `data-a` wiring gets forgotten on one of
+   *  them (1.0.4's `renderAdmin`/`wireAdmin` lesson). */
+  function cmItem(act, label, danger) {
+    return '<div class="it' + (danger ? ' danger' : '') + '" data-a="' + esc(act) + '">' +
+      esc(label) + '</div>';
   }
 
   function cmNoItem(label) {
@@ -5145,16 +5701,72 @@
     cmMenu(html, ev.clientX, ev.clientY, acts);
   }
 
-  /** §1.7.1's 「引用并回复」 and §2.1's 「消息右键的「举报」」. */
+  /** §1.7.1's 「引用并回复」, §2.1's 「消息右键的「举报」」, and 1.0.6 §1.11's 「撤回」. */
   function cmMessageMenu(row, ev) {
-    var html = '<div class="ti">' + esc(String(row.username || '—')) + '</div>' +
-      cmItem('quote', T('community|引用并回复'));
-    var acts = { quote: function () { cmStartQuote(row); } };
+    var S = GMCommunity.shared() || {};
+    var html = '<div class="ti">' + esc(String(row.username || '—')) + '</div>';
+    var acts = {};
+    // ⚠ 1.0.6 §1.11 — A WITHDRAWN MESSAGE HAS NOTHING TO QUOTE AND SOMETHING TO REPORT.
+    // 「引用并回复」 is removed rather than left in place, and that is a privacy decision as much as a
+    // UI one: `chat-send` snapshots the quoted row's `content` into `reply_preview`, and 021 keeps
+    // the withdrawn message's text in the table — so a quote of a withdrawn message would carry the
+    // withdrawn words into a NEW message. `chat-send` refuses to do that for a recalled quote; this
+    // is the same answer given one step earlier, where the operator can see why.
+    //
+    // The disabled row is not decoration either: right-clicking a message opens a menu, and a menu
+    // that opened with only a name in it would read as broken rather than as 「there is nothing to do
+    // with this」.
+    if (row.recalled) {
+      html += cmNoItem(T('community|该消息已被撤回'));
+    } else {
+      html += cmItem('quote', T('community|引用并回复'));
+      acts.quote = function () { cmStartQuote(row); };
+    }
     if (row.user_id && row.user_id !== cmUid()) {
       html += cmItem('report', T('community|举报'));
       acts.report = function () { cmReportOpen(row.user_id, String(row.username || '')); };
     }
+    // ⚠ THE SAME PREDICATE THE SERVER ASKS, from the same function — `canRecall` out of the shared
+    // block, not a local 「is it mine and is it under two minutes」. The room offers the row only when
+    // the server would accept it; a copy of that rule here is the shape that offers a button the
+    // endpoint then refuses.
+    if (S.canRecall && S.canRecall(row, cmUid(), Date.now())) {
+      html += cmItem('recall', T('community|撤回'), true);
+      acts.recall = function () { cmRecall(row); };
+    }
     cmMenu(html, ev.clientX, ev.clientY, acts);
+  }
+
+  /**
+   * §1.11's recall, from the menu row above.
+   *
+   * ⚠ THE CONFIRM IS NOT A NICETY: §1.11.3 keeps the place in the conversation, so the operator
+   * cannot take it back by sending the same thing again — the row stays, saying
+   * 「该消息已被撤回」. A destructive verb with no undo gets one question.
+   *
+   * The withdrawn row is drawn from `chat.recall`'s answer (`cmPush` upserts it) rather than from
+   * the Realtime round trip, for the same reason `cmSend` draws its own message: the polling
+   * fallback may take half a minute to deliver the UPDATE, and the author is the one person who is
+   * watching for it.
+   */
+  function cmRecall(row) {
+    if (!row || cmReadOnly()) return;
+    if (!confirm(T('community|撤回这条消息？\n\n撤回后其他人将看到「该消息已被撤回」。'))) return;
+    cmChatMsg = { code: 'loading' };
+    cmPaintChatMsg();
+    GMCommunity.chat.recall(row.id).then(function (r) {
+      if (r && r.ok && r.row) {
+        cmChatMsg = null;
+        cmPaintChatMsg();
+        cmPush(r.row);
+        return;
+      }
+      // ⚠ NOT `sendFailed`. The shared vocabulary's sentence for a failed SEND is 「发送失败（…）」,
+      // and nothing was sent; 1.0.5's avatar defect (a GIF picker told about activation codes) is
+      // what one code borrowed for a second meaning costs.
+      cmChatMsg = { code: 'recallFailed', err: (r && r.error) || 'INTERNAL', tone: 'err' };
+      cmPaintChatMsg();
+    });
   }
 
   // ---- §1.6.1/§1.6.2 @提及 ---------------------------------------------------------------------
@@ -5546,7 +6158,13 @@
         ' · ' + esc(String(s.created_at || '').slice(0, 16).replace('T', ' ')) +
         (left ? ' · ' + esc(left) : '') + '</span>' +
       (acts.length ? '<span class="cm-acts">' + acts.map(function (a) {
-        return '<button class="sec" data-sa="' + esc(a[0]) + '" data-sid="' + esc(s.id) + '">' +
+        // ⚠ 1.0.6 §1.7 — `data-sk` rides on both buttons, and it is what makes the 好友 door able
+        // to answer §1.7.2 at all: `cmShareConsume` used to pass a literal `''` as the kind, so a
+        // file imported from the inbox and later re-imported from the room would have been filed
+        // under a different key — `:cloud-x` against `archive:cloud-x` — and the reminder would
+        // never have fired. One row, one kind; the button carries it.
+        return '<button class="sec" data-sa="' + esc(a[0]) + '" data-sid="' + esc(s.id) +
+          '" data-sk="' + esc(String(s.kind || '')) + '">' +
           esc(a[1]) + '</button>';
       }).join('') + '</span>' : '') + '</div>';
   }
@@ -5960,6 +6578,20 @@
       cmPaintShare();
       return;
     }
+    // ⚠ 1.0.6 §1.10.2 — AN ATTACHMENT IS A MESSAGE. `chat-send` stores a `chat_messages` row for
+    // §1.1.2's attachment and counts it against the same twenty, so the room's share panel asks the
+    // question the room's send box asks. Without this the panel's refusal came back through
+    // `cloudErrText`, which words `RATE_LIMITED` as the EMAIL-VERIFICATION cooldown — one code, two
+    // windows, the exact confusion `cmSend`'s comment refuses to accept.
+    //
+    // ⚠ `to === 'room'` IS PART OF THE TEST, not decoration: §1.5.3's friend share is a
+    // `friend_shares` row that never enters the room and is not in this quota at all.
+    var sh = GMCommunity.shared() || {};
+    if (to === 'room' && !cmRateOk(sh)) {
+      cmShareMsg = { code: 'rateChat', n: sh.CHAT_RATE_MAX, tone: 'err' };
+      cmPaintShare();
+      return;
+    }
     cmShareBusy = true;
     cmShareMsg = null;
     cmPaintShare();
@@ -5981,6 +6613,8 @@
           attachment: { kind: built.kind, name: built.name, payload: built.payload },
         }).then(function (r) {
           if (!r || !r.ok || !r.row) return r;
+          // The room's row exists, so it spent one of the twenty — the same stamp `cmSend` lays down.
+          cmStampSend();
           cmPush(r.row);
           var cid = r.row.attachment && r.row.attachment.cloud_id;
           if (!cmShare.vote || !cid) return { ok: true, voteFailed: false };
@@ -6002,7 +6636,13 @@
       if (btn) btn.disabled = false;
       if (!r) return;
       if (!r.ok) {
-        cmShareMsg = { code: 'shareFailed', err: (r && r.error) || 'INTERNAL', tone: 'err' };
+        // ⚠ 1.0.6 §1.10.2 — SAME ONE-CODE-TWO-WINDOWS PROBLEM AS THE GATE ABOVE. `RATE_LIMITED`
+        // from the ROOM is §2.3.5's twenty-per-minute, so it gets the room's sentence; anything else
+        // (and every friend-share refusal, which cannot produce this code) keeps the shared
+        // vocabulary. Scoped on `to` for the same reason the gate is.
+        cmShareMsg = (to === 'room' && r && r.error === 'RATE_LIMITED')
+          ? { code: 'rateChat', n: sh.CHAT_RATE_MAX, tone: 'err' }
+          : { code: 'shareFailed', err: (r && r.error) || 'INTERNAL', tone: 'err' };
         cmPaintShare();
         return;
       }
@@ -6066,9 +6706,14 @@
   /** §1.2.4's 「选择性导入本地」 from the 消息 inbox — the friend door of `cmImportShare`, so the
    *  inbox's button and the share card's button run the same write, the same `consume` and the same
    *  refresh. 1.0.2 had this function own the import; 1.0.4 moved the body behind the door switch
-   *  rather than keeping a second copy for the room. */
-  function cmShareConsume(id) {
-    return cmImportShare(id, '', 'friend');
+   *  rather than keeping a second copy for the room.
+   *
+   *  `kind` is the row's own (1.0.6 §1.7): it used to be a literal `''`, which `cmImportShare` then
+   *  fell back from — fine for the write, since `r.kind` wins there, but it left §1.7's key with no
+   *  kind to name, and a file would have been remembered as `:cloud-x` on this door and
+   *  `archive:cloud-x` on the room's. */
+  function cmShareConsume(id, kind) {
+    return cmImportShare(id, kind, 'friend');
   }
 
   // ---- §2.1 举报 --------------------------------------------------------------------------------
@@ -6165,21 +6810,109 @@
 
   // ---- §1.6.3's red dots -------------------------------------------------------------------------
 
-  /** The two badges on the new tabs. Derived, not stored: 好友 counts the requests awaiting an
-   *  answer and 消息 counts what is unread — both are questions about rows already in hand. */
+  /** The badges on the 好友 / 消息 tabs — in the sidebar AND, since 1.0.6 §1.3.2, in the avatar
+   *  drawer — plus §1.3.2's tab-title prefix. Derived, not stored: 好友 counts the requests awaiting
+   *  an answer and 消息 counts what is unread, and both are questions about rows already in hand.
+   *
+   *  ⚠ ONE DERIVATION, FIVE SURFACES. §1.3.4's sketch gives the title its own `fetchUnreadCounts()`,
+   *  which is a second reader for a number that is already on screen: the first time one of the two
+   *  is a moment late, the dot beside 好友 and the tab title disagree about how much is waiting. The
+   *  two counts are computed once, here, and written to every surface that shows them. */
   function cmPaintBadges() {
     var reqs = (cmFriends && cmFriends.incoming) ? cmFriends.incoming.length : 0;
     var live = (cmInbox || []).filter(function (s) { return GMCommunity.shares.isLive(s); }).length;
     var unread = (cmNotices || []).filter(function (n) { return !n.read; }).length;
+    var msgs = live + unread;
     cmBadge('cmFriendsBadge', reqs);
-    cmBadge('cmMsgsBadge', live + unread);
+    cmBadge('cmMsgsBadge', msgs);
+    // The drawer's two rows. They exist only while the menu is open (`cmBadge` returns early on a
+    // missing element), so `showUserMenu` paints them as part of building it — see there.
+    cmBadge('menuFriendsBadge', reqs);
+    cmBadge('menuMsgsBadge', msgs);
+    // ⚠ A PREFIX ONLY WHILE THERE IS SOMEBODY TO COUNT FOR. The counts can outlive the session by
+    // one in-flight read, and 「(3) 白身 · 查看器」 over a signed-out page is a claim about an account
+    // nobody is in. `cmBadgeOpen()` is that question, asked in the one place that is about to act on
+    // it rather than a second time at each caller.
+    cmPaintTitle(cmBadgeOpen() ? (reqs + msgs) : 0);
   }
+
+  /** §1.3.2's 「总数 > 0 时加 (N) 前缀」.
+   *
+   *  The base is `viewer.html`'s own `<title>`, captured ONCE: the page keeps the one place that
+   *  names the product, and this file owns only the prefix. Every paint writes the WHOLE string
+   *  rather than editing it in place, which is what makes a count returning to zero remove the
+   *  prefix instead of leaving 「(0) …」 behind. Nothing else in the extension writes
+   *  `document.title`, which is what makes the capture safe. */
+  var CM_TITLE_BASE = document.title;
+  function cmPaintTitle(n) {
+    document.title = (n > 0 ? '(' + cmBadgeText(n) + ') ' : '') + CM_TITLE_BASE;
+  }
+
+  /** One formatter for every count this view shows. `99+` because the dot is 17px wide — and the
+   *  title uses the same one, so the tab and the dot can never read 「(128)」 and 「99+」 for the same
+   *  queue. §1.3.2 writes the title as the bare `total`, which is the second answer this avoids. */
+  function cmBadgeText(n) { return n > 99 ? '99+' : String(n); }
 
   function cmBadge(id, n) {
     var el = $(id);
     if (!el) return;
-    el.textContent = n > 99 ? '99+' : String(n);
+    el.textContent = cmBadgeText(n);
     el.classList.toggle('hidden', n <= 0);
+  }
+
+  // ---- 1.0.6 §1.3.4 — the refresh schedule ------------------------------------------------------
+  /** §1.3.4's 「每 30 秒刷新一次」. Named rather than inlined: the interval and anything that drives
+   *  this timer are the same number, and a second literal in the `setInterval` call is how the two
+   *  drift apart. */
+  var CM_BADGE_PERIOD = 30000;
+  var cmBadgeTimer = null;
+
+  /** Whether there is anybody to count for. ⚠ BOTH HALVES: a configured build with no live session
+   *  answers 401 to every read, and a session with no backend cannot make them at all. This is the
+   *  same pair `applyActivationGate` uses to decide whether the account chip exists — a schedule
+   *  running for an operator who cannot fetch is six failed requests a minute, for ever. */
+  function cmBadgeOpen() {
+    try {
+      return !!(window.GMCloud && window.GMCloud.isConfigured() && GMAuth.isActivated());
+    } catch (e) { return false; }
+  }
+
+  /** §1.3.4's `updateBadges()`. Both reads are the ones the 消息 pane already makes, and both end in
+   *  `cmPaintBadges()` — so this is a SCHEDULE, not a second reader with queries of its own. */
+  function cmBadgeTick() {
+    if (!cmBadgeOpen()) { cmBadgeStop(); return; }
+    cmLoadFriends();
+    cmLoadMsgs();
+  }
+
+  /** Idempotent, so it can be called both at boot and on every session change. */
+  function cmBadgeStart() {
+    if (!cmBadgeOpen()) { cmBadgeStop(); return; }
+    if (cmBadgeTimer) return;
+    cmBadgeTick();
+    cmBadgeTimer = window.setInterval(cmBadgeTick, CM_BADGE_PERIOD);
+  }
+
+  /** Stopping is not only about the timer. The three caches hold the PREVIOUS operator's rows and
+   *  `cmPaintBadges` derives from them, so 退出登录 without this leaves a red dot and a tab-title
+   *  count over lists nobody is signed in to read. */
+  function cmBadgeStop() {
+    if (cmBadgeTimer) { window.clearInterval(cmBadgeTimer); cmBadgeTimer = null; }
+    cmFriends = null;
+    cmInbox = null;
+    cmNotices = null;
+    cmPaintBadges();
+  }
+
+  /** A door into the community from OUTSIDE it (1.0.6 §1.3.2's drawer rows).
+   *
+   *  ⚠ `showView` alone is not enough: it lands on whatever tab was last up (`CM_TAB`), so a drawer
+   *  row that names 好友 has to name the tab as well — and only AFTER the view is on screen, because
+   *  `cmShowTab` flips `.active` on panes that an unactivated operator is not allowed to reach. */
+  function cmGoTab(name) {
+    showView('community');
+    var v = $('view-community');
+    if (v && v.classList.contains('active')) cmShowTab(name);
   }
 
   /**
@@ -6387,6 +7120,14 @@
       '<div class="sep"></div>' +
       '<div class="it" data-u="profile">' + T('viewer|主页') + '</div>' +
       '<div class="it" data-u="account">' + T('viewer|账号设置') + '</div>' +
+      // 1.0.6 §1.3.2 — 「头像抽屉「好友」/「消息」」, with the same two counts the sidebar tabs
+      // carry. In the same group as 主页/账号设置 because they are places you GO, and drawn even
+      // when the count is zero: a row that appears only when something is waiting is a row whose
+      // position the operator has to hunt for.
+      '<div class="it" data-u="friends">' + T('viewer|好友') +
+        '<span class="cm-badge hidden" id="menuFriendsBadge"></span></div>' +
+      '<div class="it" data-u="msgs">' + T('viewer|消息') +
+        '<span class="cm-badge hidden" id="menuMsgsBadge"></span></div>' +
       '<div class="sep"></div>' +
       // 1.0.5 §1.1.5 — 「切换账号 ▸」, between the account pages and 退出登录, exactly where the
       // sketch puts it: it is a thing you do TO the account, and it sits with the other one (登出)
@@ -6405,9 +7146,19 @@
         closeCtx();
         if (a === 'profile') showView('profile');
         else if (a === 'account') showView('account');
+        // 1.0.6 §1.3.2 — the drawer's two community rows. `cmGoTab` rather than `showView`: the row
+        // names a TAB, and `showView('community')` would land on whichever one was last up.
+        else if (a === 'friends') cmGoTab('friends');
+        else if (a === 'msgs') cmGoTab('msgs');
         else if (a === 'logout') doLogout();
       };
     });
+    // ⚠ 1.0.0's rule, and it applies to a count as much as to a button: 「由函数 BUILD 的面板，必须由
+    // 函数 WIRE」. `#menuFriendsBadge` / `#menuMsgsBadge` are built here and exist nowhere else — the
+    // menu is rebuilt on every open — so nothing else in the file can fill them, and a drawer whose
+    // dots were only ever painted by the 30-second tick would show an empty pill for up to half a
+    // minute after 「something is waiting」.
+    cmPaintBadges();
   }
 
   /**
@@ -6547,6 +7298,14 @@
     if (err === 'EMAIL_TAKEN') return T('reg|该邮箱已被注册');
     if (err === 'USERNAME_TAKEN') return T('reg|该用户名已被占用');
     if (err === 'RATE_LIMITED') return T('reg|发送过于频繁，请 60 秒后再试');
+    // ---- 1.0.6 §1.11 撤回 ---------------------------------------------------------------------
+    // One sentence for the whole of §1.11.2's predicate, and that is what the ONE code buys: the
+    // three facts behind it (「是我发的」/「还没撤回过」/「在 2 分钟窗口内」) are one question —
+    // `canRecall`, asked by both realms — so a sentence that named which half failed would be
+    // telling a hand-rolled caller whether an id exists and how old it is. Reached in practice only
+    // by a clock that moved between the paint and the click: the menu row is drawn from the same
+    // predicate the server applies.
+    if (err === 'NOT_RECALLABLE') return T('community|只能撤回自己 2 分钟内的消息');
     // ---- 1.0.1 §2.6 登录 ----
     if (err === 'BAD_CREDENTIALS') return T('reg|邮箱或密码不正确');
     if (err === 'NOT_FOUND') return T('viewer|激活码无效');
@@ -8165,6 +8924,11 @@
     buildAccountPanel();
     renderAdmin();
     renderPrivacyLink();
+    // 1.0.6 §1.3.4 — the unread schedule follows the SESSION, and this is the one function every
+    // session change goes through (login, logout, activation, switch, a 401 that dropped the token).
+    // `cmBadgeStart` is idempotent and stops itself when there is nobody to count for, so it is
+    // called unconditionally rather than guarded by a second copy of that predicate here.
+    cmBadgeStart();
   }
 
   function renderPrivacyLink() {
@@ -8207,6 +8971,10 @@
     buildAccountPanel();
     renderAdmin();
     GMAuth.onChange(function () { afterAuthChange(); });
+    // 1.0.6 §1.3.4 — AND ONCE HERE, because `onChange` only fires on a CHANGE: an operator who
+    // reloads the page with a live session is a session that never changed, so the schedule would
+    // have no first tick and the tab title would stay bare until they logged out and back in.
+    cmBadgeStart();
 
     // §1.2's 升级引导: 「0.5.x 用户升级到 1.0.0 后，首次启动弹出引导」. Two conditions now, and both
     // are load-bearing — an operator who can already use everything has answered the question, and
@@ -13091,13 +13859,27 @@
   // viewport too — so it needs to know how tall the header actually is, or it parks under it.
   // Measured rather than hard-coded because the header wraps to a second line on a narrow
   // window, which is exactly when the offset would be wrong.
-  function syncHeaderHeight() {
+  //
+  // 1.0.6 §1.8 — the same pass answers a SECOND question: 「how much room does the page leave for a
+  // view?」. `--wrap-top` is `.wrap`'s own top in the DOCUMENT (`rect.top + scrollY`, so it does not
+  // depend on where the page is scrolled to), and it already contains the header AND 0.4.0's update
+  // banner. The community view sizes itself from it — see `#view-community.active` in viewer.html —
+  // rather than from `--header-h`, because the banner is in the page flow ABOVE `.wrap`: subtracting
+  // the header alone would over-size the room by the banner's height and give the page a scrollbar
+  // for exactly as long as an update was announced.
+  //
+  // ⚠ ONE FUNCTION, because the two numbers are measured in the same pass and a second `resize`
+  // listener measuring the banner would be a second answer to 「where does the content start?」.
+  function syncChromeMetrics() {
     var h = document.querySelector('header');
-    if (!h) return;
-    document.documentElement.style.setProperty('--header-h', h.offsetHeight + 'px');
+    if (h) document.documentElement.style.setProperty('--header-h', h.offsetHeight + 'px');
+    var w = document.querySelector('.wrap');
+    if (!w) return;
+    document.documentElement.style.setProperty('--wrap-top',
+      Math.round(w.getBoundingClientRect().top + window.scrollY) + 'px');
   }
-  syncHeaderHeight();
-  window.addEventListener('resize', syncHeaderHeight);
+  syncChromeMetrics();
+  window.addEventListener('resize', syncChromeMetrics);
 
   var BOARD_SHRINK = 0.85;
   // 0.5.2 §三.1 — now a NAMED function rather than the IIFE it used to be, so the import path can

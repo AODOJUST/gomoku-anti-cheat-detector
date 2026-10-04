@@ -7,6 +7,34 @@ nobody ever read the history from there anyway.
 
 Every entry below is the original prose, verbatim — only the headings and blank lines are new.
 
+## 1.0.6
+
+1.0.6：设置微调、聊天室体验、消息撤回——十二项，一半是「看着不对」，一半是「用起来别扭」。
+
+【一、浮层背景：关一次就没了，而且以前只能靠猜】⚠⚠ 0.5.2 起 refreshOverlayBg() 只在 boot() 里叫过一次，而 closePanel() 的 ✕ 会把 shadow host 整个移除并置空，restorePanel() 再建的是一台全新的 host——没有 has-bg 类、也没有那四个内联变量，于是「刷新后回来了，关一次就没了」。现在凡是建 host 的地方（build()）就问一次背景，boot() 里那一次删掉：两条 fire-and-forget 抢同一组属性，输的只看谁回得晚。同时新增「浮层样式预览」：320×240 的固定框里画一个线框假面板，图片预览答「我选的图对不对」，它答「我的背景为什么看不见」。两个输入源刻意分开——图来自正在编辑的那个槽位（拖到哪儿就画到哪儿），填充只来自浮层透明度组；五个变量写的是 GMStorage.applyOverlayTransparencyVars()，也就是 content.js 写到真 host 上的同一份映射，所以预览只可能和真面板一起错。另外 .hd 也进了元素透明的列表：0.5.4 覆盖了 .sec / .card 却漏了页头，背景图配好之后面板顶上永远横着一条不透明白条，而查看器自己的页头从 0.5.4 起就在规则里——这是漏掉，不是决定。
+
+【二、聊天室三处体验】① 进入房间自动滚到底部，位置从此只有一个判据：cmStickBottom 由日志自己的 scroll 监听维护，「新消息要不要跟着你走」和「回到底部要不要显示」问的是同一个数（定稿里那是 24 和 50 两个常量，中间那条带正是「按钮说你在底部、消息却把你拽下去」）。②「回到底部」是圆形 40×40，用 inset-inline-end 而不是 right（阿拉伯语里要镜像；verify-046 禁止物理方向写法，注释也算）。它是 .cm-logbox 的子节点而不是日志的子节点——日志自己是滚动容器，绝对定位的子节点会跟着历史一起滚走。③ 聊天室与整个社区视图现在是「一屏高」的弹性链：height:calc(100vh - var(--wrap-top) - 2 * var(--ui-shell-gap))，--wrap-top 是量出来的 .wrap 顶部（已经含粘性页头与更新横幅，所以来一条更新公告不会长出页面滚动条）。定稿原来的 min(52vh,440px) 删了：那是关于「房间多高」的第二个答案，在高屏上停在 440px、留下一带空白。
+
+【三、新消息自下而上出现】@keyframes cmMsgIn 12px→0 加淡入，.25s。⚠ 只对刚收到的消息，历史不播：chatSubscribe 把第一页也从 onRow 送进来，所以有 cmChatPrimed 这道闸——进房间之前到的都不算「新」。槽位是 cmNewId（一个行 id）而不是行上的类：cmPaintChat 每次整块换 innerHTML，留住一个类就等于每次无关重绘都重播一次动画。另加 prefers-reduced-motion 的例外。
+
+【四、未读提示】侧边栏「好友」「消息」的红点数字，头像抽屉里两行同样两个数，加上浏览器标签页标题的 (N) 前缀。⚠ 一个推导、五处表面：定稿让标题自己 fetch 一份，那是一个数字的第二个读法——两个数里有一个晚一拍，红点和标题就会对不上。计数全部从已经在手里的行推（待处理好友请求 / 未读消息），每 30 秒刷一次，只有「已配置且有已激活会话」时才跑（否则是一分钟六次注定 401 的请求）。
+
+【五、gomoku.com 链接识别】只认 gomoku.com，别的域名一律保持纯文本——聊天室是谁都能发言的公告墙，通用链接器等于把它变成钓鱼面。两种具名形状画成胶囊按钮（加入房间 #N / 查看对局），其余 gomoku 链接是普通链接，都带 target=_blank 与 rel=noopener noreferrer。⚠ 正则在定稿基础上摘掉了 CJK 区段：定稿的尾部 [^\s<>"']+ 会把「https://gomoku.com/room/123。后面还有字」整段吞成一个链接，href 变成 123。后面还有字，看着对、点开 404。另外句末的英文句点也单独裁掉（。不是合法 URL 字符，句点是）。
+
+【六、输入框的右键回来了】⚠⚠ 以前聊天输入框上绑了 input.oncontextmenu = preventDefault，本意是「房间里只出现房间的手势」，实际掐掉的是剪切 / 复制 / **粘贴**——而粘贴没有替代手势。这个抑制从一开始就不需要：房间的右键处理器只认 [data-cm-av] 和 [data-cm-msg]，落在别处本来就回到原生菜单。真正该守的那条（未激活的人不该拿到一个每行都没用的弹窗）留在那一个处理器里。同时双击消息行=引用并回复，与右键第一行是同一条路径（cmRowOf + cmStartQuote），不是两处看起来一样的行为。
+
+【七、二次导入提醒】已经导入过的云端文件再导一次会先问一句。键是本机事实（chrome.storage.local 的 importedIds，kind:cloudId，最多留 500 条，超出从最旧的裁），刻意不放进 settings：settings 是导出备份时整块复制出去的那一份，别人的配置包会带来一份「本机从没见过的文件清单」，于是那些文件的第一次导入就会问「你已经导入过了」。只记真正落地的那次（cmApplyPayload 之后），取消与失败不留痕；本地文件选择器没有 cloud_id，所以按构造就不问。
+
+【八、每分钟上限 10 → 20】数字只住在共享块（community.ts 的 CHAT_RATE_MAX），chat-send 与客户端镜像读的是同一个。客户端的闸门放在内容检查**之后**，与 chat-send 的判定顺序一致，两半对同一条消息给同一个判决；只记真正入库的消息（配额属于账号，离开房间不清），附件也是一条消息、走同一道闸门与同一句错误。
+
+【九、消息撤回（2 分钟内）】右键自己的消息出现红色的「撤回」，确认后位置保留、内容变成灰色斜体的「该消息已被撤回」；被引用时引用卡片显示 [该消息已被撤回]。写入仍只走 service-role 的 Edge Function（新函数 chat-recall，第 37 个），不采用定稿的 UPDATE 策略：with check (recalled = true) 拦不住同一条语句顺手改 content、写不了 recalled_at、也刷新不了引用快照 reply_preview——而快照正是「读者半路进房间、原文已不在加载范围内」时唯一还看着「你好」的那张卡。⚠⚠ 两处容易被漏掉的连带修改：REALTIME_TABLES 里 chat_messages 从 INSERT 改成 *（撤回是 UPDATE，INSERT-only 的订阅前提被本版推翻），021 给它 replica identity full（否则 UPDATE 帧没有旧值可认）；轮询兜底每 5 个 tick 整页重读一次，因为增量查询问的是 created_at > since，按构造永远看不见 UPDATE。另修一个真实缺陷：引用卡的 data-cm-goto 一直写的是 q.message_id——一个没人写过的键，所以点引用永远答「这条消息不在当前加载的范围内」。
+
+【十、按钮更名】「发送存档样本库」→「文件」（📎 图标 + 文字），点击仍然弹出二级选择（回放 / 样本 / 配置）。📎 是独立的 span，因为 keys.cjs 收集的是整个文本节点，「📎 文件」会把表情符号塞进十二种语言。
+
+【十一、改了哪些文件，以及怎么升级】服务端三处：021_chat_recall.sql（三列 + 一致性约束 + reply_to 索引 + replica identity full）、新函数 chat-recall、chat-send 的引用段（引用一条已撤回的消息不再把原文带回来），共享块与错误码表同步扩了三个常量与 canRecall / NOT_RECALLABLE。扩展侧：viewer.js（背景预览、滚动、徽标、链接、双击引用、二次导入、导入记录、撤回菜单与渲染）、viewer.html（一屏高的弹性链、回到底部、撤回样式、入场动画、文件按钮）、content.js（背景改在建 host 时应用、.hd 进元素透明）、storage.js（浮层五变量的唯一映射 + 导入记录）。新文案全部补进 12 种语言表并重新生成 locale。验收：verify-068（钉住版本交接与十二项的静态形状）与 behave-068（真开页面、真点撤回、真看计算样式）。升级：021 需要 db push，37 个函数整批重新部署（只补新函数会让旧包里的 _shared 不认新表 / 新码），装好之后到 edge://extensions 重新加载一次。
+
+【十二、已知不修】撤回窗口是服务端时间，客户端只按本机时钟画菜单，两边差超过一次点击的时延才可能撞上「按钮在了但服务端 409」；撤销所有设备不逐个作废，走的仍是 users.token_epoch 计数器。
+
 ## 1.0.5
 
 **1.0.5 fixes three things a user found by pressing a button, and each was two halves of one feature that had never been read together.**

@@ -148,3 +148,6 @@ verify_jwt = false
 
 [functions.admin-set-role]
 verify_jwt = false
+
+[functions.chat-recall]
+verify_jwt = false

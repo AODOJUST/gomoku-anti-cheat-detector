@@ -90,21 +90,17 @@
   // with the switch off.
   function applyOverlayTransparency(setting) {
     if (!root || !root.host) return null;
-    var t = GMStorage.normalizeTransparency(setting);
-    var host = root.host;
-    var o = t.overlay.enabled ? t.overlay : null;
-    var set = function (name, val) { host.style.setProperty(name, val); };
     // 0.5.4 §2.1 — every one of these is a BACKGROUND ALPHA now (`rgba(var(--gm-*-rgb), α)`),
     // never a CSS `opacity`: 0.5.3 faded `.sec` / `.card` with `opacity`, which took their text
     // and their figures with it. The conversion is still `cssOpacity(percent)`; only the channel
     // it lands in changed. `--ov-btn-blur` is GONE with 按钮模糊度 (§2.1.2) — this was the only
     // writer of the variable it fed.
-    set('--ov-bg-opacity', String(GMStorage.cssOpacity(o ? o.background : 0)));
-    set('--ov-bg-blur', (o ? o.backgroundBlur : 0) + 'px');
-    set('--ov-elem-bg-alpha', String(GMStorage.cssOpacity(o ? o.element : 0)));
-    set('--ov-elem-blur', (o ? o.elementBlur : 0) + 'px');
-    set('--ov-btn-bg-alpha', String(GMStorage.cssOpacity(o ? o.button : 0)));
-    return t;
+    //
+    // 1.0.6 §1.1.3 — the mapping itself is no longer spelled out here. It lives in GMStorage,
+    // because the viewer's 浮层样式预览 paints a mock panel from the SAME five variables, and a
+    // second copy of 「哪个设置喂哪个面」 is the drift this project has already paid for five
+    // times. This function is now just "apply that map to the host".
+    return GMStorage.applyOverlayTransparencyVars(root.host, setting);
   }
 
   // ---------- 0.5.2 §5.1 自定义背景（浮层）----------
@@ -2837,7 +2833,15 @@
     // `rgba(var(--gm-bg-rgb), …)` (0.5.3 §一.4), which is the same idea done once already.
     // Hover / `.on` states keep their own solid fills, the same deliberate hole as the viewer's:
     // a state exists to be noticed.
-    ':is(.sec){background-color:rgba(var(--gm-panel-rgb),var(--ov-elem-bg-alpha,1))}',
+    //
+    // 1.0.6 §1.1 — `.hd` JOINS the list. 0.5.4 covered `.sec` / `.card` and left the header bar
+    // solid, so a panel with a background picture still had one full-width opaque white stripe
+    // across its top: the picture was drawn, the operator raised 元素透明度, and the single
+    // biggest surface on the panel did not move. The viewer's own header has been in the matching
+    // rule (`header, .panel, .set-nav`) since 0.5.4, which is what makes this an omission rather
+    // than a decision. At alpha 1 the value is byte-identical to `.hd{background:var(--gm-panel)}`
+    // — same `--gm-panel-rgb` — so nothing changes for an operator who never opens the panel.
+    ':is(.hd,.sec){background-color:rgba(var(--gm-panel-rgb),var(--ov-elem-bg-alpha,1))}',
     ':is(.card){background-color:rgba(var(--gm-in-rgb),var(--ov-elem-bg-alpha,1))}',
     'button{background-color:rgba(var(--gm-line-rgb),var(--ov-btn-bg-alpha,1))}',
     'button.p{background-color:rgba(var(--gm-lk-rgb),var(--ov-btn-bg-alpha,1))}',
@@ -3394,6 +3398,18 @@
     // 0.5.3 §1.1 — the six overlay custom properties. Here rather than in boot() for the reason
     // directly above: this is the line that creates the host, and the helper no-ops without one.
     applyOverlayTransparency(S.transparency);
+    // 1.0.6 §1.1.1 — and the operator's own backdrop, for the SAME reason and about the same
+    // host. It used to be called from boot() alone, which made it a property of "the page just
+    // loaded" rather than a property of "a panel exists": `closePanel()` (the ✕) removes the host
+    // and nulls it, and `restorePanel()` then calls this function, which builds a BRAND-NEW host.
+    // The old one went away with its `has-bg` class and its four inline `--gm-bg-*` properties, so
+    // closing the panel and bringing it back from the extension icon left the operator with a
+    // default-palette panel until the next full page refresh — the exact symptom 「刷新后回来了，
+    // 关一次就没了」. Anything that creates a host has to ask for its background.
+    //
+    // Fire-and-forget on purpose: the panel is about to be on screen and a picture that arrives a
+    // frame later is a picture, not a bug.
+    refreshOverlayBg();
     renderShell();
     (document.body || document.documentElement).appendChild(host);
 
@@ -5934,9 +5950,10 @@
     // 0.4.0 §一.4 — reads whatever the last check left behind; it never triggers a check of
     // its own (only the service worker and the viewer's button do that).
     refreshUpdateBanner();
-    // 0.5.2 §5.1 — the operator's own backdrop, if they set one. Fire-and-forget: the panel is
-    // already on screen, and a picture that arrives a frame later is a picture, not a bug.
-    refreshOverlayBg();
+    // 1.0.6 §1.1.1 — the operator's backdrop is NOT re-applied here any more. It moved into
+    // build(), which is what actually creates the host it has to be written onto; calling it in
+    // both places would have been two fire-and-forget routines racing over the same five
+    // properties, and the loser would be whichever answer came back second.
   }
   /**
    * Everything that used to run at module scope. It is a function now for one reason: §1.2 says an

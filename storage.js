@@ -425,6 +425,46 @@
     return Math.round((1 - t / 100) * 1000) / 1000;
   }
 
+  /**
+   * The overlay's five custom properties, as a `name -> value` map.
+   *
+   * There are TWO renderings of the in-page 浮层 that have to agree about them: the panel itself
+   * (content.js writes them onto its shadow host) and the 浮层样式 preview in the viewer's
+   * background panel (1.0.6 §1.1.3). That is precisely the shape this project has been bitten by
+   * five times — one answer, two copies — so the mapping lives HERE, in the only module all three
+   * realms load, and both callers apply the same map. A preview that only *looked* like the panel
+   * would be worse than no preview: it would answer the operator's question with a guess.
+   *
+   * ⚠ `background` feeds an ALPHA on the panel's own fill (`rgba(var(--gm-bg-rgb), …)`), never a
+   * CSS `opacity` on the container — that is 0.5.4 §2.1's whole correction, because an `opacity`
+   * takes the text and the figures with it.
+   *
+   * `enabled: false` writes the IDENTITY values rather than omitting the keys: the stylesheet
+   * reads all five unconditionally, and an element that kept a previous profile's values would
+   * stay faded with its group switched off.
+   */
+  function overlayTransparencyVars(setting) {
+    var o = normalizeTransparency(setting).overlay;
+    var on = o.enabled ? o : null;
+    return {
+      '--ov-bg-opacity': String(cssOpacity(on ? on.background : 0)),
+      '--ov-bg-blur': (on ? on.backgroundBlur : 0) + 'px',
+      '--ov-elem-bg-alpha': String(cssOpacity(on ? on.element : 0)),
+      '--ov-elem-blur': (on ? on.elementBlur : 0) + 'px',
+      '--ov-btn-bg-alpha': String(cssOpacity(on ? on.button : 0)),
+    };
+  }
+
+  /** Writes that map onto one element. Returns the map, so a caller can report what it wrote. */
+  function applyOverlayTransparencyVars(el, setting) {
+    if (!el || !el.style) return null;
+    var vars = overlayTransparencyVars(setting);
+    for (var k in vars) {
+      if (Object.prototype.hasOwnProperty.call(vars, k)) el.style.setProperty(k, vars[k]);
+    }
+    return vars;
+  }
+
   // ---------- 0.5.3 §2.1 回放过滤 ----------
   function normalizeArchiveFilter(v) {
     var d = DEFAULTS.archiveFilter;
@@ -2547,6 +2587,91 @@
     });
   }
 
+  // ============================================================================
+  // 1.0.6 §1.7 — 「这个文件你已经导入过了」
+  // ============================================================================
+  // The key is `importedIds`, a flat array of `kind:cloudId` strings, and it is a LOCAL NOTE about
+  // what has already landed on this machine — §1.7.1's own shape.
+  //
+  // ⚠ NOT INSIDE `settings`, AND THAT IS THE POINT. §1.7's question is a fact about this machine's
+  // import history, not a preference; and `settings` is the object `stripSecrets()` copies out
+  // WHOLESALE when the operator exports a backup. A stranger's 配置包 would then arrive carrying a
+  // list of files THIS machine never saw, and every first import of those files would ask 「你已经
+  // 导入过了」 about an import that never happened. (The same reasoning keeps the cloud session out
+  // of `settings` — see the note at the top of this file.)
+  var IMPORTED_KEY = 'importedIds';
+  // §1.7.1's 500, kept oldest-first: the array is append-only and `recordImport` prunes from the
+  // FRONT, so what a busy operator loses is the oldest note — the one least likely to be re-imported.
+  var MAX_IMPORTED = 500;
+
+  /**
+   * `kind:cloudId`, or **null** when there is no id to key on.
+   *
+   * ⚠ Null is not a defensive flourish. `recordImport('archive', '')` would write `'archive:'`, and
+   * a key with an empty id can never be matched by §1.7.2's comparison — so it would spend one of
+   * the 500 slots on a string that means 「some file, I forget which」, and it would never say
+   * 「导入过了」 about anything. Returning null makes the two questions below answer honestly instead.
+   */
+  function importKey(kind, cloudId) {
+    var id = String(cloudId == null ? '' : cloudId).trim();
+    if (!id) return null;
+    return String(kind == null ? '' : kind).trim() + ':' + id;
+  }
+
+  /** Reads are normalised like every other list this file owns: a hand-edited profile is the one
+   *  input neither writer sees, and it is also the input that arrives from a backup file. */
+  function normalizeImported(raw) {
+    var list = Array.isArray(raw) ? raw : [];
+    var out = [];
+    for (var i = 0; i < list.length; i++) {
+      var s = (list[i] == null) ? '' : String(list[i]);
+      // Must LOOK like `kind:cloudId`: the colon has to be there and has to have something after
+      // it. (`':cloud-x'` — a cloud door whose caller named no kind — is legitimate and is kept;
+      // what is dropped is the reverse, `'archive:'`, which matches nothing.)
+      var at = s.indexOf(':');
+      if (at < 0 || at === s.length - 1) continue;
+      if (out.indexOf(s) >= 0) continue;
+      out.push(s);
+    }
+    if (out.length > MAX_IMPORTED) out = out.slice(out.length - MAX_IMPORTED);
+    return out;
+  }
+
+  async function loadImportedIds() {
+    var got = null;
+    try { got = await api().get(IMPORTED_KEY); } catch (e) { got = null; }
+    return normalizeImported(got && got[IMPORTED_KEY]);
+  }
+
+  /** §1.7.2. Answers 「这一份具体的云端文件是否已经落到本机」 — the whole point of keying on
+   *  `cloud_id` rather than on a filename, which §1.7.3 spells out: two files may share a name and
+   *  differ in content, and the 本地导入 path (the settings page's file picker) has no `cloud_id` at
+   *  all, so it is not asked this question — by construction, not by a flag. */
+  async function checkAlreadyImported(kind, cloudId) {
+    var k = importKey(kind, cloudId);
+    if (!k) return false;
+    return (await loadImportedIds()).indexOf(k) >= 0;
+  }
+
+  /** §1.7.1 — called only after an import has LANDED, so a cancelled or failed import leaves no
+   *  note and the next attempt still asks nothing. Through the serial chain for the same reason
+   *  every other writer is, even though this key has one writer today: the day a second one appears
+   *  is not the day to notice it. */
+  function recordImport(kind, cloudId) {
+    var k = importKey(kind, cloudId);
+    if (!k) return Promise.resolve([]);
+    return enqueue(async function () {
+      var got = null;
+      try { got = await api().get(IMPORTED_KEY); } catch (e) { got = null; }
+      var ids = normalizeImported(got && got[IMPORTED_KEY]);
+      if (ids.indexOf(k) < 0) ids.push(k);
+      if (ids.length > MAX_IMPORTED) ids = ids.slice(ids.length - MAX_IMPORTED);
+      var put = {}; put[IMPORTED_KEY] = ids;
+      try { await api().set(put); } catch (e) {}
+      return ids;
+    });
+  }
+
   async function loadLearnedParams() {
     var got = null;
     try { got = await api().get(LEARNED_KEY); } catch (e) { got = null; }
@@ -3835,6 +3960,11 @@
     TRANSPARENCY_LIMITS: TRANSPARENCY_LIMITS,
     normalizeTransparency: normalizeTransparency,
     cssOpacity: cssOpacity,
+    // 1.0.6 §1.1.3 — the overlay's five variables, in the shared module because there are two
+    // renderings of the panel that must not disagree (content.js's real host and the viewer's
+    // 浮层样式 preview). See the block that defines them.
+    overlayTransparencyVars: overlayTransparencyVars,
+    applyOverlayTransparencyVars: applyOverlayTransparencyVars,
     // 0.5.3 §2.1 — 回放过滤.
     normalizeArchiveFilter: normalizeArchiveFilter,
     shouldSkipArchive: shouldSkipArchive,
@@ -3942,6 +4072,14 @@
     isBlacklisted: isBlacklisted,
     touchBlacklistEntry: touchBlacklistEntry,
     importBlacklist: importBlacklist,
+    // ---- 1.0.6 §1.7 the second-import reminder ----
+    IMPORTED_KEY: IMPORTED_KEY,
+    MAX_IMPORTED: MAX_IMPORTED,
+    importKey: importKey,
+    normalizeImported: normalizeImported,
+    loadImportedIds: loadImportedIds,
+    checkAlreadyImported: checkAlreadyImported,
+    recordImport: recordImport,
     // ---- 0.5.6 §一 导出自定义数据 / 导入与退回 ----
     BACKUP_KIND: BACKUP_KIND,
     BACKUP_VERSION: BACKUP_VERSION,
