@@ -132,7 +132,7 @@
     if (!t) return { ok: false, error: 'UNAUTHORIZED' };
     var dataUrl;
     try { dataUrl = await blobToDataUrl(c.blob); }
-    catch (e) { return { ok: false, error: 'BAD_FORMAT' }; }
+    catch (e) { return { ok: false, error: 'AVATAR_FORMAT' }; }
     var res = await cloud().call('profile-update', { avatarData: dataUrl }, { jwt: t });
     if (!res.ok) return { ok: false, error: res.error, status: res.status, message: res.message };
     var d = res.data || {};
@@ -187,11 +187,20 @@
 
   // ---- 头像 (§4.4) ---------------------------------------------------------------------------
 
-  /** Front-end gate for §4.4's 「格式：jpg / png / webp；大小：≤ 2MB（前端校验）」. */
+  /**
+   * Front-end gate for §4.4's 「格式：jpg / png / webp；大小：≤ 2MB（前端校验）」.
+   *
+   * ⚠⚠ 1.0.5 — THE TWO CODES ARE ITS OWN, AND THEY USED TO BE `BAD_FORMAT`. `BAD_FORMAT` is the
+   * ACTIVATION CODE's malformed-shape code (`GMAuth.validateCode`), and `cloudErrText` resolves it to
+   * 「激活码格式形如 BS-XXXX-XXXX-XXXX-XXXX」. So picking a GIF for an avatar answered with the
+   * activation code's format rule — a sentence about a different field, in a different flow, shown
+   * next to 头像. `TOO_LARGE` had no branch at all and fell through to 「未知错误（TOO_LARGE）」.
+   * One code, one meaning: see the two branches added to `cloudErrText`.
+   */
   function validateAvatar(file) {
-    if (!file) return { ok: false, error: 'BAD_FORMAT' };
-    if (AVATAR_TYPES.indexOf(file.type) < 0) return { ok: false, error: 'BAD_FORMAT' };
-    if (file.size > AVATAR_MAX_BYTES) return { ok: false, error: 'TOO_LARGE' };
+    if (!file) return { ok: false, error: 'AVATAR_FORMAT' };
+    if (AVATAR_TYPES.indexOf(file.type) < 0) return { ok: false, error: 'AVATAR_FORMAT' };
+    if (file.size > AVATAR_MAX_BYTES) return { ok: false, error: 'AVATAR_TOO_LARGE' };
     return { ok: true };
   }
 
@@ -209,7 +218,7 @@
     if (!v.ok) return v;
     var bmp;
     try { bmp = await createImageBitmap(file); }
-    catch (e) { return { ok: false, error: 'BAD_FORMAT' }; }
+    catch (e) { return { ok: false, error: 'AVATAR_FORMAT' }; }
 
     var canvas = document.createElement('canvas');
     canvas.width = AVATAR_SIZE;
@@ -226,7 +235,7 @@
     if (bmp.close) bmp.close();
 
     var blob = await new Promise(function (r) { canvas.toBlob(r, 'image/jpeg', 0.85); });
-    if (!blob) return { ok: false, error: 'BAD_FORMAT' };
+    if (!blob) return { ok: false, error: 'AVATAR_FORMAT' };
     return { ok: true, blob: blob };
   }
 

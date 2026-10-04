@@ -2,7 +2,7 @@
 //
 // POST { content, attachment?, reply_to? }   Authorization: Bearer <jwt>
 //   -> 200 { ok: true, message: { …, attachment, mentioned_users, reply_to, reply_preview } }
-//   -> 400 { error: 'BAD_REQUEST' }         missing/blank content, or a malformed attachment
+//   -> 400 { error: 'BAD_REQUEST' }         blank content with NO attachment, or a malformed attachment
 //   -> 400 { error: 'CONTENT_TOO_LONG' }    over CHAT_MAX_LEN (§2.3.5 「≤ 500 字符」)
 //   -> 400 { error: 'CONTENT_REJECTED' }    §2.3.5 敏感词过滤; `message` names the term
 //   -> 403 { error: 'NOT_ACTIVATED' }       §1.8.1 「发送消息 ❌ 未激活」
@@ -137,16 +137,37 @@ serve(async (req: Request): Promise<Response> => {
     const body = await req.json().catch(() => null) as Record<string, unknown> | null;
     if (!body || typeof body !== "object") return badRequest("Invalid JSON body");
 
+    const rawAttachment = body.attachment;
+    const hasAttachment = rawAttachment !== undefined && rawAttachment !== null;
+
+    // -----------------------------------------------------------------------------------------
+    // ⚠⚠ 1.0.5 — A SHARE MESSAGE HAS NO TEXT OF ITS OWN, AND THIS LINE USED TO FORBID THAT.
+    // -----------------------------------------------------------------------------------------
+    // §1.1.2 makes 分享到聊天室 「一条带附件的消息」, and the room draws it from `attachment.kind`
+    // alone (`cmMsgHtml` renders the card and skips the bubble when `content` is empty — the card
+    // carries `name` / `summary`, the bubble would only repeat them). So `''` is the CORRECT store
+    // for a message that is nothing but a card.
+    //
+    // 1.0.2 through 1.0.4 required a non-empty string HERE, while `cmShareGo` in `viewer.js` has
+    // always called `chat.send('', { attachment })`. Every 发送到聊天室 therefore came back
+    // BAD_REQUEST and reached the operator as 「发送失败（请求无效，请重试）」 — with the picker
+    // offering no other route into the room. It survived three releases because the behaviour suites
+    // stub `chat-send` and the static ones read this file's TEXT rather than its judgements.
+    //
+    // The requirement is kept for a message with NO attachment: an empty bubble is not a message,
+    // it is a mis-click, and the client's own `cmSend` refuses it before the round trip for the same
+    // reason. The length and censor checks below still run on whatever text IS present — §1.1.3's
+    // text of a share is not a hole in §2.3.5, it is simply empty here.
+    if (rawAttachment !== undefined && (typeof rawAttachment !== "object" || Array.isArray(rawAttachment))) {
+      return badRequest("attachment must be an object");
+    }
     const raw = body.content;
-    if (typeof raw !== "string" || raw.trim() === "") return badRequest("Missing content");
+    if (raw !== undefined && typeof raw !== "string") return badRequest("Invalid content");
     // `.trim()` BEFORE the length test, so trailing whitespace cannot push a legal message over the
     // limit — and before the store, so the room never holds a message whose rendered length differs
     // from the length the limit was measured against.
-    //
-    // ⚠ A SHARE MESSAGE'S content IS STILL CHECKED. §1.1.3 gives it 「分享了一个存档」, which is well
-    // under the limit — but it is TEXT, and the censor reads it like any other text. Skipping the
-    // checks for an attachment would make the attachment a way to post anything.
-    const content = raw.trim();
+    const content = typeof raw === "string" ? raw.trim() : "";
+    if (content === "" && !hasAttachment) return badRequest("Missing content");
 
     if (content.length > CHAT_MAX_LEN) {
       return fail("CONTENT_TOO_LONG", HttpStatus.BAD_REQUEST,
@@ -183,12 +204,13 @@ serve(async (req: Request): Promise<Response> => {
     // job cannot find because nothing records it. One call means the message and its copy are
     // created together or not at all.
     let attachment: Record<string, unknown> | null = null;
-    const rawAttachment = body.attachment;
 
-    if (rawAttachment !== undefined && rawAttachment !== null) {
-      if (typeof rawAttachment !== "object" || Array.isArray(rawAttachment)) {
-        return badRequest("attachment must be an object");
-      }
+    // ⚠ `hasAttachment` and the object-shape check were both taken ABOVE, next to the content test:
+    // 「有附件吗」 decides whether empty content is legal, so it has to be answered before the
+    // message can be judged at all. Two spellings of that one question (the earlier `hasAttachment`
+    // and a later `rawAttachment !== null`) is exactly the second-copy shape this project has paid
+    // for five times.
+    if (hasAttachment) {
       const att = rawAttachment as Record<string, unknown>;
 
       const kind = typeof att.kind === "string" ? att.kind : "";

@@ -6335,6 +6335,14 @@
   // the fallback carries the raw code instead of asserting a cause.
   function cloudErrText(err) {
     if (err === 'BAD_FORMAT') return T('viewer|激活码格式形如 BS-XXXX-XXXX-XXXX-XXXX');
+    // ---- 1.0.5 §4.4 头像：两个属于它自己的码 ----
+    // ⚠ THEY ARE NOT `BAD_FORMAT`, WHICH IS THE LINE DIRECTLY ABOVE. Until 1.0.5 `validateAvatar`
+    // returned `BAD_FORMAT` for a wrong image type, so the avatar row answered 「激活码格式形如
+    // BS-XXXX-XXXX-XXXX-XXXX」 — the catalogue resolves one code to exactly one sentence, and this
+    // is what that costs when two unrelated fields borrow the same spelling. `TOO_LARGE` had no
+    // branch anywhere and reached the operator as 「未知错误（TOO_LARGE）」.
+    if (err === 'AVATAR_FORMAT') return T('viewer|头像仅支持 JPG / PNG / WebP 格式');
+    if (err === 'AVATAR_TOO_LARGE') return T('viewer|头像文件不能超过 2MB');
     if (err === 'INVALID_CODE') return T('viewer|激活码无效');
     if (err === 'CODE_REVOKED') return T('viewer|激活码已被撤销');
     if (err === 'CODE_ALREADY_USED') return T('viewer|激活码已被其他账户使用');
@@ -6652,11 +6660,18 @@
       '<button class="sec" id="acBioSave">' + esc(T('viewer|保存')) + '</button></div>';
     // The file input stays in the DOM and is `display:none`; a file input that is not in the
     // document cannot be clicked on some builds (same note as 导入与导出's `#ioFile`).
+    //
+    // ⚠ 1.0.5 — THE HINT SHIPS WITH THE RULE IN IT. It used to be an empty `<span>` that only ever
+    // said 「正在上传…」 or a failure, so the row named neither the accepted formats nor the size
+    // limit until the operator had already picked a file and been refused — and the refusal itself
+    // used to be the activation code's sentence (see the two branches in `cloudErrText`).
+    // Same two rules, said once here and enforced again in `validateAvatar`.
     h += '<div class="rowline"><span>' + esc(T('viewer|头像')) + '</span>' +
       '<span class="acct-av" style="width:40px;height:40px;font-size:14px">' + av + '</span>' +
       '<input type="file" id="acAvatar" accept="image/jpeg,image/png,image/webp" style="display:none">' +
       '<button class="sec" id="acAvatarPick">' + esc(T('viewer|更换')) + '</button>' +
-      '<span class="hint" id="acAvatarHint"></span></div>';
+      '<span class="hint" id="acAvatarHint">' +
+        esc(T('viewer|支持 JPG / PNG / WebP，不超过 2MB')) + '</span></div>';
 
     // ---- 邮箱与密码 (§3.7 / §3.8) ----
     h += '<h3 class="set-sub">' + esc(T('viewer|邮箱与密码')) + '</h3>';
@@ -6779,6 +6794,13 @@
       pick.onclick = function () { file.click(); };
       file.onchange = async function () {
         var f = file.files && file.files[0];
+        // ⚠ 1.0.5 — CLEARED IMMEDIATELY, so that the SAME file can be chosen twice. A file input
+        // fires `change` only when its value CHANGES, and a refusal leaves the value set: after
+        // reading 「头像文件不能超过 2MB」 and picking a SMALLER file the control worked, but picking
+        // the same file again — or retrying after a failed upload — did nothing at all, which reads
+        // as a broken button rather than a strict one. `f` is captured on the line above, so
+        // clearing the input cannot affect the upload that follows.
+        file.value = '';
         if (!f) return;
         // §4.4's client-side gate runs BEFORE the file is read: 2MB / jpg-png-webp, then 256×256.
         var v = GMProfile.validateAvatar(f);
@@ -7580,7 +7602,7 @@
       };
       codeIn.onkeydown = function (e) { if (e.key === 'Enter') go.click(); };
       codeIn.focus();
-    });
+    }, { pinned: true });
   }
 
   /** §2.3 第二步：注册窗口. Five fields, a live strength bar, a live uniqueness check and a
@@ -7677,7 +7699,7 @@
       var ft = bd.closest('.modal').querySelector('.ft');
       ft.insertBefore(go, ft.querySelector('[data-close]'));
       nameIn.focus();
-    });
+    }, { pinned: true });
   }
 
   /** §2.6 已有账户的登录. `reason` is the sentence the caller wants said first (e.g. the one
@@ -9887,7 +9909,15 @@
     if (!ctx.contains(e.target)) closeCtx();
   });
   window.addEventListener('blur', closeCtx);
-  document.addEventListener('keydown', function (e) { if (e.key === 'Escape') { closeCtx(); closeModal(); } });
+  document.addEventListener('keydown', function (e) {
+    if (e.key !== 'Escape') return;
+    closeCtx();
+    // ⚠ 1.0.5 — Escape is the SECOND way to dismiss a layer without touching a button, and a pinned
+    // one refuses it for exactly the reason it refuses the backdrop click (see `openModal`). `maskEl`
+    // is this module's top layer; the two guards over `data-pinned` are the whole rule.
+    if (maskEl && maskEl.getAttribute('data-pinned') === '1') return;
+    closeModal();
+  });
 
   function showCtx(html, x, y) {
     ctx.innerHTML = html;
@@ -10017,7 +10047,26 @@
       '<div class="bd"></div><div class="ft"><button class="sec" data-close="1">' + T('viewer|关闭') + '</button></div></div>';
     maskEl.querySelector('.bd').innerHTML = bodyHtml;
     maskEl.querySelector('[data-close]').onclick = closeModal;
-    maskEl.addEventListener('click', function (e) { if (e.target === maskEl) closeModal(); });
+    // ---------------------------------------------------------------------------------------
+    // ⚠ 1.0.5 — `opts.pinned`: A LAYER THAT ONLY A BUTTON CAN DISMISS.
+    // ---------------------------------------------------------------------------------------
+    // 激活 asks for five fields (用户名 / 邮箱 / 密码 / 确认密码 / 验证码) and then waits on an email
+    // that may take a minute to arrive. Every one of those fields is lost when the layer goes away,
+    // and there were TWO ways to lose them without meaning to: a click that landed on the backdrop
+    // instead of the dialog, and Escape. Both are 「I did not ask for this」 gestures, and neither
+    // leaves the operator a sentence about what happened — the modal is simply gone.
+    //
+    // So the dismissal is narrowed to the things that SAY what they do: the 关闭 button, and the
+    // flow's own 「暂不」. A pinned layer carries `data-pinned` and the two accidental paths ask
+    // that one attribute — see the Escape handler further down. Two guards over one attribute,
+    // rather than a rule written out twice and drifting.
+    //
+    // ⚠ NOT THE DEFAULT, and deliberately so: every other dialog here (修改密码 / 更换邮箱 / 注销账户 /
+    // 管理员面板 / 新手教程) is short or read-only, and pinning them would turn a stray click into a
+    // dialog the operator has to hunt for a button to escape. This is the one flow whose cost of
+    // accidental loss is minutes of retyping plus a second email.
+    if (o.pinned) maskEl.setAttribute('data-pinned', '1');
+    else maskEl.addEventListener('click', function (e) { if (e.target === maskEl) closeModal(); });
     maskStack.push(maskEl);
     document.body.appendChild(maskEl);
     if (onMount) onMount(maskEl.querySelector('.bd'));

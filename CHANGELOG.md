@@ -7,6 +7,16 @@ nobody ever read the history from there anyway.
 
 Every entry below is the original prose, verbatim — only the headings and blank lines are new.
 
+## 1.0.5
+
+**1.0.5 fixes three things a user found by pressing a button, and each was two halves of one feature that had never been read together.**
+
+**1. 分享到聊天室 never once succeeded.** `cmShareGo` sends `chat.send('', { attachment })` — §1.1.2's attachment is a message with no text of its own — while `chat-send` refused *any* blank `content` with `BAD_REQUEST`, which the panel renders as 「发送失败（请求无效，请重试）」. The picker draws no other route into the room, so 发送回放/样本 to the room was dead from 1.0.2 through 1.0.4. Fixed **server-side**: an empty content is now an error only when there is no attachment, and the attachment message is stored with a blank text (the room draws the card from `attachment.kind`, and `cmMsgHtml` already skips the bubble). Because the fix is in the Function, an already-installed 1.0.3/1.0.4 client starts working without being reloaded. The length and censor gates still run on whatever text a share does carry.
+
+**2. 激活界面 vanished at a stray click.** `openModal` bound a backdrop click to `closeModal()` and the global Escape handler closed the top layer too. 激活 asks for five fields and then waits on an email that may take a minute; one accidental click discarded all of it and left no sentence behind. `openModal` now takes `pinned`: a pinned layer does not bind the backdrop, and Escape asks the same `data-pinned` attribute first — two accidental paths, one predicate. Both the 激活码 dialog and the 注册 dialog it opens are pinned, so the only exits are the two controls that say what they do (「关闭」 and 「暂不」). Pinning is **not** the default, and `closeAllModals()` deliberately ignores the attribute so a successful registration can still close itself.
+
+**3. 头像 could never be uploaded — and said the wrong thing when it failed.** Two independent faults. (a) §3.6 names a Storage bucket `avatars` and **nothing ever created it**: `profile-update` has uploaded to `avatars/{user_id}.jpg` since 1.0.1, so every 更换 ended in `Bucket not found` → `INTERNAL` → 「服务端暂时出错，请稍后重试」. No suite could see it: the client half, the server half and even that error branch were all correct, and the missing piece was state, not code. `016_avatars_bucket.sql` creates it (public, 2 MB, jpg/png/webp — the same values as the function's own constants), and `verify-067` pins the function's bucket name against the migration's so the two cannot drift again. (b) `validateAvatar` returned the activation code's `BAD_FORMAT`, so choosing a GIF for an avatar answered 「激活码格式形如 BS-XXXX-XXXX-XXXX-XXXX」; `TOO_LARGE` had no branch at all and fell through to 「未知错误（TOO_LARGE）」. The avatar path now has its own two codes, and the row states the accepted formats and limit up front instead of waiting until a file is refused. Also: the file input is cleared after a pick, so the same file can be chosen twice.
+
 ## 1.0.4
 
 **1.0.4 closes four surfaces that LOOKED finished.** Each of them failed the same way — something existed in the source and nothing delivered it — and each failure was invisible from inside the product.
