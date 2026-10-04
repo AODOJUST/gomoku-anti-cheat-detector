@@ -1,7 +1,7 @@
 // auth-renew -- exchange a still-valid (or just-expired) session for a fresh 30-day one.
 //
 // POST { deviceId, userAgent? }   Authorization: Bearer <jwt>
-//   -> 200 { jwt, expiresAt }
+//   -> 200 { jwt, expiresAt, user }
 //
 // Renewal cadence: the extension calls this every 7 days. A 30-day token therefore
 // comfortably outlives the interval, and even a client that has been offline for a
@@ -19,6 +19,7 @@ import {
   serviceClient,
   SESSION_DAYS,
   signJwt,
+  toPublicUser,
   touchDevice,
   verifyJwtAllowExpired,
   type UserRow,
@@ -81,7 +82,19 @@ serve(async (req: Request): Promise<Response> => {
       { id: userRow.id, email: userRow.email, epoch: userRow.token_epoch },
       SESSION_DAYS,
     );
-    return json({ jwt, expiresAt });
+    // ⚠⚠ 1.0.6 二号 §1.7.1 — THE USER PROJECTION GOES BACK WITH THE TOKEN, AND THIS IS THE FIX.
+    //
+    // 切换账号 rebuilds the live session from the remembered credential row, because there is no
+    // refresh token in this product (see `auth.js`'s header) — and that row only ever held the five
+    // fields the drawer draws. So a switched-to session was missing every other column, `activated_at`
+    // among them, and `cmReadOnly()` (viewer.js) read the missing field as 「未激活」: the operator
+    // switched to an ACTIVATED account and the room locked itself with 「激活后参与讨论」.
+    //
+    // The row is already loaded right above (`userRow`), so this costs nothing — and it is the
+    // version that cannot drift: `toPublicUser` is the ONE projection, so a column added to it
+    // arrives at every session-adopting door at once (activate / login / register / renew / switch)
+    // instead of having to be remembered in each.
+    return json({ jwt, expiresAt, user: toPublicUser(userRow) });
   } catch (err) {
     console.error("auth-renew failed:", err);
     return internal("Renewal failed, please try again");

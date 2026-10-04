@@ -311,6 +311,15 @@
     var d = res.data || {};
     _session.jwt = d.jwt || _session.jwt;
     _session.expiresAt = d.expiresAt || (Date.now() + JWT_DAYS * DAY_MS);
+    // ⚠ 1.0.6 二号 §1.7.1 — `auth-renew` answers with the server's own projection, so a column the
+    // server changed since this session was minted (an activation, a role, a 隐藏国籍) arrives
+    // without a relogin. Before this, a session kept the five fields its door happened to know for
+    // its whole 30 days. MERGE, not replace: a partial answer must not drop `is_admin`, and the one
+    // field a stale local copy must never win on is `id` — so the server's object is layered over
+    // the existing one, exactly like `patchUser` below does for a single-field write.
+    if (d.user && typeof d.user === 'object') {
+      _session.user = Object.assign({}, _session.user || {}, d.user);
+    }
     _session.lastRenewAt = Date.now();
     await store().saveCloudSession(_session);
     emit();
@@ -324,6 +333,48 @@
       try { await renew(false); } catch (e) { /* offline is an expected outcome, not a failure */ }
     }
     return status();
+  }
+
+  /**
+   * §3.1.2 — 「每次登录时更新」 the account's country, inferred server-side from THIS REQUEST's IP.
+   *
+   * ⚠⚠ IT HAS TO BE CALLED FROM THE CLIENT, WHICH IS WHY IT IS A CLIENT VERB AT ALL. §1.6.3's 修复
+   * 清单 proposes calling `geo-update` FROM `auth-register` / `auth-renew`, and that cannot work:
+   * `clientIp` (geo-update) reads the headers of the request it is answering, so a call made
+   * server-to-server would geolocate the EDGE FUNCTION's own address — every account would come back
+   * with the same country, and 1.6's 「管理员界面未显示地区」 would be replaced by a worse defect that
+   * looks like a working feature. The IP has to be the operator's, so the request has to be theirs.
+   *
+   * ⚠ FAIL-OPEN, LIKE THE ENDPOINT ITSELF. A geolocation flag is a decoration on a profile (§1.3.1's
+   * 「🇨🇳 中国大陆」 line); a failure here must never surface in a flow the operator is in the middle
+   * of, so the result is returned for a caller that cares and swallowed by the two that do not.
+   *
+   * The 12-hour throttle lives in the Edge Function (`REFRESH_AFTER_MS`), not here: it is the same
+   * answer for every caller and a second copy of it on this side would be a second thing to keep.
+   */
+  async function syncCountry(force) {
+    if (!cloud().isConfigured()) return { ok: false, error: 'NOT_CONFIGURED' };
+    await load();
+    if (!_session || !_session.jwt) return { ok: false, error: 'NO_SESSION' };
+    var res;
+    try {
+      res = await cloud().call('geo-update', { force: force === true },
+        { jwt: _session.jwt, timeoutMs: 8000 });
+    } catch (e) {
+      return { ok: false, error: 'NETWORK' };
+    }
+    if (!res.ok) return { ok: false, error: res.error };
+    var d = res.data || {};
+    // The server wrote the column; the session's projection is the stale half. Merged rather than
+    // re-read, for the reason `patchUser` documents: this is a display field and the caller is
+    // already holding the answer the server just gave.
+    if (d.country_code) {
+      _session.user = Object.assign({}, _session.user || {}, { country_code: d.country_code });
+      _loaded = true;
+      try { await store().saveCloudSession(_session); } catch (e) { /* the session is what matters */ }
+      emit();
+    }
+    return { ok: true, country_code: d.country_code || null, reason: d.reason || null };
   }
 
   /**
@@ -409,6 +460,16 @@
       // §1.1.2 spells it `avatarUrl`; the `users` column is `avatar_url`. Mapped here, at the one
       // boundary where a server row becomes a stored credential.
       avatarUrl: u.avatar_url || '',
+      // ⚠⚠ 1.0.6 二号 §1.7.1 — `activatedAt` IS PART OF THE CREDENTIAL ROW, and its absence was the
+      // whole of 「切换账号后聊天室显示「未激活」」. This row is where a switch rebuilds the live
+      // session FROM (there is no refresh token to ask — see the header), so a field missing here is
+      // a field missing from the session, and `cmReadOnly()` reads `activated_at`: switching to an
+      // ACTIVATED account produced a session that looked unactivated, and the room locked itself.
+      //
+      // ⚠ It rides here as well as on `auth-renew`'s answer because the two cover different paths:
+      // the server's projection is authoritative when the network answers, and this row is all there
+      // is when it does not (the documented offline switch below).
+      activatedAt: u.activated_at || null,
       jwt: envelope,
       // The addition §1.1.2 does not have — see the header block: this is what lets the drawer say
       // 「免密」 instead of guessing, without a network call.
@@ -466,6 +527,30 @@
    *                      it and clear it on a 401), because refusing would make 切换账号 useless for
    *                      the developer who is testing a build with the network off.
    */
+  /**
+   * The `user` projection a switch rebuilds when `auth-renew` did NOT answer with one (transport
+   * failure — see `switchAccount`).
+   *
+   * ⚠ 1.0.6 二号 §1.7.1 — THIS FUNCTION EXISTS BECAUSE THE SAME SIX-LINE LITERAL WAS WRITTEN TWICE,
+   * and the field that had gone missing from both was the one nothing drew: `activated_at`. It is
+   * not decoration — `cmReadOnly()` (viewer.js) is 「未激活」's ONLY predicate, and the room's whole
+   * write surface asks it. `is_admin` was the field somebody remembered to add when this literal was
+   * copy-pasted; this is the version where the next one cannot be forgotten.
+   *
+   * A field the stored row does not have stays `null` rather than being omitted, so the shape of a
+   * rebuilt session matches the shape `auth-renew` returns (`toPublicUser`).
+   */
+  function sessionUserFromAccount(target) {
+    return {
+      id: target.userId,
+      username: target.username,
+      email: target.email,
+      avatar_url: target.avatarUrl,
+      is_admin: target.isAdmin === true,
+      activated_at: target.activatedAt || null,
+    };
+  }
+
   async function switchAccount(userId) {
     if (!cloud().isConfigured()) return { ok: false, error: 'NOT_CONFIGURED' };
     await load();
@@ -492,13 +577,10 @@
       await adoptSession({
         jwt: d.jwt || jwt,
         expiresAt: d.expiresAt,
-        user: {
-          id: target.userId,
-          username: target.username,
-          email: target.email,
-          avatar_url: target.avatarUrl,
-          is_admin: target.isAdmin === true,
-        },
+        // ⚠ §1.7.1 — the SERVER's projection when it is there, the remembered row when it is not.
+        // `auth-renew` answers with `toPublicUser(row)`, so this is a complete session rather than
+        // the five fields the drawer happens to draw.
+        user: d.user || sessionUserFromAccount(target),
       });
       return { ok: true, user: _session.user };
     }
@@ -507,13 +589,7 @@
     await adoptSession({
       jwt: jwt,
       expiresAt: exp,
-      user: {
-        id: target.userId,
-        username: target.username,
-        email: target.email,
-        avatar_url: target.avatarUrl,
-        is_admin: target.isAdmin === true,
-      },
+      user: sessionUserFromAccount(target),
     });
     return { ok: true, user: _session.user, unverified: true };
   }
@@ -767,6 +843,9 @@
     activate: activate,
     renew: renew,
     boot: boot,
+    // 1.0.6 二号 §1.6 — §3.1.2's country inference. A client verb because the IP has to be the
+    // CALLER's; see the function's own note for why the spec's server-side call site cannot work.
+    syncCountry: syncCountry,
     logout: logout,
     refresh: refresh,
     onChange: onChange,

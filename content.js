@@ -353,6 +353,14 @@
   var blacklistIds = {};          // { [id.toLowerCase()]: entry }
   var blacklistHit = null;        // the entry matched for THIS game, or null
   var blacklistCheckedEpoch = null;  // gameEpoch the match check last ran for
+  // 1.0.6 §2.3.3 — 「同一房间只报警一次」. This is NOT the same question as
+  // `blacklistCheckedEpoch` above and the two must not be collapsed into one variable: that one
+  // means "this game has been checked" (so a `reset` clears it and the next game is checked
+  // again), this one means "this room has already flashed" (so a rematch in the SAME room stays
+  // quiet — the operator was told once, and the persistent 「对手在黑名单中」 line in the status
+  // area still says so). Deliberately NOT cleared by `beginNewGame()`: clearing it there is
+  // exactly the second flash §2.3.3 exists to remove.
+  var lastAlertedRoomId = null;
   var blacklistAlertActive = false;  // §2.2 — the highest-priority border state, while it plays
 
   // §二 — the six states the panel's border can be in. Kept as a map rather than six loose
@@ -1021,6 +1029,39 @@
     return null;
   }
 
+  /**
+   * §2.3.2 — every id that could be the opponent RIGHT NOW, best evidence first.
+   *
+   * The 1.0.6 bug this fixes: during a game nobody has spoken yet, so `chatAdjSide()` cannot say
+   * which colour we hold, `opponentSideLetter()` returns null, and `resolveOpponentId()`'s socket
+   * route (the only one that names a seat id) is skipped because it is written per side. The check
+   * therefore answered 「无法确定对手」 for the whole opening — the exact window §二 is about —
+   * and only resolved once a seat list or a chat message happened to identify the opponent.
+   *
+   * §2.3.2's sketch makes `resolveOpponentId()` itself return an array in that case. That would be
+   * wrong here: the 🚫 button and its confirm (`paintBlacklistButton` / `toggleBlacklist`) need ONE
+   * definite target, and 「无法获取对手用户名」 (`na`) is the honest answer for them, so the two
+   * callers want opposite things from the same question. The array therefore lives in its own
+   * function, and the single-valued answer above stays single-valued.
+   *
+   * Returns `[{ id, name }]` — one entry when the side is known, both seats when it is not. Our
+   * own seat is dropped when it can be named, because blocking ourselves is the one mistake in
+   * this feature that is worse than doing nothing. Deliberately no `how` field: the caller only
+   * needs to look ids up.
+   */
+  function opponentIdCandidates() {
+    var one = resolveOpponentId();
+    if (one && one.id) return [{ id: one.id, name: one.name }];
+
+    var ids = (socketRec && socketRec.playerIds) || {};
+    var names = playerNames();
+    var mine = ownSeatId(null);
+    var out = [];
+    if (ids.black != null && !sameId(ids.black, mine)) out.push({ id: String(ids.black), name: names.black || null });
+    if (ids.white != null && !sameId(ids.white, mine)) out.push({ id: String(ids.white), name: names.white || null });
+    return out;
+  }
+
   // ---------- identity: 注册 / 游客 / 观战 ----------
   // Three session kinds that behave differently on the site (0.3.0 spec §2), and that were
   // previously told apart by nothing at all. Two sources, strongest first:
@@ -1483,11 +1524,24 @@
 
     if (p.kind === 'reset') {
       ended = false; endedBy = '';
+      // 1.0.6 §2.3.1 — 「新对局开始 → 检测对手」. It sits AFTER `socketRec` has been reassigned
+      // and `resolveSenderColour()` has run, because those two are what the check reads: called
+      // any earlier it would ask about the game that just ended. The reset frame often beats the
+      // seat list, in which case the check finds no candidate and leaves its epoch mark unset, so
+      // the `players` branch below (or the tick) answers instead.
+      checkBlacklist();
       paint();
       return;
     }
 
-    if (p.kind === 'players') { paintStatus(); return; }
+    if (p.kind === 'players') {
+      // 1.0.6 §2.3.1 — 「采集到玩家名 → 拿到 ID 后立即检测」. This is the branch that actually
+      // closes §二: the ids are the last thing to arrive, so it is here that a game which could not
+      // be told apart at `reset` becomes answerable.
+      checkBlacklist();
+      paintStatus();
+      return;
+    }
 
     if (p.kind === 'seed') {
       // The board revealed moves we never saw (joined mid-game / resync). Anything the live
@@ -1637,6 +1691,14 @@
     new MutationObserver(function () { reconcileDom(); })
       .observe(grid, { childList: true, subtree: true });
     reconcileDom();
+    // 1.0.6 §2.3.1 — 「DOM 观察到玩家名元素出现时」, as close to it as this code can honestly get.
+    // The observer above watches the BOARD, because that is what `reconcileDom()` consumes; the
+    // player row is never under it, and a second observer just for names would fire on every
+    // stone. The name route is therefore served by the tick, which calls `rememberNames()` and
+    // then this function every second. What earns a call HERE is the board being rebuilt: a new
+    // grid is a new game, the game just finalised may have been the last thing that named the
+    // players, and the tick's check has one game epoch of retrying to do before it can answer.
+    checkBlacklist();
   }
 
   // Board emptied without a reset event: only trust it after it stays empty a while,
@@ -2343,6 +2405,11 @@
     // 0.4.9 §1.5/§2.1 — the blacklist match and the two one-shot border flashes belong to the
     // game that just ended. Carrying them over would keep the previous game's warning on screen
     // (and its red flash) against a player who may not be the one being blocked now.
+    //
+    // ⚠ `lastAlertedRoomId` is deliberately NOT cleared here (1.0.6 §2.3.3). It answers a
+    // different question — 「this room has already flashed」 — and a rematch in the same room is
+    // exactly the second flash the requirement removes. The 「对手在黑名单中」 line in the status
+    // area is per-game and does come back, which is why staying quiet here loses no information.
     blacklistHit = null;
     blacklistCheckedEpoch = null;
     detectingStarted = false;
@@ -3943,28 +4010,63 @@
   }
 
   /**
-   * §1.5 — the per-game match check: is the opponent we are playing right now on the list?
+   * §1.5 / §2.3.1–§2.3.3 — the per-game match check: is the opponent we are playing right now on
+   * the list?
    *
-   * Keyed on `gameEpoch`, because the caller is the 1-second tick and `touchBlacklistEntry`
-   * bumps a counter that cannot tell two ticks from two games. The mark is set only once a check
-   * could actually be made, so a tick that runs before the ids arrive simply tries again.
+   * Two different "how often" questions are answered here and they use two different marks:
+   *
+   *   `blacklistCheckedEpoch` — 「this game has been checked」. The mark is set only once a check
+   *   could actually be made, so a call that runs before the ids arrive (the `reset` event that
+   *   beats the seat list, the boot that beats the socket) simply leaves it unset and the next
+   *   caller tries again. Keyed on `gameEpoch` because `touchBlacklistEntry` bumps a counter that
+   *   cannot tell two calls from two games.
+   *
+   *   `lastAlertedRoomId` — 「this room has already flashed」 (§2.3.3). The two are separate on
+   *   purpose: this game being checked does not mean a rematch in the same room should flash
+   *   again, and one room having flashed must not stop the next room from being checked.
+   *
+   * The candidates come from `opponentIdCandidates()`, so a game whose seats cannot be told apart
+   * is still checked against both of them (§2.3.2) instead of being given up on.
+   *
+   * ⚠ §2.3.1's sketch opens with `GMAuth.isActivated()`. There is NO such call here, and its
+   * absence is the requirement, not an omission: `run()` is only reached through `gateBoot()`,
+   * so an unactivated operator has no host, no listener and no tick — §2.3.4's 「浮层不存在 ⇒ 不
+   * 报警」 is already structural. Adding a second judgment here would be the seventh time this
+   * project paid for the same answer kept in two places, and it could disagree with the real gate.
    */
   function checkBlacklist() {
     if (blacklistCheckedEpoch === gameEpoch) return;
-    var opp = resolveOpponentId();
-    if (!opp || !opp.id) return;
+    // The alert IS a panel act — `playFlash` needs `#gm` to animate, and with no host built yet
+    // `triggerBlacklistAlert` would take the 「no element ⇒ done() immediately」 branch, i.e. spend
+    // this game's one check and this room's one flash on an empty page. `hydrateBlacklist()` is
+    // fire-and-forget from `run()`, so it really can resolve before `boot()` has built the host.
+    // Returning BEFORE the epoch mark is what keeps that harmless: the call is simply retried.
+    if (!root) return;
+    var cands = opponentIdCandidates();
+    if (!cands.length) return;
     blacklistCheckedEpoch = gameEpoch;
-    var hit = isBlacklistedSync(opp.id);
+    var hit = null, hitName = null;
+    for (var i = 0; i < cands.length; i++) {
+      var h = isBlacklistedSync(cands[i].id);
+      if (h) { hit = h; hitName = cands[i].name; break; }
+    }
     if (!hit) {
       if (blacklistHit) { blacklistHit = null; if (root) paintStatus(); }
       return;
     }
     blacklistHit = hit;
-    triggerBlacklistAlert(hit);
+    // The status line and the 🚫 button are per-GAME facts, so they update either way; only the
+    // flash is per-ROOM. A room we cannot name (no `roomId` on the frame) is treated as a new room
+    // every time: an extra flash is noise, a missing one is the bug being fixed.
+    var roomId = (socketRec && socketRec.roomId) || null;
+    if (!roomId || roomId !== lastAlertedRoomId) {
+      triggerBlacklistAlert(hit);
+      lastAlertedRoomId = roomId;
+    }
     if (root) paintStatus();
     // Fire and forget: the counter and the timestamp are bookkeeping, and awaiting a storage
     // round trip here would put a write in front of the alert the operator is meant to see now.
-    try { GMStorage.touchBlacklistEntry(hit.id, opp.name || hit.displayName); } catch (e) {}
+    try { GMStorage.touchBlacklistEntry(hit.id, hitName || hit.displayName); } catch (e) {}
     blacklistIds[blacklistKey(hit.id)] = hit;
   }
 
@@ -5954,6 +6056,14 @@
     // build(), which is what actually creates the host it has to be written onto; calling it in
     // both places would have been two fire-and-forget routines racing over the same five
     // properties, and the loser would be whichever answer came back second.
+    //
+    // 1.0.6 §2.3.1 — 「扩展启动 → 若页面已有对局」. This is the one trigger point that cannot be
+    // folded into the 1 Hz tick: an operator who reloads during a game, or who activates the
+    // extension on a page that already has one, was previously left until the next tick — or, for
+    // a page whose socket has gone quiet, until the `players` frame that is never coming again.
+    // `hydrateBlacklist()` may already have tried and returned unmarked (no host yet); this is the
+    // retry that now has one.
+    checkBlacklist();
   }
   /**
    * Everything that used to run at module scope. It is a function now for one reason: §1.2 says an

@@ -89,6 +89,28 @@
   // keys that could drift apart.
   function sideTag(side) { return side === 'B' ? T('viewer|黑') : T('viewer|白'); }
   function sideName(side) { return side === 'B' ? T('viewer|黑方') : T('viewer|白方'); }
+  /**
+   * 1.0.6 二号 §1.3 — the line ABOVE a risk score: whose score is this.
+   *
+   * §1.3.1's complaint is that 「黑方 · 高风险」 does not answer 「哪一方的分数对应哪个玩家」 while the
+   * operator is scanning two nearly identical cards. The name is the missing half, and the side
+   * stays in brackets so the row still reads as a colour once there IS a name.
+   *
+   * ⚠ §1.3.2's fallback is a REAL case, not a defensive branch: a detect-pane analysis has no names
+   * at all unless the operator pasted a JSON envelope, and a pre-0.4 record has none either. The
+   * rule is 「missing name prints the side」 rather than an empty line, because an empty line where a
+   * name belongs reads as a rendering fault instead of as 「这一方不知道是谁」.
+   *
+   * ONE formatter for the three callers (detect / replay detail / sample detail) — §1.3.3 lists all
+   * three, and three copies of this ternary is exactly the drift 「黑方」's own two-character form
+   * was pulled into `sideName` to stop.
+   */
+  function playerNameLine(players, side) {
+    var p = players || {};
+    var raw = side === 'B' ? p.black : p.white;
+    var who = (raw == null || raw === '') ? '' : String(raw);
+    return who ? T('viewer|{name}（{side}）', { name: who, side: sideName(side) }) : sideName(side);
+  }
   // 0.4.7 §5.4 — which contribution keys the panel spells out rather than showing as a slug.
   // The VALUE is the model's stable key and the LOOKUP is `T('learn.weight.' + k)`, i.e. exactly
   // the same runtime key `learn.js` renders its own weight table with (see _tools/i18n-extra.js).
@@ -525,10 +547,20 @@
   // list because they belong to an ACCOUNT (§3.3), not because a nav button leads to them: §3.1
   // removes 我的's tab and reaches both through the drawer, so the drawer is the only door — and a
   // door into a room the operator may not enter is exactly what this list closes.
-  // 1.0.2 二.1 adds `community`: §2.1 「未激活用户：不显示「社区」按钮」, and it is in the list for the
-  // same reason as the three above — hiding the button is §2.1's visible half, and the router is
-  // where the invisible half lives.
-  var GATED_VIEWS = ['replay', 'samples', 'blacklist', 'profile', 'account', 'community'];
+  //
+  // ⚠⚠ 1.0.6 二号 §1.7.2 — `community` WAS ADDED TO THIS LIST BY 1.0.2 二.1 AND IS NOW OUT OF IT.
+  // 1.0.2's rule was 「未激活用户：不显示「社区」按钮」; this version's is 「未激活用户可见社区按钮」,
+  // and the two cannot both hold. What makes the change safe is that the room does not become
+  // WRITABLE: 1.0.3 §1.8 built `cmReadOnly()` — a question about the ACCOUNT
+  // (`users.activated_at is null`), not about the session shape this list is built from — and every
+  // write surface in the room asks it. Hiding the tab was never what kept an unactivated operator
+  // out of the room; `cmReadOnly()` is, and it is the one that also handles the case this list
+  // could not see: a session that IS 「activated」 by token alone.
+  //
+  // ⚠ The four remaining entries stay. §1.7.2 asks for the community and says nothing about 回放 /
+  // 样本库 / 黑名单 — those read the operator's OWN local data through the same three tabs whether or
+  // not a server exists, and §1.1's ❌ for them is unchanged.
+  var GATED_VIEWS = ['replay', 'samples', 'blacklist', 'profile', 'account'];
 
   /** The gate, in the one form this file asks it in. Sync, because `GMAuth.gateOpen()` is. */
   function activationOpen() { return !!(GMAuth.gateOpen && GMAuth.gateOpen()); }
@@ -4643,6 +4675,124 @@
     cmPaintVotes();
   }
 
+  // ===========================================================================================
+  // 1.0.6 二号 §1.8 — 表情选择器：状态与绘制（模块作用域；接线在 `cmBoot` 里）
+  // ===========================================================================================
+  // ⚠⚠ WHY THIS IS NOT INSIDE `cmBoot()`: `cmPaintGate()` calls `cmEmojiClose()` and is reached
+  // from `cmPaintAll()` at boot, before any wiring runs. Written inside `cmBoot` these were a
+  // `ReferenceError` on every load — five behavioural suites caught it, every static suite passed,
+  // because the identifiers really are in the source. 「由函数 BUILD 的面板必须由函数 WIRE」 is
+  // about the WIRING (which stays next to the markup); a definition another function must reach
+  // belongs at the scope that can reach it.
+  //
+  // §1.8.2's three groups in §1.8.2's order (黄脸 → 手势 → 常用), ~60 faces, and §1.8.1's position
+  // (to the right of 文件) — the markup carries the button, this carries the faces.
+  //
+  // ⚠ THE LABELS ARE `T()` CALLS, RE-EVALUATED PER PAINT, NOT STRINGS READ AT LOAD. The panel is
+  // rebuilt on every open and on every language switch, so a label captured once would be the
+  // language the page started in — the same defect `fillThemeSelect` exists to fix. Each label is
+  // a function only so that its `T()` argument stays a LITERAL written next to its use: a computed
+  // key (`T('viewer|' + name)`) is a key no extractor can see and no dictionary can answer, and
+  // this project's i18n toolchain has no check that would catch it.
+  //
+  // ⚠⚠ AND NEVER WRITE A NAMESPACE-QUALIFIED ELLIPSIS IN PROSE, not even as an example. Four suites
+  // (verify-059/062/063/068) harvest namespace-quoted string literals with a REGEX over the whole
+  // file — COMMENTS INCLUDED — and a `viewer|` followed by an ellipsis is harvested as a literal with
+  // no dictionary row. 「注释也算源码」 in its cheapest form: the two paragraphs above failed those
+  // suites by name until the shape was worded away. (The ellipsis is spelled out here because the
+  // thing being described IS a character sequence.)
+  //
+  // ⚠ THE ARRAY IS THE ONLY PLACE THE GROUP COUNT IS STATED. `settings.emojiGroup` is an INDEX
+  // into it — storage.js clamps that to a sanity range, deliberately NOT to this length, so the
+  // two files cannot disagree about how many groups there are. An index this list does not have
+  // reads as the first group (`cmEmojiGroup`).
+  var EMOJI_GROUPS = [
+    { label: function () { return T('viewer|黄脸'); }, items: [
+      '😀', '😃', '😄', '😁', '😆', '😅', '🤣', '😂', '🙂', '🙃',
+      '😉', '😊', '😇', '🥰', '😍', '🤩', '😘', '😗', '☺️', '😚',
+      '😙', '🥲', '😋', '😛', '😜', '🤪', '😝', '🤑', '🤗', '🤭',
+    ] },
+    { label: function () { return T('viewer|手势'); }, items: [
+      '👍', '👎', '👌', '✌️', '🤞', '🤟', '🤘', '👏', '🙌', '👐',
+      '🤲', '🙏', '💪', '🤝', '✊',
+    ] },
+    { label: function () { return T('viewer|常用'); }, items: [
+      '❤️', '🔥', '⭐', '🎉', '✅', '❌', '⚠️', '💡', '📌', '🎯',
+      '🚀', '💯', '👀', '🤔', '😎',
+    ] },
+  ];
+  // §1.8.4's 「记住上次选择的分组」. `null` means the stored preference has not been read yet —
+  // which is DIFFERENT from 0, and the difference is the whole reason it is not initialised to 0:
+  // an operator whose last group was 常用 would see 黄脸 for one frame, every time.
+  var cmEmojiIdx = null;
+
+  /** The stored group, coerced to one this list actually has. */
+  function cmEmojiGroup() {
+    var n = parseInt(S.emojiGroup, 10);
+    return (isFinite(n) && n >= 0 && n < EMOJI_GROUPS.length) ? n : 0;
+  }
+  function cmEmojiIsOpen() {
+    var p = $('cmEmojiPanel');
+    return !!(p && !p.classList.contains('hidden'));
+  }
+  function cmEmojiClose() {
+    var p = $('cmEmojiPanel'), b = $('cmChatEmoji');
+    if (p) p.classList.add('hidden');
+    if (b) b.setAttribute('aria-expanded', 'false');
+  }
+  /** §1.8.3's two-level panel, redrawn whole — the tabs and the grid are the same object's two
+   *  halves, and 60 buttons are cheaper to rebuild than to reconcile. */
+  function cmEmojiPaint() {
+    var tabs = $('cmEmojiTabs'), grid = $('cmEmojiGrid');
+    if (!tabs || !grid) return;
+    var idx = (cmEmojiIdx == null) ? cmEmojiGroup() : cmEmojiIdx;
+    var g = EMOJI_GROUPS[idx] || EMOJI_GROUPS[0];
+    tabs.innerHTML = EMOJI_GROUPS.map(function (grp, i) {
+      return '<button type="button" class="sec' + (i === idx ? ' on' : '') +
+        '" data-emoji-tab="' + i + '">' + esc(grp.label()) + '</button>';
+    }).join('');
+    grid.innerHTML = g.items.map(function (e) {
+      return '<button type="button" data-emoji="' + esc(e) + '">' + esc(e) + '</button>';
+    }).join('');
+  }
+  function cmEmojiOpen() {
+    var p = $('cmEmojiPanel'), b = $('cmChatEmoji');
+    if (!p) return;
+    // Read the remembered group on the FIRST open rather than at boot: `S` is loaded
+    // asynchronously and a boot-time read would race it.
+    if (cmEmojiIdx == null) cmEmojiIdx = cmEmojiGroup();
+    cmEmojiPaint();
+    p.classList.remove('hidden');
+    if (b) b.setAttribute('aria-expanded', 'true');
+  }
+  function cmEmojiToggle() { if (cmEmojiIsOpen()) cmEmojiClose(); else cmEmojiOpen(); }
+
+  /**
+   * §1.8.4's 「插入到输入框光标位置」.
+   *
+   * Replaces the selection when there is one — that is what "at the cursor" means in every text
+   * field the operator has ever used, and a face replacing the highlighted word is what they
+   * expect. The caret then lands AFTER what was inserted, which is what makes §1.8.4's 「可连续
+   * 插入多个」 true for the keyboard as well as for the mouse.
+   *
+   * ⚠ `selectionStart` CAN BE `null` on some inputs (and is `0`/`0` before focus). Falling through
+   * with `null` would make `slice(0, null)` → `''` and duplicate the whole draft, so the guard
+   * states the fallback instead of relying on the type.
+   */
+  function cmInsertEmoji(e) {
+    var i = $('cmChatInput');
+    if (!i || i.disabled) return;
+    var a = i.selectionStart, b = i.selectionEnd;
+    if (a == null || b == null) { a = b = i.value.length; }
+    i.value = i.value.slice(0, a) + e + i.value.slice(b);
+    var at = a + e.length;
+    i.selectionStart = i.selectionEnd = at;
+    i.focus();
+    // The length readout and the `@` autocomplete both listen on `input`; writing `.value` alone
+    // would leave the counter stale and a mention list pointing at a token that has moved.
+    i.dispatchEvent(new Event('input', { bubbles: true }));
+  }
+
   function cmBoot() {
     if (cmBooted) return;
     cmBooted = true;
@@ -4765,6 +4915,57 @@
     // it further down, in the SAME handler that closes the backdrop; see there for why they cannot
     // be two handlers.
     if ($('cmChatAttach')) $('cmChatAttach').onclick = function () { cmShareOpen('room', 'archive'); };
+
+    // ---- 1.0.6 二号 §1.8 表情选择器：定义在 `cmBoot` 之外，接线在这里 --------------------------
+    // ⚠⚠ THE DEFINITIONS ARE NOT IN THIS FUNCTION, and the reason is `cmPaintGate()`: it runs from
+    // `cmPaintAll()` at boot — long before `cmBoot()` — and it has to close an open picker when the
+    // room goes read-only. Written here they were `ReferenceError: cmEmojiClose is not defined` on
+    // every load, and FIVE behavioural suites caught it while every static suite passed, because the
+    // identifiers really were in the source. 「由函数 BUILD 的面板必须由函数 WIRE」 is about the
+    // WIRING; a definition another function can reach belongs at the scope that can reach it.
+    // The wiring itself stays here, beside the markup it binds — see below.
+
+    if ($('cmChatEmoji')) {
+      // `stopPropagation()` because the outside-click listener below runs on the SAME click that
+      // opened the panel — the button is not inside the panel, so without this the panel would be
+      // opened and shut before the frame was painted. It is the `#navUser` trap 1.0.1 documented,
+      // in a second place.
+      $('cmChatEmoji').onclick = function (e) { e.stopPropagation(); cmEmojiToggle(); };
+    }
+    if ($('cmEmojiPanel')) {
+      // `mousedown` + `preventDefault()`, like `.cm-atlist` just above and for the same reason: the
+      // gesture must not move focus out of the composer, because the caret is what 「插入到光标位置」
+      // is measured from.
+      $('cmEmojiPanel').addEventListener('mousedown', function (e) {
+        var t = (e.target && e.target.closest) ? e.target.closest('button') : null;
+        if (!t) return;
+        e.preventDefault();
+        var tab = t.getAttribute('data-emoji-tab');
+        if (tab != null) {
+          cmEmojiIdx = parseInt(tab, 10) || 0;
+          cmEmojiPaint();
+          // §1.8.4's 「记住上次选择的分组」, fire-and-forget: a preference that fails to persist
+          // costs the operator one click next time, and awaiting it would put a storage round trip
+          // in front of the repaint they are watching for.
+          G.saveSetting('emojiGroup', cmEmojiIdx);
+          return;
+        }
+        var em = t.getAttribute('data-emoji');
+        if (em != null) cmInsertEmoji(em);
+      });
+      // §1.8.4's 「点击外部 / Escape → 关闭」. Document-level, because "outside" is not a region this
+      // file owns — and it is a no-op until the panel is actually open, so it costs nothing while
+      // the reader is just reading the room.
+      document.addEventListener('click', function (ev) {
+        if (!cmEmojiIsOpen()) return;
+        var p = $('cmEmojiPanel'), b = $('cmChatEmoji');
+        if ((p && p.contains(ev.target)) || (b && b.contains(ev.target))) return;
+        cmEmojiClose();
+      });
+      document.addEventListener('keydown', function (ev) {
+        if (ev.key === 'Escape' && cmEmojiIsOpen()) cmEmojiClose();
+      });
+    }
     if ($('cmQuoteClear')) $('cmQuoteClear').onclick = function () { cmQuote = null; cmPaintQuote(); };
     if ($('cmFriendReload')) $('cmFriendReload').onclick = function () { cmLoadFriends(); cmLoadQuota(); };
     if ($('cmMsgsReload')) $('cmMsgsReload').onclick = cmLoadMsgs;
@@ -5525,6 +5726,10 @@
     // page) is treated as history. It IS history: the reader is arriving at the bottom of it.
     cmChatPrimed = false;
     cmNewId = null;
+    // §1.8.4 — the emoji panel is a transient popup over the room, not room state, so leaving
+    // closes it. Without this it would be left open on a pane that is no longer on screen and
+    // reappear, still open, the next time the operator came back.
+    cmEmojiClose();
     // ⚠ AND `cmSentAt` IS DELIBERATELY NOT IN THIS LIST. It looks like room state next to those two
     // and it is not: §1.10's quota belongs to the ACCOUNT and is counted by the server across rooms
     // and across reloads. Clearing it here would hand the operator a one-keystroke way around it.
@@ -5615,6 +5820,33 @@
     var f = S.countryFlagChinaUnified ? S.countryFlagChinaUnified(row.country_code) : '';
     if (!f || f === (S.FLAG_FALLBACK || '')) return '';
     return '<span class="cm-flag" title="' + esc(String(row.country_code)) + '">' + f + '</span>';
+  }
+
+  /**
+   * §1.6.4 — the same country, as an ADMINISTRATOR sees it: the flag for the RAW code, with the code
+   * written beside it.
+   *
+   * ⚠⚠ `countryFlag`, NOT `countryFlagChinaUnified` — the two differ on exactly the three codes
+   * §1.6.4's 注意 is about. The unified mapping is §3.1.5's promise to OTHER USERS about the community
+   * view; here it would destroy the information the column was added to carry, which is where the
+   * account actually is. §1.6.5 #3 states it as an acceptance criterion (「港澳台在管理员界面显示
+   * 原始代码」), so this is a requirement and not a preference.
+   *
+   * ⚠ The code rides beside the flag rather than a country NAME. This product ships no code→name
+   * table, and a five-entry one covering just the regions anybody is likely to look up would be a
+   * partial table pretending to be a complete one — the 「兜底句不得命名原因」 failure in table form.
+   *
+   * `''` for an absent code, so `uDetailRow` prints its own `—` rather than this inventing a second
+   * 「no answer」 spelling.
+   */
+  function cmAdminCountryLabel(code) {
+    var c = String(code == null ? '' : code);
+    if (!c) return '';
+    var S = GMCommunity.shared() || {};
+    var ok = S.COUNTRY_CODE_RE && S.COUNTRY_CODE_RE.test(c);
+    var f = ok && S.countryFlag ? S.countryFlag(c) : '';
+    if (!f || f === (S.FLAG_FALLBACK || '')) return c;
+    return f + ' ' + c;
   }
 
   // ---- §1.1.1 the avatar menu, and §1.6.1 / §1.7.1 the message menu ----------------------------
@@ -6946,7 +7178,13 @@
     var c = window.GMCloud;
     if (!(c && c.isConfigured && c.isConfigured())) return false;
     var u = (GMAuth.status() || {}).user || null;
-    if (!u) return false;              // no account at all: the tab is hidden, nothing to lock
+    // ⚠⚠ 1.0.6 二号 §1.7.2 — 「NO ACCOUNT AT ALL」 IS READ-ONLY TOO, and it used to answer `false`
+    // here with the justification 「the tab is hidden, nothing to lock」. §1.7.2 shows the 社区 tab to
+    // everyone, so a signed-out reader is now the FIRST state an operator meets rather than an
+    // unreachable one — and `false` would have handed them a live composer whose every send the
+    // server refuses with `UNAUTHORIZED`, i.e. exactly the 「looks live and answers 未知错误」 shape
+    // this function exists to prevent, one door further out than the one it was written for.
+    if (!u) return true;
     return !u.activated_at;
   }
 
@@ -6975,6 +7213,13 @@
     if (input) input.disabled = !open;
     if (send) send.disabled = !open;
     if (att) att.disabled = !open;
+    // §1.8's emoji button is a WRITE surface like 文件 and 发送 (§1.8's matrix is nine rows that must
+    // all answer the same), so it is disabled with them. It also closes any panel already open: a
+    // picker whose faces would silently do nothing is the 「looks live and answers nothing」 shape
+    // §1.8.3 exists to prevent.
+    var emo = $('cmChatEmoji');
+    if (emo) emo.disabled = !open;
+    if (!open) cmEmojiClose();
     // §1.8.3's third bullet. The form itself stays editable — an unactivated operator may compose
     // and be told what is missing — but the button that writes is inert.
     if (fb) fb.disabled = !open;
@@ -7040,9 +7285,11 @@
       p.classList.toggle('hidden', !activationOpen());
     });
     if ($('navAdmin')) $('navAdmin').classList.toggle('hidden', !viewAllowed('admin'));
-    // 1.0.2 二.1 — 社区. Same predicate as the three tabs above rather than a second reading of
-    // `activationOpen()`: `viewAllowed` is where 「admin needs two conditions」 lives, and a surface
-    // that asks the gate directly is a surface that will disagree with the router one day.
+    // 1.0.2 二.1 / 1.0.6 二号 §1.7.2 — 社区. It STILL goes through `viewAllowed` rather than being
+    // written `false`: §1.7.2 removed it from `GATED_VIEWS`, so the predicate now answers 「yes」, and
+    // the day a reason appears for it to answer 「no」 again there is one list to change instead of a
+    // hidden attribute that has to be remembered. The router asks the same function, which is what
+    // keeps a visible button and a reachable view the same fact.
     if ($('navCommunity')) $('navCommunity').classList.toggle('hidden', !viewAllowed('community'));
     // §3.1 vs §3.4 — one of the two is shown, never both, and never neither…
     //
@@ -8390,7 +8637,10 @@
       [T('viewer|账号状态'), u.is_banned ? T('viewer|已封禁') : T('viewer|正常')],
       [T('viewer|禁言至'), u.muted_until ? adWhen(u.muted_until) : T('viewer|未禁言')],
       [T('viewer|最后在线'), u.last_seen_at ? adWhen(u.last_seen_at) : '—'],
-      [T('viewer|国籍'), u.country_code ? String(u.country_code) : '—'],
+      // §1.6.4 — the operator's own view of the column, so the flag is the RAW code's and the code
+      // is written beside it (§1.6.5 #3). `cmAdminCountryLabel` is the one producer of this string;
+      // the row above uses it too, so the list and the card cannot describe one account two ways.
+      [T('viewer|国籍'), cmAdminCountryLabel(u.country_code) || '—'],
       [T('viewer|注册时间'), adWhen(u.created_at)],
     ];
     card.innerHTML = lines.map(function (l) {
@@ -8504,6 +8754,11 @@
           '<span class="ucare">▶</span>' +
           '<span class="em">' + esc(u.username || u.id) + '</span>' +
           '<span class="hint">' + esc(u.email || '') + '</span>' +
+          // §1.6.4 — 地区, right where the sketch puts it (「▶ 开发者 (dev@example.com) 🇨🇳 [管理]」).
+          // Raw code + its flag; see `cmAdminCountryLabel` for why this one does not unify 港澳台.
+          (cmAdminCountryLabel(u.country_code)
+            ? '<span class="hint adm-cc">' + esc(cmAdminCountryLabel(u.country_code)) + '</span>'
+            : '') +
           '<span class="sp"></span>' +
           '<span class="hint">' + esc(banned ? T('viewer|已封禁') : (muted ? T('viewer|已禁言') : T('viewer|正常'))) + '</span>' +
           // 1.0.4 §P0 — 用户详情. A per-row button rather than a global search box, because the
@@ -8522,7 +8777,7 @@
           // §2.3.2's 「IP 国籍」. It is the operator's own view of the column, so it is shown raw
           // (a flag would be the community view's job) — `hide_country` is a promise about OTHER
           // users, and an administrator looking at a report needs the value itself.
-          uDetailRow(T('viewer|IP 国籍'), u.country_code || '') +
+          uDetailRow(T('viewer|IP 国籍'), cmAdminCountryLabel(u.country_code)) +
           uDetailRow(T('viewer|简介'), u.bio || '') +
           // ⚠ §2.3.2's sketch also draws 「样本库：42 个 / 回放：128 局」 on this row, and they are
           // NOT here. `admin-list-users` does not return them and cannot cheaply: PostgREST cannot
@@ -8929,6 +9184,11 @@
     // `cmBadgeStart` is idempotent and stops itself when there is nobody to count for, so it is
     // called unconditionally rather than guarded by a second copy of that predicate here.
     cmBadgeStart();
+    // 1.0.6 二号 §1.6 — 「每次登录时更新」 the country. This is the ONE function every session change
+    // goes through (login / register / activation / switch / a 401 that dropped the token), which is
+    // exactly §3.1.2's cadence; the server's own 12-hour throttle is what makes the call on a plain
+    // page reload — `cloudBoot` above also makes it — cost nothing.
+    GMAuth.syncCountry(false).catch(function () { /* decorative: see cloudBoot */ });
   }
 
   function renderPrivacyLink() {
@@ -8965,6 +9225,12 @@
   async function cloudBoot() {
     renderPrivacyLink();
     try { await GMAuth.boot(); } catch (e) { /* a dead network is an expected outcome, not a failure */ }
+    // 1.0.6 二号 §1.6 — §3.1.2's 「每天首次活跃时更新」. Fire-and-forget, like the rest of this path:
+    // it decorates the profile's flag, the Edge Function throttles it to once per 12 hours, and an
+    // operator waiting on this to see their own name rendered is waiting on the least important
+    // thing on the page. The rejection is caught because `boot()` above shows what happens when a
+    // promise on this path has nobody to answer to.
+    GMAuth.syncCountry(false).catch(function () { /* decorative: the flag falls back to 白旗 */ });
     applyActivationGate();
     await buildCloudPanel();
     await profileLoad();
@@ -9027,7 +9293,12 @@
   var stepwiseRunning = false;
   var lastMoveTime = 0;
   var aiThinkDirty = false;
-  var lastDetectRecord = null;
+  // 1.0.6 二号 §1.3 — the player names of whatever record is loaded in `#input`, for the two risk
+  // cards. This REPLACES `lastDetectRecord`, which was written in exactly these two places and
+  // never read once (the detect pane kept no use for a whole parsed record). The value comes from
+  // `parseRecord`'s `meta.players` — present only when the operator pasted a JSON envelope that
+  // carried names, which is why the cards fall back to 「黑方」/「白方」 (see `playerNameLine`).
+  var detectPlayers = null;
   // 0.3.3: the learnedParams blob this session detected with (null = 0.3.1 defaults). Read
   // once at boot and after every 重新学习, so the whole page agrees on one parameter set.
   var curLearned = null;
@@ -9086,13 +9357,18 @@
   $('s3').onclick = function () { $('input').value = SAMPLES.s3; syncDraftFromText(); };
 
   function syncDraftFromText() {
+    // §1.3 — captured BEFORE `resetReport()`, which clears `detectPlayers`; the assignment below is
+    // the one that survives. A parse failure means no names, not the previous text's names.
+    var players = null;
     try {
       var rec = parseRecord($('input').value);
       draftMoves = rec.moves.map(function (c) { return { c: c, s: 'player' }; });
+      players = (rec.meta && rec.meta.players) || null;
     } catch (e) { draftMoves = []; }
     curStep = draftMoves.length;
     undoStack = [];
     resetReport();
+    detectPlayers = players;
     drawDetectBoard();
   }
   $('input').oninput = syncDraftFromText;
@@ -9232,7 +9508,7 @@
   function onPlayerMove() { if (detectMode === 'stepwise') enqueueStep(); }
 
   function resetReport() {
-    report = null; stepQueue = []; lastDetectRecord = null;
+    report = null; stepQueue = []; detectPlayers = null;
     // 0.4.11 §一.2 — a 逐步检测 run's engine-side session lives in the offscreen document, keyed
     // by jobId, and it remembers every coordinate it has already scored. Dropping the local
     // report without closing it would leave a session that answers a REPLAYED coordinate with
@@ -9715,17 +9991,10 @@
 
   function drawDetectBoard() { drawBoard($('board'), detectView()); }
 
-  // The hint under the board. With no report it still has to say where the cursor is and what a
-  // click will do, otherwise the cursor model is invisible to the operator.
-  function boardHint() {
-    var total = draftMoves.length;
-    if (!total) return T('viewer|棋盘（点空点落子；右键悔一手）');
-    if (curStep >= total) {
-      return T('viewer|第 {n} / {n} 手 · 末手。点空点继续打谱；点已有子把光标移过去', { n: total });
-    }
-    return T('viewer|第 {cur} / {total} 手 · 光标停在第 {cur} 手，其后 {rest} 手为变体预览（虚线半透明）。点空点在此打出变体',
-             { cur: curStep, total: total, rest: total - curStep });
-  }
+  // ⚠ 1.0.6 二号 §1.1 — `boardHint()` AND ITS ONE CALLER ARE GONE. The line under the board changed
+  // length with the position, which pushed the step buttons below it down and made 「悔一手」/「清空」
+  // move between aim and click. The cursor model it explained is stated verbatim, and IMMOVABLY, in
+  // the 步骤操作 panel's own hint (viewer.html, both boards) — see §1.1.2's 「影响」 note.
 
   function renderBoardView() {
     var total = draftMoves.length;
@@ -9738,15 +10007,10 @@
     $('jumpStep').max = total;
     $('jumpStep').value = curStep;
     drawDetectBoard();
-    var s = report && report.steps[curStep - 1];
-    $('boardInfo').textContent = s
-      ? T('viewer|第{m}手  {side}  走 {move} · 引擎最佳 {best} · {wr}', {
-          m: s.moveNo, side: sideTag(s.side), move: s.actualStr, best: s.bestStr,
-          wr: s.bestWR != null ? T('viewer|胜率{p}', { p: pct(s.bestWR) }) : T('viewer|未分析'),
-        }) +
-        ' · ' + (!s.analyzed ? T('viewer|(跳过)') : (s.top1 ? 'Top1' : (s.top3 ? 'Top3' : (s.top5 ? 'Top5' : T('viewer|Top5外'))))) +
-        (s.isSharp ? ' · ' + T('viewer|唯一手') : '') + (s.desperate ? ' · ' + T('viewer|将败') : '') + (s.evasion ? ' · ' + T('viewer|回避') : '')
-      : boardHint();
+    // ⚠ §1.1 — `#boardInfo` no longer exists, so there is nothing here to fill with the current
+    // step's 引擎最佳 / 胜率 / Top-N. That reading lives in the step table's row (the same numbers,
+    // as columns) and in the hover readout, which is why the line was redundant as well as
+    // misaligned. Only the row cursor below is left for this function to do.
     document.querySelectorAll('#tbl tbody tr').forEach(function (tr, i) {
       tr.classList.toggle('cur', i === curStep - 1);
     });
@@ -10254,8 +10518,12 @@
       if (!a) return;
       shown++;
       var div = document.createElement('div'); div.className = 'card';
-      div.innerHTML = '<div class="big lv-' + a.level + '">' + a.risk.toFixed(0) + '</div>' +
-        '<div class="lab">' + sideName(a.side) + ' · ' + TO('level', a.level) + '</div>' +
+      div.innerHTML = '<div class="player-name">' + esc(playerNameLine(detectPlayers, a.side)) + '</div>' +
+        '<div class="big lv-' + a.level + '">' + a.risk.toFixed(0) + '</div>' +
+        // §1.3.3's 「建议简化」: the side prefix is dropped from this line now that the name row above
+        // states it. 「黑方 · 高风险」 beside a 「黑方」 heading was the visual noise §1.3.1 complains
+        // about; the level word alone still reads as the verdict.
+        '<div class="lab">' + TO('level', a.level) + '</div>' +
         '<div class="contrib">n=' + a.n + ' · T1=' + pct(a.top1) + ' · ' +
           T('viewer|均损={p}%', { p: (a.meanLoss * 100).toFixed(1) }) + '</div>';
       box.appendChild(div);
@@ -11762,15 +12030,21 @@
     opEl.textContent = opLabel || '';
 
     var box = $('dScores'); box.innerHTML = '';
-    [rep.black, rep.white].forEach(function (x) {
+    [rep.black, rep.white].forEach(function (x, i) {
+      // §1.3 — the index is what makes the name row possible on the 「未分析」 card too: `x` is null
+      // there, so the side has to come from the SLOT (0 = 黑, 1 = 白), which is the same order the
+      // two-element array is written in everywhere else in this file.
+      var side = i === 0 ? 'B' : 'W';
       var div = document.createElement('div'); div.className = 'card';
       if (!x) {
-        div.innerHTML = '<div class="big" style="color:#6e7b8a">—</div>' +
+        div.innerHTML = '<div class="player-name">' + esc(playerNameLine(p, side)) + '</div>' +
+          '<div class="big" style="color:#6e7b8a">—</div>' +
           '<div class="lab">' + T('viewer|未分析') + '</div>';
       }
       else {
-        div.innerHTML = '<div class="big lv-' + x.level + '">' + x.risk.toFixed(0) + '</div>' +
-          '<div class="lab">' + sideName(x.side) + ' · ' + TO('level', x.level) + '</div>' +
+        div.innerHTML = '<div class="player-name">' + esc(playerNameLine(p, x.side)) + '</div>' +
+          '<div class="big lv-' + x.level + '">' + x.risk.toFixed(0) + '</div>' +
+          '<div class="lab">' + TO('level', x.level) + '</div>' +
           '<div class="contrib">n=' + x.n + '</div>';
       }
       box.appendChild(div);
@@ -12040,18 +12314,8 @@
 
     $('dSlider').value = dStep;
     $('dJump').value = dStep;
-    var s = (rep.steps || [])[dStep - 1];
-    $('dBoardInfo').textContent = s
-      ? T('viewer|第{m}手 {side} 走 {move} · 引擎最佳 {best} · {wr}', {
-          m: s.moveNo, side: sideTag(s.side), move: s.actualStr, best: s.bestStr,
-          wr: s.bestWR != null ? T('viewer|胜率{p}', { p: pct(s.bestWR) }) : T('viewer|未分析'),
-        }) +
-        ' · ' + (!s.analyzed ? T('viewer|(跳过)') : (s.top1 ? 'Top1' : (s.top3 ? 'Top3' : (s.top5 ? 'Top5' : T('viewer|Top5外'))))) +
-        (s.isSharp ? ' · ' + T('viewer|唯一手') : '') + (s.desperate ? ' · ' + T('viewer|将败') : '') + (s.evasion ? ' · ' + T('viewer|回避') : '') +
-        (s.forcedDefense ? ' · ' + T('viewer|冲四豁免') : '') +
-        (s.jumpFourFlag ? ' · ' + T('viewer|跳四') : '') +
-        ' · ' + T('viewer|前5候选 {list}', { list: (s.candStrs || []).join(' ') })
-      : T('viewer|棋谱：{n} / {total} 子（拖滑块或点按钮逐步查看）', { n: stones.length, total: total });
+    // ⚠ §1.1 — `#dBoardInfo` is gone; the current step's numbers are in `#dTbl`'s row for this
+    // cursor position (`tr.cur`, set below), which is the same reading the removed line summarised.
     // The legend doubles as the hover readout, so a dashed grey ring explains itself even
     // before the pointer lands on one.
     var pj = (a.record && a.record.meta ? (a.record.meta.unorderedCount != null
@@ -12095,6 +12359,42 @@
     dStep = clamp(parseInt($('dJump').value, 10) || 0, 0, max);
     renderDetailBoard();
   };
+
+  /**
+   * 1.0.6 二号 §1.2 — 「复制棋谱」, the share string of a saved game.
+   *
+   * ⚠ ONE PRODUCER FOR BOTH BUTTONS. §1.2.2 puts the same verb on the replay detail and on the
+   * sample detail, and the two differ only in which object they hand over (`curArchive` / `curSample`
+   * — both carry `record.moves` in the same shape). A second copy of `moves.map(coordToShare)…`
+   * would be that many characters of a format nobody re-reads: 0.5.3's textarea copy already writes
+   * the string one way, and this project has shipped 「two producers, one format」 as a defect more
+   * than once.
+   *
+   * An empty record REFUSES rather than copying `''` — §1.2.2's own sketch answers 「无棋谱数据」,
+   * and a successful toast over an empty clipboard is the worse lie.
+   */
+  function copyMovesText(rec) {
+    var moves = (rec && rec.moves) || [];
+    if (!moves.length) return null;
+    return moves.map(function (m) { return coordToShare(m); }).join('');
+  }
+  function copyMovesToClipboard(rec) {
+    var str = copyMovesText(rec);
+    if (str == null) { GmToast.show(T('toast|无棋谱数据'), 'warn'); return; }
+    var n = (rec.moves || []).length;
+    if (!(navigator.clipboard && navigator.clipboard.writeText)) {
+      // Same wording the code-box copy uses for the same situation, instead of a third sentence.
+      GmToast.show(T('toast|复制失败：{err}', { err: T('viewer|浏览器不支持剪贴板') }), 'error');
+      return;
+    }
+    navigator.clipboard.writeText(str).then(function () {
+      GmToast.show(T('toast|棋谱已复制（{n} 手）', { n: n }), 'success');
+    }, function (err) {
+      GmToast.show(T('toast|复制失败：{err}', { err: TE((err && err.message) || err) }), 'error');
+    });
+  }
+  $('dCopyMoves').onclick = function () { if (curArchive) copyMovesToClipboard(curArchive.record); };
+  $('sCopyMoves').onclick = function () { if (curSample) copyMovesToClipboard(curSample.record); };
 
   $('dExpJson').onclick = function () { if (curArchive) exportArchiveJson(curArchive); };
   $('dExpCsv').onclick = function () {
@@ -12666,15 +12966,22 @@
       : '<span style="color:var(--mut)">' + T('viewer|无备注') + '</span>';
 
     var box = $('sScores'); box.innerHTML = '';
-    [rep.black, rep.white].forEach(function (x) {
+    // §1.3 — a SAMPLE has no `players` field of its own (`buildSample` keeps only the record), so the
+    // names come from `record.meta.players`, which is where an imported JSON's envelope puts them
+    // (see `parseRecord`). Absent ⇒ `playerNameLine` prints the side, per §1.3.2.
+    var sPlayers = (rec.meta && rec.meta.players) || null;
+    [rep.black, rep.white].forEach(function (x, i) {
+      var side = i === 0 ? 'B' : 'W';
       var div = document.createElement('div'); div.className = 'card';
       if (!x) {
-        div.innerHTML = '<div class="big" style="color:#6e7b8a">—</div>' +
+        div.innerHTML = '<div class="player-name">' + esc(playerNameLine(sPlayers, side)) + '</div>' +
+          '<div class="big" style="color:#6e7b8a">—</div>' +
           '<div class="lab">' + T('viewer|未分析') + '</div>';
       }
       else {
-        div.innerHTML = '<div class="big lv-' + x.level + '">' + x.risk.toFixed(0) + '</div>' +
-          '<div class="lab">' + sideName(x.side) + ' · ' + TO('level', x.level) + '</div>' +
+        div.innerHTML = '<div class="player-name">' + esc(playerNameLine(sPlayers, x.side)) + '</div>' +
+          '<div class="big lv-' + x.level + '">' + x.risk.toFixed(0) + '</div>' +
+          '<div class="lab">' + TO('level', x.level) + '</div>' +
           '<div class="contrib">n=' + x.n + '</div>';
       }
       box.appendChild(div);
@@ -12735,19 +13042,8 @@
 
     $('sSlider').value = sStep;
     $('sJump').value = sStep;
-    var st = (rep.steps || [])[sStep - 1];
-    $('sBoardInfo').textContent = st
-      ? (T('viewer|第{m}手 {side} 走 {move} · 引擎最佳 {best} · {wr}', {
-          m: st.moveNo, side: sideTag(st.side), move: st.actualStr, best: st.bestStr,
-          wr: st.bestWR != null ? T('viewer|胜率{p}', { p: pct(st.bestWR) }) : T('viewer|未分析'),
-        }) +
-         ' · ' + (!st.analyzed ? T('viewer|(跳过)') : (st.top1 ? 'Top1' : (st.top3 ? 'Top3' : (st.top5 ? 'Top5' : T('viewer|Top5外'))))) +
-         (st.isSharp ? ' · ' + T('viewer|唯一手') : '') + (st.desperate ? ' · ' + T('viewer|将败') : '') + (st.evasion ? ' · ' + T('viewer|回避') : '') +
-         (st.forcedDefense ? ' · ' + T('viewer|冲四豁免') : '') +
-         (st.jumpFourFlag ? ' · ' + T('viewer|跳四') : '') +
-         (st.aiSimilar ? ' · ' + T('viewer|疑AI指纹') +
-            (st.aiSim != null ? '(' + st.aiSim + ')' : '') : ''))
-      : T('viewer|棋谱：{n} / {total} 子（拖滑块或点按钮逐步查看）', { n: stones.length, total: total });
+    // ⚠ §1.1 — `#sBoardInfo` is gone (see the detect board's note). The step's own numbers are in
+    // `#sTbl`'s row for this cursor position, and the 已分析 N 步 state is on the analysis row.
 
     $('sBoardTip').textContent = T('viewer|紫虚线 = 与特征库 AI 步骤相似 · 橙圈 = 将败冲四 · 红圈 = 可疑 · 蓝虚线 = 引擎最佳。点步骤行的编号可填单步备注。');
   }
@@ -13157,14 +13453,10 @@
     return { stones: stones, marks: marks, last: last };
   }
 
-  function seHint() {
-    var total = seDraft.length;
-    if (!total) return T('viewer|棋盘（点空点落子；右键悔一手）');
-    if (seStep >= total) return T('viewer|第 {n} / {n} 手 · 末手。点空点继续打谱', { n: total });
-    return T('viewer|第 {cur} / {total} 手 · 光标停在第 {cur} 手，其后 {rest} 手为变体预览（虚线半透明）。点空点在此打出变体',
-      { cur: seStep, total: total, rest: total - seStep });
-      
-  }
+  // ⚠ 1.0.6 二号 §1.1 — `seHint()` WAS REMOVED WITH `#seBoardInfo`. It was the sample editor's copy
+  // of the detect board's line, and it is the same defect twice: a cursor-position sentence that
+  // changed length and pushed the editor's 悔一手 / 清空 buttons around. The cursor model itself is
+  // written verbatim in the editor panel's own static hint (viewer.html §「与检测页同一套操作」).
 
   function renderSeBoard() {
     var total = seDraft.length;
@@ -13172,10 +13464,9 @@
     $('seSlider').max = total; $('seSlider').value = seStep;
     $('seJump').max = total; $('seJump').value = seStep;
     drawBoard($('seBoard'), seView());
-    var played = seDraft.filter(function (m) { return m.s !== 'ai-suggest'; }).length;
-    $('seBoardInfo').textContent = seHint() +
-      (seReport ? ' · ' + T('viewer|已分析 {n} 步', { n: (seReport.steps || []).length }) : ' · ' + T('viewer|未分析')) +
-      (seDraft.length !== played ? T('viewer|（含 {n} 个 AI 参考手）', { n: seDraft.length - played }) : '');
+    // ⚠ §1.1 — `#seBoardInfo` is gone (see the detect board's note). It carried 「棋盘（点空点落子；
+    // 右键悔一手）」 and 「已分析 N 步」; the first is stated immovably in this panel's own hint
+    // (viewer.html), and the second is the AI-analysis row's own status line (`setSeStatus`).
     if ($('seUndoChange')) $('seUndoChange').disabled = !seUndoStack.length;
     if ($('seTruncate')) $('seTruncate').disabled = seStep >= total;
   }
@@ -13217,16 +13508,31 @@
       return;
     }
     box.innerHTML = '';
+    // 1.0.6 二号 §1.3 — the SAME name line the three panes §1.3.3 lists now carry.
+    //
+    // ⚠ §1.3.3's table names three places (检测 / 回放详情 / 样本详情) and this is a FOURTH with the
+    // same cards: 样本编辑器 draws `renderSeScores()` over a re-run report, and leaving it out would
+    // be the one card heading in the product that says 「黑方 · 高风险」 while its neighbours say
+    // 「张三（黑方）」. The spec missed it rather than excluded it — nothing in §1.3 argues for the
+    // exception, and 「哪一方的分数对应哪个玩家」 is asked here too.
+    //
+    // ⚠ THE NAMES COME FROM `editing.record.meta.players` — the sample's OWN record, which is the
+    // same field app.js's `parseRecord` now preserves on import (see the 二号 note there). A draft
+    // that has never been imported has no names, which is §1.3.2's fallback and not a defect.
+    var sePlayers = (editing && editing.record && editing.record.meta
+      && editing.record.meta.players) || null;
     // A null side is normal — one player may not survive the filters — and it has to read as
     // 未分析 rather than being dropped, or B and W would silently swap columns between games.
-    [rep.black, rep.white].forEach(function (a) {
+    [rep.black, rep.white].forEach(function (a, i) {
       var div = document.createElement('div'); div.className = 'card';
       if (!a) {
         div.innerHTML = '<div class="big" style="color:#6e7b8a">—</div>' +
+          '<div class="player-name">' + esc(playerNameLine(sePlayers, i === 0 ? 'B' : 'W')) + '</div>' +
           '<div class="lab">' + T('viewer|未分析') + '</div>';
       } else {
         div.innerHTML = '<div class="big lv-' + a.level + '">' + a.risk.toFixed(0) + '</div>' +
-          '<div class="lab">' + sideName(a.side) + ' · ' + TO('level', a.level) + '</div>' +
+          '<div class="player-name">' + esc(playerNameLine(sePlayers, a.side)) + '</div>' +
+          '<div class="lab">' + TO('level', a.level) + '</div>' +
           '<div class="contrib">n=' + a.n + ' · T1=' + pct(a.top1) + '</div>';
       }
       box.appendChild(div);

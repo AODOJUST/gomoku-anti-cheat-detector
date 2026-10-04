@@ -70,6 +70,28 @@ function parseRecord(text) {
     meta.source = 'json';
     meta.rule = j.rule || 'freestyle';
     if (Array.isArray(j.stones)) explicitStones = j.stones;
+    // 1.0.6 二号 §1.3 — the player names travel with an IMPORTED record.
+    //
+    // `buildArchive` stores them under `players` (storage.js), and 导出JSON writes the whole archive
+    // — so the file the operator re-imports DOES carry them. Nothing read them back: `parseRecord`
+    // kept `moves` / `times` / `stones` / `rule` and dropped everything else, so the risk-score
+    // cards could only ever print 「黑方」/「白方」 and §1.3's 「哪一方的分数对应哪个玩家」 was
+    // unanswerable on the detect pane no matter what was pasted in.
+    //
+    // Forwarded verbatim under `meta` — the same open bag `source` / `rule` / `dropped` already live
+    // in, which is why this is not a shape change to parseRecord's contract. `String()` only, no
+    // re-mapping: an archive's `{black, white, self, opponent}` is the vocabulary the reader
+    // (`playerNameLine`, viewer.js) already understands, and inventing a second one here is how two
+    // producers of 「谁执黑」 stop agreeing.
+    if (j.players && typeof j.players === 'object') {
+      const str = (v) => (v == null || v === '' ? null : String(v));
+      meta.players = {
+        black: str(j.players.black),
+        white: str(j.players.white),
+        self: str(j.players.self),
+        opponent: str(j.players.opponent),
+      };
+    }
     if (Array.isArray(j.moves)) {
       let dropped = 0;
       for (let i = 0; i < j.moves.length; i++) {

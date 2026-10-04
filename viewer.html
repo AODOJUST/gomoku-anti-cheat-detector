@@ -372,6 +372,12 @@
   .card{flex:1;min-width:150px;background:var(--inset);border:1px solid var(--line);border-radius:var(--ui-detail-radius);padding:var(--ui-detail-padding);text-align:center}
   /* shell-scale figure: it is the headline number, not card fine print */
   .card .big{font-size:37px;font-weight:700}
+  /* 1.0.6 二号 §1.3 — the name row, ABOVE the score. §1.3.2's sketch colours `.black` and `.white`
+     differently and then gives both the same value (`#e6edf3`) — so there is one rule, not two that
+     cannot disagree. ⚠ The colour is `var(--txt)` and NOT the sketch's literal, which is a DARK
+     theme's text colour: this page ships thirteen themes and a light one would have printed the
+     name in near-white on white. Same reason the weight is stated once here rather than per side. */
+  .card .player-name{font-size:var(--ui-detail-small);color:var(--txt);margin-bottom:4px;font-weight:500}
   .card .lab{font-size:var(--ui-detail-small);color:var(--mut);margin-top:4px}
   .lv-低风险{color:var(--green)} .lv-可疑{color:var(--yellow)} .lv-高风险{color:var(--red)}
   table{width:100%;border-collapse:collapse;font-size:var(--ui-detail-small)}
@@ -1122,6 +1128,10 @@
   .urow .uhead:hover{background:var(--hover)}
   .urow .uhead .em{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .urow .uhead .sp{flex:1}
+  /* 1.0.6 二号 §1.6.4 — the admin list's 地区 cell. `flex:0 0 auto` + `nowrap` so a long e-mail
+     beside it cannot squeeze 「🇭🇰 HK」 onto two lines — the `sp` above takes the slack, which is the
+     whole reason it is there. */
+  .urow .uhead .adm-cc{flex:0 0 auto;white-space:nowrap}
   .urow .ucare{display:inline-block;color:var(--mut);font-size:var(--ui-detail-small);
                width:12px;text-align:center}
   /* `transform` needs a non-inline box, which is what the `display` above is for. */
@@ -1252,21 +1262,44 @@
      pane in this view — and twenty-odd other panels on the page — draw their children as ordinary
      blocks. A `.panel{display:flex}` would have been one answer applied everywhere. */
   #cmPane-chat > .panel{display:flex;flex-direction:column;flex:1 1 auto;min-height:0}
+  /* ---- 1.0.6 二号 §1.4 / §1.5 — the room's reading scale --------------------------------------
+     §1.4 asks for a ×1.25 on the message text and §1.5 a ×1.5 on the avatar; they are ONE decision,
+     not two: the room is the only pane in this product that is READ IN SENTENCES rather than
+     scanned, and an operator asked for it to be legible at a glance.
+
+     ⚠ THE TEXT SIZE IS A VARIABLE, NOT FOUR SEPARATE `calc()`s. Four rules carry message text —
+     `.cm-bub`'s body, `.cm-who`'s name + timestamp, §1.11's withdrawn line, and §1.4.2's composer —
+     and the spec asks all four to move together. Four copies of 「* 1.25」 is four places to edit and
+     three to forget when the next version nudges it.
+
+     ⚠ Scoped to `#view-community` rather than `:root`: nothing outside the room reads it, and the
+     value resolves at the element where it is USED, so the `@media print` override of
+     `--ui-detail-small` (10px) still reaches it — which is what makes the printed replay page keep
+     its own smaller scale. */
+  #view-community{--cm-text:calc(var(--ui-detail-small) * 1.25)}
+
   /* §2.3.1 「自己的消息在右侧，他人的在左侧」 — `align-self` on the row, and `row-reverse` so the
      avatar follows the bubble to the right edge instead of being a second layout. */
   .cm-msg{display:flex;gap:8px;align-items:flex-start;max-width:min(78%,560px)}
   .cm-msg.me{align-self:flex-end;flex-direction:row-reverse}
-  .cm-av{flex:0 0 auto;width:30px;height:30px;border-radius:50%;overflow:hidden;
+  /* §1.5 — 30px → 45px, i.e. ×1.5. (§1.5.1's sketch writes 32→48 because the fixture it was specced
+     against was not this stylesheet; the RATIO is the requirement and 30 is the value here.) The
+     fallback letter scales with it so an account with no avatar keeps its proportion. */
+  .cm-av{flex:0 0 auto;width:45px;height:45px;border-radius:50%;overflow:hidden;
     display:flex;align-items:center;justify-content:center;background:var(--btn);color:var(--mut);
-    font-size:12px;border:1px solid var(--line);user-select:none}
+    font-size:15px;border:1px solid var(--line);user-select:none}
   .cm-av img{width:100%;height:100%;object-fit:cover;display:block}
   .cm-txt{min-width:0}
   .cm-who{font-size:var(--ui-detail-small);color:var(--mut);margin-bottom:2px}
+  /* §1.4.1's 用户名 / 时间戳 row (the two share one element — `cmMsgHtml` writes 「name · when」).
+     ⚠ Scoped to `.cm-msg` on purpose: §2.5.4's 管理员回复 card reuses `.cm-who` and is NOT a room
+     message, so §1.4 must not reach it. The base rule above is what that card keeps. */
+  .cm-msg .cm-who{font-size:var(--cm-text)}
   .cm-msg.me .cm-who{text-align:end}
   /* `pre-wrap` + `anywhere`: a message is user text, so a 500-character run of one character or a
      pasted URL must wrap rather than widen the room. */
   .cm-bub{padding:7px 11px;border-radius:var(--ui-detail-radius);border:1px solid var(--line);
-    background:var(--inset);font-size:var(--ui-detail-small);line-height:1.55;
+    background:var(--inset);font-size:var(--cm-text);line-height:1.6;
     white-space:pre-wrap;overflow-wrap:anywhere}
   .cm-msg.me .cm-bub{background:rgba(var(--blue-rgb),.16);border-color:var(--blue)}
   /* ---- 1.0.6 §1.4 — gomoku.com links in a message ----
@@ -1282,11 +1315,11 @@
   /* §1.8's `.chat-input-area{flex-shrink:0}`: the send row and the three hint lines under it keep
      their height whatever the log does. Without the zero basis a long draft in the textarea would
      be allowed to squeeze them off the bottom of a short window. */
-  .cm-send{display:flex;gap:8px;align-items:flex-end;flex:0 0 auto}
+  .cm-send{display:flex;gap:8px;align-items:flex-end;flex:0 0 auto;position:relative}
   /* Beats the global `textarea{height:110px}` (0,1,1 > 0,0,1); the room's box grows with its
      content up to a ceiling rather than reserving a third of the panel for two lines. */
   .cm-send textarea{height:auto;min-height:44px;max-height:120px;resize:vertical;
-    font-family:inherit;font-size:var(--ui-detail-small)}
+    font-family:inherit;font-size:var(--cm-text)}
   .cm-cnt{flex:0 0 auto;font-variant-numeric:tabular-nums}
 
   /* ---- 新闻 (§2.4.4) / Bug与建议 (§2.5.4/2.5.5) ----
@@ -1363,7 +1396,7 @@
      记录」, which is why the row is marked rather than deleted). `font-style:italic` on the line
      rather than on `.cm-msg`, so the author's name and avatar above it stay upright — the row is
      still attributed, only its content is gone. */
-  .cm-recall{font-style:italic;color:var(--mut);font-size:var(--ui-detail-small);padding:3px 0}
+  .cm-recall{font-style:italic;color:var(--mut);font-size:var(--cm-text);padding:3px 0}
   /* A quote whose ORIGINAL was withdrawn. The card keeps its place and its author (§1.11.4
      「引用卡片显示 [该消息已被撤回]」) and loses the one thing that was copied out of it — see
      `chat-recall`'s snapshot patch and `cmMsgHtml`'s `cm-qgone` branch. Muted further than a live
@@ -1433,6 +1466,28 @@
   .cm-at{display:block;padding:6px 10px;color:var(--txt);font-size:var(--ui-detail-small);
     cursor:pointer}
   .cm-at:hover,.cm-at.on{background:var(--inset)}
+  /* ---- 1.0.6 二号 §1.8 — the emoji picker (§1.8.3) -----------------------------------------
+     ⚠ `.cm-send` GAINS `position:relative` FOR THIS AND ONLY THIS. The panel hangs off the row it
+     belongs to, so 「above the button that opened it」 is a fact of the layout instead of an offset
+     somebody has to re-guess every time the composer's height changes. Anchoring it to the shell
+     would land it wherever the pane's padding happens to be.
+     ⚠ `background:var(--panel)` and `inset-inline-start`, following `.cm-atlist` directly above —
+     this is the same kind of surface (a popup over the room), and it is deliberately OPAQUE: it
+     covers messages, so a translucent one would be unreadable. It is not a `.panel`, so the
+     element-transparency rule never rewrites it, and that is the intent rather than an oversight.
+     ⚠ The grid is 8 across because §1.8.3's sketch draws 8, and the emoji are 20px because at
+     §1.4's text scale a 14px face is smaller than the message it is about to be pasted into. */
+  .cm-emoji{font-size:var(--ui-detail-small)}
+  .cm-emoji-panel{position:absolute;inset-inline-start:0;bottom:100%;margin-bottom:6px;z-index:20;
+    width:min(312px,90vw);max-height:238px;overflow-y:auto;padding:8px;border:1px solid var(--line);
+    border-radius:var(--ui-detail-radius);background:var(--panel);box-shadow:0 6px 20px #0006}
+  .cm-emoji-tabs{display:flex;gap:6px;margin-bottom:8px;position:sticky;top:0;
+    background:var(--panel);padding-bottom:2px}
+  .cm-emoji-tabs button{padding:3px 10px;font-size:var(--ui-detail-small)}
+  .cm-emoji-grid{display:grid;grid-template-columns:repeat(8,1fr);gap:2px}
+  .cm-emoji-grid button{background:transparent;border:0;padding:4px 0;border-radius:6px;
+    font-size:20px;line-height:1.2;cursor:pointer}
+  .cm-emoji-grid button:hover{background:var(--hover)}
   /* §1.1.1's avatar menu is `showCtx` — the SAME popup the replay list's right-click uses, so it
      has no rule here. A `.cm-menu` block used to, from before that reuse was noticed; deleted
      rather than left dead, because the next person to read this file would have styled it. */
@@ -1613,7 +1668,15 @@
         <div class="panel">
           <h2>棋盘</h2>
           <canvas id="board" width="520" height="520"></canvas>
-          <div id="boardInfo" class="hint" style="text-align:center;margin-top:6px"></div>
+          <!-- 1.0.6 二号 §1.1 — the `#boardInfo` line is GONE. It changed length with the position
+               (「棋盘（点空点落子；右键悔一手）」 on an empty board versus a full 第42手 黑 走 h8 ·
+               引擎最佳 i9 · 胜率 72% · Top1 · 唯一手 report), and a line that wraps pushes the
+               step buttons below it down — so 「悔一手」/「清空」 moved between the moment the
+               operator aimed at them and the moment they clicked. All of it is on the board itself:
+               the current hand is the cursor in the step table, the engine's pick and the winrate
+               are that row's columns, and hovering the board reports the step. §1.1.3 keeps the
+               LEGENDS (`#dBoardTip` / `#sBoardTip`), which are fixed text and therefore cannot move
+               anything. The write that filled this element went with it — `renderBoardView`. -->
         </div>
         <div class="panel">
           <h2>步骤操作</h2>
@@ -1910,6 +1973,11 @@
       <div class="panel">
         <div class="btn-row" style="margin-bottom:10px">
           <button class="sec" id="backToList">◀ 返回列表</button>
+          <!-- 1.0.6 二号 §1.2 — 复制棋谱. 0.5.3's `.code-actions` (copy / paste / clear) ride inside a
+               `<textarea>`, and the replay detail has no textarea — a finished archive is read-only,
+               so there was no way to get its share string back out. This is that one verb, as a
+               button: `coordToShare` over `record.moves`, the same string `#input` would hold. -->
+          <button class="sec" id="dCopyMoves">复制棋谱</button>
           <label style="margin-left:10px"><span id="engineSelDLabel">检测模型</span><select id="engineSelD"></select></label>
           <span class="sp" style="flex:1"></span>
           <button class="sec" id="dExpJson">导出JSON</button>
@@ -1952,7 +2020,8 @@
             <input type="number" id="dJump" min="0" style="width:60px" value="0">
             <span class="hint">步</span>
           </div>
-          <div id="dBoardInfo" class="hint"></div>
+          <!-- §1.1 — `#dBoardInfo` removed (see the note on the detect board). `#dBoardTip` STAYS:
+               it is §1.1.3's legend AND the hover readout for an order-unknown stone. -->
           <div id="dBoardTip" class="hint"></div>
         </div>
 
@@ -2091,6 +2160,9 @@
       <div class="panel">
         <div class="btn-row" style="margin-bottom:10px">
           <button class="sec" id="sBackToList">◀ 返回样本库</button>
+          <!-- §1.2 — the sample detail's copy of the same verb. Same id shape, same handler body;
+               one helper (`copyMovesText`) so the two buttons cannot drift on the format. -->
+          <button class="sec" id="sCopyMoves">复制棋谱</button>
           <span class="sp" style="flex:1"></span>
           <button class="sec" id="sEditBtn">编辑</button>
           <button class="sec" id="sExpJson">导出JSON</button>
@@ -2126,7 +2198,8 @@
             <input type="number" id="sJump" min="0" style="width:60px" value="0">
             <span class="hint">步</span>
           </div>
-          <div id="sBoardInfo" class="hint"></div>
+          <!-- §1.1 — `#sBoardInfo` removed (see the note on the detect board). `#sBoardTip` STAYS:
+               it is the fixed 紫虚线/橙圈/红圈 legend. -->
           <div id="sBoardTip" class="hint"></div>
         </div>
 
@@ -2177,7 +2250,7 @@
           <div class="panel">
             <h2>步骤 1 · 棋盘</h2>
             <canvas id="seBoard" width="520" height="520"></canvas>
-            <div id="seBoardInfo" class="hint" style="text-align:center;margin-top:6px"></div>
+            <!-- §1.1 — `#seBoardInfo` removed (see the note on the detect board). -->
           </div>
           <div class="panel">
             <h2>步骤操作</h2>
@@ -2414,6 +2487,21 @@
                    LOCAL archives/samples, not from disk. The second-level 回放/样本/配置 picker is
                    kept as it is; §1.12.2 allows exactly that. -->
               <button class="sec cm-attach" id="cmChatAttach" title="文件"><span class="ico" aria-hidden="true">📎</span>文件</button>
+              <!-- 1.0.6 二号 §1.8.1 — the emoji picker, and the spec is explicit that it sits to the
+                   RIGHT of 文件:「[📎 文件] [😊 表情] [输入框...] [发送]」. The face carries no word of
+                   its own (`title` does, and is translated) for the same reason §1.2.2's `↓` does:
+                   one glyph, thirteen languages, no row to keep in step.
+                   `aria-expanded` mirrors the panel's visibility so the button's state is readable
+                   without looking at the panel — the panel itself is a plain `hidden` toggle. -->
+              <button class="sec cm-emoji" id="cmChatEmoji" title="表情" aria-haspopup="true" aria-expanded="false"><span class="ico" aria-hidden="true">😊</span></button>
+              <!-- §1.8.3 — the panel. A SHELL here and three lists in `viewer.js`: the emoji
+                   themselves are not translatable text, so putting sixty of them in the markup would
+                   add sixty nodes to every language pass for nothing. The tabs are built by
+                   `cmPaintEmoji()` because their labels ARE translated. -->
+              <div class="cm-emoji-panel hidden" id="cmEmojiPanel">
+                <div class="cm-emoji-tabs" id="cmEmojiTabs"></div>
+                <div class="cm-emoji-grid" id="cmEmojiGrid"></div>
+              </div>
               <div class="cm-sendcol">
                 <!-- `maxlength` is set from `GMCommunityShared.CHAT_MAX_LEN` at boot rather than
                      written here: the counter beside it and the Edge Function's own check are the

@@ -156,6 +156,16 @@
     // 0.3.6 §1.3 — 'auto' means "follow the browser UI language". It is a setting value, not
     // a locale: `GMI18n.resolveLang()` is what turns it into one of the 8 concrete locales.
     lang: 'auto',
+    // 1.0.6 二号 §1.8.4 — 「记住上次选择的分组」 for the room's emoji picker: an INDEX into the
+    // group list, not a name. The three labels (黄脸 / 手势 / 常用) are translated strings, and a
+    // translated string used as an identifier orphans itself the moment the operator switches
+    // language — the same reason `tagWiki` stores a `weightKey` and not a label.
+    //
+    // ⚠ The list itself lives in `viewer.js` (`EMOJI_GROUPS`) and it is the ONLY place the count
+    // is stated. `clampEmojiGroup` below bounds the value to a sanity range rather than to that
+    // count, because a second copy of 「3」 here is a second thing to update when a group is added;
+    // an index the picker does not recognise falls back to the first group at render time.
+    emojiGroup: 0,
     // 0.4.4 §七~§十二 — the master switch for AUTOMATIC outbound chat: the §7 anti-cheat
     // announcement and the §8 language-matched replies. Both put words in the operator's mouth
     // in front of a real opponent, which cannot be taken back, so the default is OFF even though
@@ -348,6 +358,13 @@
     var n = parseInt(v, 10);
     if (!isFinite(n)) return DEFAULTS.minArchiveMoves;
     return Math.max(MIN_MOVES_LO, Math.min(MIN_MOVES_HI, n));
+  }
+
+  /** §1.8.4's remembered emoji group. A sanity bound, NOT the group count — see `DEFAULTS`. */
+  function clampEmojiGroup(v) {
+    var n = parseInt(v, 10);
+    if (!isFinite(n) || n < 0) return DEFAULTS.emojiGroup;
+    return Math.min(n, 99);
   }
 
   // ---------- 0.4.7 §三: theme + translucency ----------
@@ -746,6 +763,8 @@
     out.signalWeights = normalizeSignalWeights(out.signalWeights);
     // 1.0.0 §7.1 — same treatment as every other object-valued setting, and for the same reason.
     out.cloud = normalizeCloud(out.cloud);
+    // §1.8.4 — same on the way in, like every other setting.
+    out.emojiGroup = clampEmojiGroup(out.emojiGroup);
     // 0.5.2 §4.1 — clamped on the way IN as well as out, like every other setting: the profile
     // is the one input the UI never validates, and a hand-edited list must not be able to put a
     // non-array (or a 200-row list, or a row with no English) in front of the send path.
@@ -766,6 +785,7 @@
       s.archiveFilter = normalizeArchiveFilter(s.archiveFilter);
       s.storageFilter = normalizeStorageFilter(s.storageFilter);
       s.signalWeights = normalizeSignalWeights(s.signalWeights);
+      s.emojiGroup = clampEmojiGroup(s.emojiGroup);
       s.cloud = normalizeCloud(s.cloud);
       s.customQuestions = clampCustomQuestions(s.customQuestions);
       var put = {}; put[SETTINGS_KEY] = s;
