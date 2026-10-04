@@ -56,7 +56,28 @@ export type ErrorCode =
   // forbidden) rather than 401, which would tell them to sign in again.
   | "NOT_ACTIVATED"
   | "CONTENT_TOO_LONG"
-  | "CONTENT_REJECTED";
+  | "CONTENT_REJECTED"
+  // --- 1.0.3 §一/§二/§三 ---------------------------------------------------------------------
+  // The same rule a third time, and this release is where it pays off most: 1.0.3 adds ten refusals
+  // that are all 4xx for a caller who is signed in and behaving normally, and every one of them has
+  // a DIFFERENT fix. Answered as `FORBIDDEN` they would reach the operator as one sentence
+  // (「没有权限」) covering 「你被禁言到明天」「今天发了 20 个存档了」「这个分享 15 分钟前过期了」
+  // 「投票已经关了」「对方把你拉黑了」 — five unrelated situations, five different next actions.
+  //
+  // ⚠ EACH ONE MUST HAVE A `cloudErrText` BRANCH. That is not a style note: 1.0.2 shipped
+  // `NOT_ACTIVATED` with no branch and the community showed 「未知错误（NOT_ACTIVATED）」, which
+  // `behave-064` caught on its first run. `verify-064`/`verify-065` enumerate this union from the
+  // SOURCE and refuse to pass while any code lacks a sentence.
+  | "MUTED"
+  | "CHAT_DISABLED"
+  | "SHARE_EXPIRED"
+  | "QUOTA_EXCEEDED"
+  | "FRIEND_EXISTS"
+  | "NOT_FRIENDS"
+  | "BLOCKED_BY_USER"
+  | "VOTE_CLOSED"
+  | "VOTE_ALREADY_CAST"
+  | "TARGET_NOT_FOUND";
 
 /** HTTP status constants used across the functions. */
 export const HttpStatus = {

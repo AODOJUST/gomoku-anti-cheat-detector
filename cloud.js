@@ -241,6 +241,56 @@
       '/realtime/v1/websocket?apikey=' + encodeURIComponent(SUPABASE_ANON_KEY) + '&vsn=1.0.0';
   }
 
+  /**
+   * Realtime §1.2.4's 「下载 storage_url」 — fetch a SIGNED url and parse it as JSON.
+   *
+   * ⚠ WHY THE CLIENT NEEDS NO STORAGE API, AND THIS IS THE ONLY STORAGE-ADJACENT LINE IN THE FILE.
+   * §1.2.3 sketches the client uploading to the `temp-shares` bucket itself; this release does the
+   * upload inside `friend-share` / `chat-send` with the service role instead. The reason is the one
+   * that already governs every other write in this project: a bucket policy can check WHO is
+   * writing but cannot check 「你今天已经发过 20 个了」 (§1.2.5) or 「这个存档还活着吗」, and two
+   * authorities for one decision is the defect this repo keeps paying for. So: no `upload`, no
+   * `remove`, no signed-url creation on the client — the Functions own all three.
+   *
+   * What is left over is a READ, and a signed URL is a capability rather than an API call: the token
+   * is in the query string, the request needs no `apikey` and no `Authorization`, and it is the only
+   * URL in this file that is fetched WITHOUT the anon key. It still goes through here so that a
+   * failed download is reported in the same vocabulary as everything else — a `NETWORK` for a dead
+   * connection, `HTTP_<n>` for a 403 from an expired signature — rather than rejecting into a
+   * caller's `catch` with no code to branch on.
+   *
+   * ⚠ A `400`/`403` from Storage means the signature expired (`SIGNED_URL_SECONDS` in
+   * `friend-share` is 60), NOT that the share is broken. The caller re-runs `fetch` for a fresh one.
+   */
+  async function getJson(url, opts) {
+    if (!isConfigured()) return { ok: false, error: 'NOT_CONFIGURED' };
+    if (typeof url !== 'string' || url === '') return { ok: false, error: 'BAD_REQUEST', status: 0 };
+    var o = opts || {};
+    var ctl = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+    var timer = null;
+    if (ctl) timer = setTimeout(function () { ctl.abort(); }, o.timeoutMs || TIMEOUT_MS);
+
+    var res, text;
+    try {
+      res = await fetch(url, { method: 'GET', signal: ctl ? ctl.signal : undefined });
+      text = await res.text();
+    } catch (e) {
+      if (timer) clearTimeout(timer);
+      return { ok: false, error: 'NETWORK', status: 0, message: (e && e.message) || 'network' };
+    }
+    if (timer) clearTimeout(timer);
+
+    if (!res.ok) {
+      // No `wireCode` here: Storage answers with its own envelope (`{statusCode, error, message}`)
+      // and its `error` strings ('InvalidJWT', 'not_found') are a DIFFERENT vocabulary from
+      // `_shared/errors.ts`. Folding the two together is the exact mistake `wireCode` documents.
+      return { ok: false, error: 'HTTP_' + res.status, status: res.status };
+    }
+    var data = null;
+    if (text) { try { data = JSON.parse(text); } catch (e) { data = null; } }
+    return { ok: true, data: data, status: res.status };
+  }
+
   g.GMCloud = {
     // Constants the rest of the cloud code reads instead of re-declaring. Same rule as
     // BASE_WEIGHTS: one spelling per fact (this project has paid five times for a second copy).
@@ -253,6 +303,7 @@
     realtimeUrl: realtimeUrl,
     call: call,
     rest: rest,
+    getJson: getJson,
   };
 
   // Same dual-export shape as storage.js: the browser gets `GMCloud` on the global, and a Node

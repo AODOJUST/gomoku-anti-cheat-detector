@@ -105,3 +105,38 @@ verify_jwt = false
 
 [functions.admin-reply-feedback]
 verify_jwt = false
+
+# ---- 1.0.3 §一~§三 — 社区设施（好友 / 投票 / 举报 / 国籍 / 在线状态）------------------------
+# Same reasoning as every block above: each one runs `requireUser` / `requireAdmin` itself, so the
+# platform gate has nothing to add and one thing to break — `friend-share-purge` is called by the
+# cron with a shared secret and NO user session at all, and `geo-update` is called from a database
+# webhook, so a platform JWT check would reject both before any of our code runs.
+[functions.friend-request]
+verify_jwt = false
+
+[functions.friend-accept]
+verify_jwt = false
+
+[functions.friend-share]
+verify_jwt = false
+
+[functions.friend-share-purge]
+verify_jwt = false
+
+[functions.vote-create]
+verify_jwt = false
+
+[functions.vote-cast]
+verify_jwt = false
+
+[functions.report-submit]
+verify_jwt = false
+
+[functions.admin-handle-report]
+verify_jwt = false
+
+[functions.admin-global-mute]
+verify_jwt = false
+
+[functions.geo-update]
+verify_jwt = false

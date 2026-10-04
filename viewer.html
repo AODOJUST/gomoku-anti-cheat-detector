@@ -1082,6 +1082,137 @@
      reachable. Both are one line of `--mut` in the middle of the box they belong to. */
   .cm-empty{padding:26px 12px;text-align:center;font-size:var(--ui-detail-small);color:var(--mut)}
 
+  /* ---- 1.0.3 一/二/三：好友、消息、他人主页、投票、举报 ----
+     Everything below is a NEW SHAPE, so it is declared here; everything that already had a shape
+     (`.panel`, `.cm-item`, `.cm-head`, `.cm-chip`, `.cm-body-txt`, `.cm-av`, `.cm-bub`) is reused
+     rather than restated. Two rules that must be repeated because they are easy to get wrong:
+
+     ⚠ NO `background` SHORTHAND ON ANYTHING THAT IS ALSO A `.panel` — see the note above the `.cm`
+     block. The transparency rule far below rewrites `.panel`'s `background-color`, and a shorthand
+     written here would be reset by it.
+
+     ⚠ `.cm-dot` CARRIES ITS COLOUR IN A MODIFIER CLASS, not in a `style=` attribute built by the
+     view. §3.2.1's three states are a closed set and the badge is repainted on every language
+     switch and every presence frame; an inline colour would have to be re-derived at each of those
+     points, and one of them would eventually forget. */
+  /* ⚠ `.cm-avwrap` IS NEW AND `.cm-av` IS NOT. `.cm-av` clips its face to a circle
+     (`overflow:hidden`), so a dot placed inside it would be cut off at the corner. The wrapper is
+     the positioning context and the clip stays where it belongs. `cmAvatarHtml` is the only
+     producer of this shape, and the avatar is a CLICK TARGET (left §1.1.1 / right §1.6.1), so the
+     hook and the cursor live on the wrapper where the dot is a sibling rather than a child. */
+  .cm-avwrap{position:relative;flex:0 0 auto;display:inline-flex;cursor:pointer}
+  .cm-avwrap.me{cursor:default}
+  .cm-dot{position:absolute;inset-inline-end:-1px;bottom:-1px;width:9px;height:9px;
+    border-radius:50%;background:var(--mut);border:1px solid var(--panel);box-sizing:content-box}
+  .cm-dot.online{background:var(--green)}
+  .cm-dot.busy{background:var(--yellow)}
+  .cm-dot.offline{background:var(--mut)}
+  .cm-flag{flex:0 0 auto;font-size:1.05em;line-height:1;margin-inline-start:5px}
+  /* §1.8.3's read-only banner. Yellow, like `.warnbox` — it is a statement about what the operator
+     may do, not an error they caused. */
+  .cm-gate{padding:9px 12px;border-radius:var(--ui-detail-radius);border:1px solid #6b5416;
+    border-inline-start:5px solid var(--yellow);background:#2a2113;color:var(--txt);
+    font-size:var(--ui-detail-small);line-height:1.6;margin-bottom:8px}
+  /* A row's inline actions: 接受 / 拒绝 / 备注 / 删除 / 拉黑. `flex:0 0 auto` on each, per the 0.5.5
+     note — an auto basis is still allowed to shrink to nothing beside a long name. */
+  .cm-acts{display:flex;gap:6px;flex:0 0 auto;flex-wrap:wrap;align-items:center}
+  .cm-acts button{padding:3px 10px;font-size:var(--ui-detail-small)}
+  .cm-badge{display:inline-block;min-width:17px;padding:0 5px;border-radius:999px;
+    background:var(--red);color:#fff;font-size:11px;line-height:17px;text-align:center;
+    flex:0 0 auto}
+  /* §1.7.3's quoted card, inside a message. `cursor:pointer` because the whole card navigates. */
+  .cm-quote{margin-bottom:5px;padding:5px 9px;border-inline-start:3px solid var(--blue);
+    border-radius:6px;background:rgba(var(--blue-rgb),.10);font-size:var(--ui-detail-small);
+    color:var(--mut);cursor:pointer;overflow-wrap:anywhere}
+  .cm-quote .cm-qwho{color:var(--txt);font-weight:600;margin-inline-end:6px}
+  /* §1.6.4 「把 `@用户名` 高亮」. A tint, not a chip: the name is part of the sentence and has to
+     keep the bubble's own line-height and wrapping. */
+  .cm-at-x{color:var(--blue);font-weight:600}
+  /* §1.7.3 「高亮 2 秒」. A keyframe rather than a class plus a timer, so the 2 s lives with the
+     animation and cannot be forgotten by a caller. `cmJumpToMessage` uses the same 2000 ms. */
+  @keyframes cmFlash{0%{background:rgba(var(--blue-rgb),.34)}100%{background:transparent}}
+  .cm-flash{animation:cmFlash 2s ease-out 1}
+  /* §1.1.3's attachment card, inside a message: an icon column and a name column. */
+  .cm-share{margin-top:5px;padding:7px 10px;border:1px solid var(--line);
+    border-radius:var(--ui-detail-radius);background:var(--panel);display:flex;gap:10px;
+    align-items:flex-start;cursor:pointer}
+  .cm-shico{flex:0 0 auto;font-size:1.3em;line-height:1.2}
+  .cm-shmain{flex:1 1 auto;min-width:0}
+  .cm-shtitle{display:block;font-size:var(--ui-detail-small);font-weight:600;overflow-wrap:anywhere}
+  .cm-vhost:empty{display:none}
+  /* §1.4.4's poll: one row per choice, each a button + a count + a bar. The bar's fill is an `<i>`
+     whose `width` is the percentage — a `min-width:0` track so a 100% fill cannot push the count
+     out of the row. */
+  .cm-vote{margin-top:6px;padding:8px 10px;border:1px solid var(--line);
+    border-radius:var(--ui-detail-radius);background:var(--panel)}
+  .cm-vrow{display:flex;align-items:center;gap:8px;margin-top:5px}
+  .cm-vrow.mine .cm-vbtn{border-color:var(--blue);color:var(--blue)}
+  .cm-vbtn{flex:0 0 auto;min-width:96px;padding:3px 10px;font-size:var(--ui-detail-small);
+    text-align:start}
+  .cm-vbtn:disabled{opacity:.72;cursor:default}
+  .cm-vn{flex:0 0 auto;min-width:22px;text-align:end;font-size:11px;color:var(--mut);
+    font-variant-numeric:tabular-nums}
+  .cm-vbar{flex:1 1 auto;min-width:0;height:8px;border-radius:999px;background:var(--inset);
+    overflow:hidden}
+  .cm-vbar i{display:block;height:100%;background:var(--blue)}
+  .cm-vfoot{display:flex;align-items:center;gap:10px;margin-top:8px;flex-wrap:wrap}
+  /* §1.6.2's autocomplete popup, anchored above the textarea (`.cm-atbox` is the context). */
+  .cm-atbox{position:relative}
+  .cm-atlist{position:absolute;inset-inline-start:0;bottom:100%;margin-bottom:4px;z-index:20;
+    min-width:170px;max-height:180px;overflow-y:auto;border:1px solid var(--line);
+    border-radius:var(--ui-detail-radius);background:var(--panel);box-shadow:0 6px 20px #0006}
+  .cm-at{display:block;padding:6px 10px;color:var(--txt);font-size:var(--ui-detail-small);
+    cursor:pointer}
+  .cm-at:hover,.cm-at.on{background:var(--inset)}
+  /* §1.1.1's avatar menu is `showCtx` — the SAME popup the replay list's right-click uses, so it
+     has no rule here. A `.cm-menu` block used to, from before that reuse was noticed; deleted
+     rather than left dead, because the next person to read this file would have styled it. */
+  /* §2.1's report form and §1.1.2's picker. `.cm-mask` is the backdrop; `.cm-modal` is the sheet. */
+  .cm-mask{position:fixed;inset:0;z-index:50;background:#0008;display:flex;align-items:center;
+    justify-content:center;padding:16px}
+  .cm-modal{width:min(560px,100%);max-height:86vh;overflow-y:auto;padding:var(--ui-shell-padding);
+    border:1px solid var(--line);border-radius:var(--ui-detail-radius);background:var(--panel)}
+  /* §1.2.3's 「选择内容」 list: one selectable row per local archive / sample. */
+  .cm-pick{display:flex;justify-content:space-between;gap:10px;padding:7px 10px;border-radius:6px;
+    border:1px solid transparent;cursor:pointer;font-size:var(--ui-detail-small)}
+  .cm-pick:hover{background:var(--inset)}
+  .cm-pick.on{border-color:var(--blue);background:rgba(var(--blue-rgb),.10)}
+  /* §1.3.1's card: a big avatar column, a facts column and §1.3.2's sidebar, wrapping on a narrow
+     window rather than squeezing the sidebar to nothing. */
+  .cm-prof{display:flex;gap:18px;flex-wrap:wrap;align-items:flex-start}
+  .cm-pav{flex:0 0 auto;width:84px;height:84px;border-radius:50%;overflow:hidden;background:var(--inset);
+    border:1px solid var(--line);display:flex;align-items:center;justify-content:center;
+    font-size:30px;color:var(--mut)}
+  .cm-pav img{width:100%;height:100%;object-fit:cover;display:block}
+  .cm-pmain{flex:1 1 260px;min-width:210px}
+  .cm-pname{font-size:var(--ui-detail-large);font-weight:600;overflow-wrap:anywhere}
+  .cm-pfacts{font-size:var(--ui-detail-small);color:var(--mut);line-height:1.85;margin-top:4px}
+  .cm-pfacts .cm-flag{margin-inline-start:3px}
+  /* §1.3.2's four elements, as a column beside the card on a wide window. `flex:0 0 auto` per the
+     0.5.5 note: an auto basis may shrink to nothing beside a long name. */
+  .cm-pside{flex:0 0 auto;display:flex;flex-direction:column;gap:6px;min-width:150px}
+  .cm-pside button{flex:0 0 auto;width:100%}
+  /* A section heading inside a pane (好友请求 / 分享 / @提及 / 系统通知). */
+  .cm-sec{margin:2px 0 8px;font-size:var(--ui-detail-font);font-weight:600;color:var(--txt)}
+  /* §1.5.2's friend row: avatar · name(+remark/dot/flag) · actions. */
+  .cm-frow{display:flex;align-items:center;gap:10px}
+  .cm-fav{flex:0 0 auto;display:inline-flex}
+  .cm-fname{flex:1 1 auto;min-width:0;font-size:var(--ui-detail-small);overflow-wrap:anywhere}
+  .cm-fsub{display:block;font-size:11px;color:var(--mut);margin-top:2px}
+  /* §1.5.3's share row: a heading line plus an optional action row. */
+  .cm-srow{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+  .cm-item.unread{border-inline-start:3px solid var(--blue)}
+  /* The chat input row, with the 📎 button and the quote strip above the textarea. */
+  .cm-sendcol{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;gap:6px}
+  .cm-attach{flex:0 0 auto;padding:0 12px;height:44px;font-size:1.15em;line-height:1}
+  /* §1.7.1's quote strip: 「引用 张三：… [×]」. */
+  .cm-qstrip{display:flex;align-items:center;gap:8px;padding:5px 10px;border-radius:6px;
+    border-inline-start:3px solid var(--blue);background:rgba(var(--blue-rgb),.10);
+    font-size:var(--ui-detail-small);color:var(--mut)}
+  .cm-qstrip .cm-qtext{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;
+    white-space:nowrap}
+  .cm-qstrip button{flex:0 0 auto;padding:1px 8px;font-size:var(--ui-detail-small)}
+
   /* ---- 0.5.4 §二.1 the two rules that consume the transparency variables ----
      See the long note next to the palette for WHY this sits here rather than beside the colours
      (the surfaces above use the `background` shorthand, which resets `background-color`, and a
@@ -1941,6 +2072,8 @@
     <div class="cm">
       <nav class="panel cm-nav" id="cmNav">
         <button class="cm-tab active" data-cm="chat"><span class="cm-ico">💬</span><span class="cm-lbl">聊天室</span></button>
+        <button class="cm-tab" data-cm="friends"><span class="cm-ico">🧑‍🤝‍🧑</span><span class="cm-lbl">好友</span><span class="cm-badge hidden" id="cmFriendsBadge"></span></button>
+        <button class="cm-tab" data-cm="msgs"><span class="cm-ico">📨</span><span class="cm-lbl">消息</span><span class="cm-badge hidden" id="cmMsgsBadge"></span></button>
         <button class="cm-tab" data-cm="news"><span class="cm-ico">📰</span><span class="cm-lbl">新闻</span></button>
         <button class="cm-tab" data-cm="feedback"><span class="cm-ico">🐛</span><span class="cm-lbl">Bug与建议</span></button>
       </nav>
@@ -1959,12 +2092,34 @@
             <!-- §2.3.6's scrollback. Rows are appended by `cmChatRender` / `cmChatAppend`; nothing
                  here is static, because every line of it depends on who is talking. -->
             <div class="cm-log" id="cmChatLog"></div>
+            <!-- §1.8.3 「聊天室：只读——输入框禁用，显示「激活后参与讨论」提示」. Filled and un-hidden by
+                 `cmPaintGate()`; the text is written by the view rather than here because it is one
+                 of the strings §1.8.3 asks for verbatim and it has to be translatable. -->
+            <div class="cm-gate hidden" id="cmChatGate"></div>
+            <!-- §1.7.1's quote strip. Empty and hidden until 「引用并回复」 is chosen; the × clears it
+                 WITHOUT clearing the text, because the two are separate decisions. -->
+            <div class="cm-qstrip hidden" id="cmQuoteStrip">
+              <span class="cm-qtext" id="cmQuoteText"></span>
+              <button class="sec" id="cmQuoteClear">×</button>
+            </div>
             <div class="cm-send" style="margin-top:10px">
-              <!-- `maxlength` is set from `GMCommunityShared.CHAT_MAX_LEN` at boot rather than
-                   written here: the counter beside it and the Edge Function's own check are the
-                   same number, and a control whose ceiling disagrees with the server's is a
-                   control that lets through text it then refuses. -->
-              <textarea id="cmChatInput" rows="1" placeholder="说点什么…"></textarea>
+              <!-- §1.1.2's 「📎 附件」 button. `type=button` so it can never submit anything, and the
+                   picker is a modal built by the view rather than a native <input type=file> —
+                   §1.1.2's content comes from the LOCAL archives/samples, not from disk. -->
+              <button class="sec cm-attach" id="cmChatAttach" title="附件">📎</button>
+              <div class="cm-sendcol">
+                <!-- `maxlength` is set from `GMCommunityShared.CHAT_MAX_LEN` at boot rather than
+                     written here: the counter beside it and the Edge Function's own check are the
+                     same number, and a control whose ceiling disagrees with the server's is a
+                     control that lets through text it then refuses. -->
+                <div class="cm-atbox">
+                  <!-- §1.6.2's 「输入 @ → 弹出自动补全列表」. Anchored above the textarea by
+                       `.cm-atlist`'s `bottom:100%`, and emptied (not hidden) when the token under
+                       the caret stops being a mention. -->
+                  <div class="cm-atlist hidden" id="cmMentionList"></div>
+                  <textarea id="cmChatInput" rows="1" placeholder="说点什么…"></textarea>
+                </div>
+              </div>
               <div class="hint cm-cnt" id="cmChatLen">—</div>
               <button id="cmChatSend">发送</button>
             </div>
@@ -1974,6 +2129,72 @@
                  since the banner cannot then be cleared without erasing the reference. -->
             <div class="hint" id="cmChatNote" style="margin-top:6px"></div>
             <div class="hint" id="cmChatHint" style="margin-top:2px">—</div>
+          </div>
+        </div>
+
+        <!-- ---- 好友 (§1.5.2) ---- -->
+        <div class="cm-pane" id="cmPane-friends">
+          <div class="panel">
+            <div class="filters-bar">
+              <h2 style="margin:0">好友</h2>
+              <span class="sp"></span>
+              <span class="hint" id="cmFriendQuota">—</span>
+              <button class="sec" id="cmFriendReload">刷新</button>
+            </div>
+            <div class="hint" id="cmFriendState" style="margin-top:8px">—</div>
+            <!-- §1.2.5's 「今日还可发送 …」 and the two share buttons. Built by the view so the
+                 ceilings come from the shared block. -->
+            <div class="btn-row" style="margin-top:8px">
+              <button class="sec" id="cmShareSend">发送回放 / 样本 / 配置</button>
+            </div>
+            <div class="cm-list" id="cmFriendList" style="margin-top:10px"></div>
+          </div>
+        </div>
+
+        <!-- ---- 消息 (§1.5.3) ---- -->
+        <div class="cm-pane" id="cmPane-msgs">
+          <div class="panel">
+            <div class="filters-bar">
+              <h2 style="margin:0">消息</h2>
+              <span class="sp"></span>
+              <button class="sec" id="cmMsgsReadAll">全部标记已读</button>
+              <button class="sec" id="cmMsgsReload">刷新</button>
+            </div>
+            <div class="hint" id="cmMsgsState" style="margin-top:8px">—</div>
+            <!-- §1.5.3's four sections. Each is one container the view fills; the ORDER is the
+                 sketch's, and it is the order a reader scans: what needs an answer, what arrived,
+                 what mentions me, what the system said. -->
+            <div class="cm-sec" style="margin-top:12px" id="cmMsgsReqHead">好友请求</div>
+            <div class="cm-list" id="cmMsgsReq"></div>
+            <div class="cm-sec" style="margin-top:12px" id="cmMsgsShareHead">分享</div>
+            <div class="cm-list" id="cmMsgsShare"></div>
+            <div class="cm-sec" style="margin-top:12px" id="cmMsgsAtHead">@提及</div>
+            <div class="cm-list" id="cmMsgsAt"></div>
+            <div class="cm-sec" style="margin-top:12px" id="cmMsgsSysHead">系统通知</div>
+            <div class="cm-list" id="cmMsgsSys"></div>
+          </div>
+        </div>
+
+        <!-- ---- 他人主页 (§1.3) ---- -->
+        <!-- Not a nav tab: §1.1.1 reaches it from an avatar, so it is a pane the view switches TO
+             and switches back FROM. `cmShowTab('chat')` is what the 返回 button does, which is why
+             there is no separate router here. -->
+        <div class="cm-pane" id="cmPane-user">
+          <div class="panel">
+            <div class="filters-bar">
+              <h2 style="margin:0" id="cmUserName">—</h2>
+              <span class="sp"></span>
+              <button class="sec" id="cmUserBack">返回</button>
+            </div>
+            <div class="hint" id="cmUserState" style="margin-top:8px">—</div>
+            <div class="cm-prof" id="cmUserCard" style="margin-top:10px"></div>
+          </div>
+          <div class="panel">
+            <h2 id="cmUserReportHead">举报</h2>
+            <div class="btn-row">
+              <button class="sec" id="cmUserReport">举报违规</button>
+              <span class="hint" id="cmUserReportHint">—</span>
+            </div>
           </div>
         </div>
 
@@ -2042,6 +2263,72 @@
       </div>
     </div>
   </section>
+
+  <!-- ======================= 1.0.3 社区用的两块浮层 =======================
+       Outside `#view-community` on purpose: §2.1's report opens from a MESSAGE (in the room), from a
+       friend row and from a profile card, and a container inside the pane it was opened from would be
+       hidden by the next `cmShowTab`. Each is `hidden` by default and `position:fixed`, so its
+       position in the document has no layout consequence.
+
+       ⚠ THERE IS NO AVATAR-MENU ELEMENT HERE, and that is deliberate. §1.1.1's menu is the SAME
+       control as the replay list's right-click menu — a transient panel anchored to the click that
+       opened it, with the same outside-click / Escape / blur dismissal — so it goes through
+       `showCtx` like `openCardMenu` does. A second popup implementation would be the seventh time
+       this project paid for one answer living in two places, and a bespoke dismissal has to get the
+       `stopPropagation()` rule right all over again. -->
+  <!-- §2.1's report form. Every option label is filled from `REPORT_CATEGORIES` + `cmCatReport`,
+       for the same reason the feedback <select> is: the server accepts exactly that set. -->
+  <div class="cm-mask hidden" id="cmReportMask">
+    <div class="cm-modal" role="dialog" aria-modal="true">
+      <h2 id="cmReportHead">举报</h2>
+      <div class="hint" id="cmReportWho" style="margin-top:4px">—</div>
+      <div class="cm-fb-row" style="display:block">
+        <label id="cmReportCatLab">举报类型</label>
+        <div id="cmReportCats" style="margin-top:6px"></div>
+      </div>
+      <div class="cm-fb-row" style="display:block">
+        <label for="cmReportDetail">详细说明</label>
+        <textarea id="cmReportDetail" style="height:96px;margin-top:6px"></textarea>
+      </div>
+      <div class="hint" id="cmReportHint" style="margin-top:6px">—</div>
+      <div class="btn-row" style="margin-top:10px">
+        <button id="cmReportSend">提交</button>
+        <button class="sec" id="cmReportCancel">取消</button>
+        <span class="hint" id="cmReportState">—</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- §1.1.2's 「点击后弹出选择器：发送回放 / 发送样本」, and §1.2.3's equivalent for a friend.
+       ONE picker for both destinations, because the three questions are the same — which kind,
+       which local item, who receives it — and two pickers would be two lists of 「我的本地存档」. -->
+  <div class="cm-mask hidden" id="cmShareMask">
+    <div class="cm-modal" role="dialog" aria-modal="true">
+      <h2 id="cmShareHead">发送</h2>
+      <div class="hint" id="cmShareWho" style="margin-top:4px">—</div>
+      <div class="btn-row" style="margin-top:8px" id="cmShareKinds"></div>
+      <div class="cm-fb-row" style="display:block">
+        <label for="cmSharePick">选择内容</label>
+        <div id="cmSharePick" style="margin-top:6px;max-height:230px;overflow-y:auto"></div>
+      </div>
+      <div class="cm-fb-row">
+        <label for="cmShareTo" id="cmShareToLab" style="flex:0 0 auto">发送给</label>
+        <select id="cmShareTo" style="flex:1 1 220px"></select>
+      </div>
+      <div class="cm-fb-row">
+        <label id="cmShareVoteLab" style="flex:0 0 auto">
+          <input type="checkbox" id="cmShareVote"> 启用投票
+        </label>
+        <span class="hint" id="cmShareVoteHint" style="flex:1 1 240px">—</span>
+      </div>
+      <div class="hint" id="cmShareHint" style="margin-top:6px">—</div>
+      <div class="btn-row" style="margin-top:10px">
+        <button id="cmShareSendGo">发送</button>
+        <button class="sec" id="cmShareCancel">取消</button>
+        <span class="hint" id="cmShareState">—</span>
+      </div>
+    </div>
+  </div>
 
   <!-- ======================= 我的 (1.0.0 §5) ======================= -->
   <!-- 1.0.0 §5.1: 「查看器新增『我的』标签页（仅已激活用户可见）」. Every visible word here is

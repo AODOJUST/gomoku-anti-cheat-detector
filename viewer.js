@@ -3431,6 +3431,48 @@
   var cmFbBusy = false;
   var cmBooted = false;
 
+  // ---- 1.0.3 §一/§二/§三 -----------------------------------------------------------------------
+  // Every one of these is `null` until its read lands, for the same reason `cmNews` is: `null` is
+  // 「never arrived」 and `[]` is 「arrived and empty」, and only the second is a real 「还没有 …」.
+  var cmFriends = null;       // `friendsList()`'s {friends,incoming,outgoing,rows}
+  var cmFriendMsg = null;
+  var cmFriendBusy = false;
+  var cmQuota = null;         // `shareQuota()`'s {archive,config,maxArchive,maxConfig}
+  var cmInbox = null;         // friend_shares addressed to me, still live and unconsumed
+  var cmSent = null;          // …and the ones I sent, so 「需重发」 is a decision I can make
+  var cmNotices = null;       // notifications rows (system + mention)
+  var cmMsgsMsg = null;
+  var cmMsgsLoading = false;
+  /** §1.7.1's quote. `{id, username, content}` — the PREVIEW is snapshotted into the message by
+   *  `chat-send`, so this only has to survive until the next send. */
+  var cmQuote = null;
+  /** §1.1.2's chosen local item, and the mask's own three answers (`to` / `kind` / `vote`). */
+  var cmShare = null;
+  var cmShareMsg = null;
+  var cmShareBusy = false;
+  /** §1.3's other-profile pane. `{id, user, sampleCount, presence, relation, msg}`. */
+  var cmUser = null;
+  var cmUserBusy = false;
+  /** §2.1's report mask: who is being reported, and the form's own state. */
+  var cmReport = null;
+  var cmReportMsg = null;
+  var cmReportCat = '';
+  /** §3.2's socket state, mirrored so the dot column can say 「实时/轮询」 without asking twice. */
+  var cmPresence = 'off';
+  /** The mention autocomplete's live suggestion set, or `null` when the caret is not in a token. */
+  var cmMention = null;
+  /** `userId -> users row`, so `presence.forUser()` can answer for a row-less avatar. Filled by
+   *  whichever read brought the name — the room's own rows carry `user_id` but no `last_seen_at`. */
+  var cmPeople = {};
+
+  /** The five secondary tabs, in the order 1.0.3 draws them. `cmShowTab` refuses anything else, so
+   *  a typo in a `data-cm` attribute is an inert tab rather than a pane nothing can reach. */
+  var CM_TABS = ['chat', 'friends', 'msgs', 'news', 'feedback'];
+
+  /** §1.4.4's countdown, ticking once a second while a poll is on screen. Held here so leaving the
+   *  pane stops it — an interval that outlives its element writes into a detached node forever. */
+  var cmVoteTick = null;
+
   /** §2.4.4's preview cut. ONE number, used both to decide whether 「阅读全文」 is offered and to
    *  cut the text it reveals — two literals here would be a button that opens a card showing
    *  exactly what was already on screen. */
@@ -3507,6 +3549,24 @@
       case 'rateChat': return T('community|发送太频繁，请稍后再试（每分钟最多 {n} 条）', { n: m.n });
       case 'pickCat': return T('community|请选择类型。');
       case 'needTitleBody': return T('community|标题和内容都不能为空。');
+      // ---- 1.0.3 §一/§二 — the verdicts the new panes can report. Each is a `switch` arm of a
+      // LITERAL `T('…')` call for the reason written above `cmMsgText`: a key held in a descriptor
+      // is a key no table ever gets.
+      case 'requested': return T('community|好友请求已发出。');
+      case 'actOk': return T('community|已更新。');
+      case 'actFailed': return T('community|操作失败（{err}）', { err: err });
+      case 'shared': return T('community|已发送。');
+      case 'shareFailed': return T('community|发送失败（{err}）', { err: err });
+      case 'quota': return T('community|今日发送数量已达上限');
+      case 'pickFirst': return T('community|请先选择要发送的内容。');
+      case 'fetched': return m.n
+        ? T('community|已打开：{name}（共 {n} 项）', { name: m.name, n: m.n })
+        : T('community|已打开。');
+      case 'imported': return T('community|已导入到本地。');
+      case 'jumpMissing': return T('community|这条消息不在当前加载的范围内。');
+      case 'reportCat': return T('community|请选择举报类型。');
+      case 'reportFailed': return T('community|举报提交失败（{err}）', { err: err });
+      case 'reported': return T('community|已提交，管理员会尽快处理。');
     }
     return '';
   }
@@ -3560,22 +3620,85 @@
   // refused by SCHEME rather than by hoping the browser treats them as a broken picture.
   var CM_IMG_RE = /^(data:image\/(png|jpe?g|webp|gif);base64,|https?:\/\/)/i;
 
-  function cmAvatarHtml(url, name) {
-    if (typeof url === 'string' && CM_IMG_RE.test(url)) {
-      return '<img src="' + esc(url) + '" alt="">';
-    }
-    return esc(String(name || '—').slice(0, 1).toUpperCase());
+  function cmAvatarHtml(url, name, userId, row) {
+    var face = (typeof url === 'string' && CM_IMG_RE.test(url))
+      ? '<img src="' + esc(url) + '" alt="">'
+      : esc(String(name || '—').slice(0, 1).toUpperCase());
+    // ⚠ The dot and the `data-cm-av` hook are added HERE rather than by every caller: the avatar
+    // appears in the room, the friend list and a profile card, and §3.2.1's dot is the same fact in
+    // all three. `data-cm-av` is self's id too — the MENU decides to stay shut for your own avatar
+    // (`cmAvatarMenu`), because the DOM should not have to know who is looking at it.
+    //
+    // ⚠ THE DOT IS A SIBLING OF `.cm-av`, NOT A CHILD. `.cm-av` clips its face to a circle, so a dot
+    // inside it would be cut off at the corner — hence the `.cm-avwrap` positioning context.
+    if (!userId) return '<span class="cm-av">' + face + '</span>';
+    return '<span class="cm-avwrap' + (userId === cmUid() ? ' me' : '') + '" data-cm-av="' +
+      esc(userId) + '"><span class="cm-av">' + face + '</span>' +
+      cmDotHtml(userId, row) + '</span>';
   }
 
+  /** §1.6.4's 「把 `@用户名` 高亮」. The names come from the CANDIDATE set rather than from a regex
+   *  over the message, so a bare `@` in prose stays prose and a name that is not an account is not
+   *  dressed up as one. */
+  function cmHighlightMentions(text) {
+    var out = esc(text);
+    var names = [];
+    ((cmFriends && cmFriends.friends) || []).forEach(function (f) { names.push(cmFriendLabel(f)); });
+    cmRows.forEach(function (r) { if (r.username) names.push(String(r.username)); });
+    names.sort(function (a, b) { return b.length - a.length; });
+    for (var i = 0; i < names.length; i++) {
+      var n = names[i];
+      if (!n) continue;
+      // `esc()` already ran, so the needle is escaped the same way — comparing on the escaped form
+      // is what stops a name with a quote in it from being searched for in its raw shape.
+      var needle = '@' + esc(n);
+      out = out.split(needle).join('<span class="cm-at-x">' + needle + '</span>');
+    }
+    return out;
+  }
+
+  /** §1.1.3's card, §1.7.3's quote block, §1.6.4's highlight — one builder, one message. */
   function cmMsgHtml(row) {
     var S = GMCommunity.shared() || {};
     var name = row.username || '—';
     var when = S.chatClock ? S.chatClock(row.created_at) : '';
-    return '<div class="cm-msg' + (row.user_id && row.user_id === cmUid() ? ' me' : '') + '">' +
-      '<div class="cm-av">' + cmAvatarHtml(row.avatar_url, name) + '</div>' +
+    var HTML = '';
+
+    if (row.reply_preview) {
+      var q = row.reply_preview || {};
+      HTML += '<div class="cm-quote" data-cm-goto="' + esc(String(q.message_id || '')) + '">' +
+        '<span class="cm-qwho">' + esc(String(q.username || '—')) + '</span>' +
+        '<span class="cm-qbody">' + esc(cmPreview(String(q.content || ''), CM_PREVIEW)) + '</span></div>';
+    }
+
+    if (row.content) HTML += '<div class="cm-bub">' + cmHighlightMentions(row.content) + '</div>';
+
+    // §1.1.3's attachment card. `messageType()` (the shared block) derives which of the two it is
+    // from `attachment.kind` — the spec carries the same fact twice and 008 dropped the duplicate.
+    var kind = (S.messageType ? S.messageType(row) : 'text');
+    if (row.attachment && (kind === 'archive-share' || kind === 'sample-share')) {
+      var a = row.attachment;
+      HTML += '<div class="cm-share" data-cm-cloud="' + esc(String(a.cloud_id || '')) +
+        '" data-cm-kind="' + esc(String(a.kind || '')) + '">' +
+        '<span class="cm-shico">' + (a.kind === 'sample' ? '🧪' : '📼') + '</span>' +
+        '<span class="cm-shmain">' +
+          '<span class="cm-shtitle">' + esc(String(a.name || '—')) + '</span>' +
+          '<span class="cm-meta">' + esc(cmNamed('cm.share.', a.kind)) +
+            (a.summary ? ' · ' + esc(String(a.summary)) : '') + '</span>' +
+        '</span></div>' +
+        // §1.4.4's poll lives UNDER the card it belongs to, and is filled asynchronously by
+        // `cmLoadVote` — hence a host element with a slot rather than inline markup.
+        '<div class="cm-vhost" data-votehost="' + esc(cmVoteKey(a.kind, a.cloud_id)) + '">' +
+          '<div class="cm-vslot"></div></div>';
+    }
+
+    return '<div class="cm-msg' + (row.user_id && row.user_id === cmUid() ? ' me' : '') +
+      '" data-cm-msg="' + esc(row.id) + '">' +
+      cmAvatarHtml(row.avatar_url, name, row.user_id, cmRowForUser(row.user_id)) +
       '<div class="cm-txt">' +
-        '<div class="cm-who">' + esc(name) + (when ? ' · ' + esc(when) : '') + '</div>' +
-        '<div class="cm-bub">' + esc(row.content) + '</div>' +
+        '<div class="cm-who">' + esc(name) + cmFlagHtml(cmRowForUser(row.user_id)) +
+          (when ? ' · ' + esc(when) : '') + '</div>' +
+        HTML +
       '</div></div>';
   }
 
@@ -3591,6 +3714,22 @@
     if (stick) log.scrollTop = log.scrollHeight;
     var c = $('cmChatCount');
     if (c) c.textContent = T('community|{n} 条消息', { n: cmRows.length });
+    cmPaintVotesForRows();
+  }
+
+  /** §1.4.4's poll needs a SECOND read per shared card (`votes.forTarget` is three queries), so it
+   *  is fetched once per cloud id and never again: `cmVotes` is the cache, and a repaint — which
+   *  happens on every push and on every language switch — must not turn into a request per line. */
+  function cmPaintVotesForRows() {
+    var seen = {};
+    for (var i = 0; i < cmRows.length; i++) {
+      var a = cmRows[i] && cmRows[i].attachment;
+      if (!a || !a.cloud_id || !a.kind) continue;
+      var key = cmVoteKey(a.kind, a.cloud_id);
+      if (seen[key] || cmVotes[key]) continue;
+      seen[key] = true;
+      cmLoadVote(a.kind, a.cloud_id);
+    }
   }
 
   /**
@@ -3626,6 +3765,9 @@
     var i = $('cmChatInput');
     if (!i) return;
     var text = String(i.value || '');
+    // §1.1.2's attachment is a message with NO text of its own, so an empty box is only a reason to
+    // refuse when there is nothing attached. `cmShareGo` sends the attachment; this path only ever
+    // carries text plus, possibly, §1.7.1's quote.
     if (!text.trim()) return;
     var S = GMCommunity.shared() || {};
     if (text.length > (S.CHAT_MAX_LEN || 0)) {
@@ -3644,7 +3786,10 @@
     if (btn) btn.disabled = true;
     cmChatMsg = null;
     cmPaintChatMsg();
-    GMCommunity.chat.send(text).then(function (r) {
+    // The quote is read into the call and cleared only on SUCCESS — a refused send must not cost the
+    // operator the message they were answering.
+    var quoted = cmQuote;
+    GMCommunity.chat.send(text, quoted ? { replyTo: quoted.id } : null).then(function (r) {
       if (btn) btn.disabled = false;
       if (!r || !r.ok) {
         // ⚠ RATE_LIMITED is NOT handed to `cloudErrText`. That shared vocabulary words this code as
@@ -3659,6 +3804,8 @@
         return;
       }
       i.value = '';
+      cmQuote = null;
+      cmPaintQuote();
       cmPaintLen();
       // Drawn from the reply rather than waiting for the push: this operator's own message is the
       // one they are watching for, and a room that needs a Realtime round trip to show it looks
@@ -3749,7 +3896,10 @@
   }
 
   function cmShowTab(name) {
-    if (name !== 'chat' && name !== 'news' && name !== 'feedback') return;
+    // `'user'` is a pane without a tab — §1.1.1 reaches 他人主页 from an avatar, so it is switched
+    // TO and switched back FROM. It is in this list (rather than a second router) so the pane
+    // toggle and the tab toggle stay one statement.
+    if (CM_TABS.indexOf(name) < 0 && name !== 'user') return;
     CM_TAB = name;
     Array.prototype.forEach.call(document.querySelectorAll('#cmNav .cm-tab'), function (b) {
       b.classList.toggle('active', b.getAttribute('data-cm') === name);
@@ -3760,6 +3910,10 @@
     Array.prototype.forEach.call(document.querySelectorAll('#view-community .cm-pane'), function (p) {
       p.classList.toggle('active', p.id === 'cmPane-' + name);
     });
+    // A poll's countdown follows the pane it is drawn in. Leaving 聊天室 for 好友 must stop the
+    // tick, or it keeps formatting a clock for a node nobody can see.
+    if (name !== 'chat') cmStopVoteTick();
+    else cmPaintVotes();
   }
 
   /** §2.5.4's type options, from `FEEDBACK_CATEGORIES` rather than from markup: the server accepts
@@ -3879,6 +4033,20 @@
     cmPaintChat();
     cmPaintNews();
     cmPaintFeedback();
+    // 1.0.3 — every new surface, in the order the tab strip reads.
+    cmPaintGate();
+    cmPaintQuote();
+    cmPaintMentions();
+    cmPaintFriendMsg();
+    cmPaintFriendQuota();
+    cmPaintFriends();
+    cmPaintMsgsMsg();
+    cmPaintMsgs();
+    cmPaintUser();
+    cmPaintShare();
+    cmPaintReport();
+    cmPaintBadges();
+    cmPaintVotes();
   }
 
   function cmBoot() {
@@ -3924,16 +4092,281 @@
     if (send) send.onclick = cmSend;
     var input = $('cmChatInput');
     if (input) {
-      input.oninput = cmPaintLen;
+      input.oninput = function () { cmPaintLen(); cmSyncMention(); };
       // Enter sends, Shift+Enter breaks the line. §2.3.6 draws a box one line tall with a 发送
       // button beside it; if Enter inserted a newline there would be no keyboard way to send.
+      //
+      // ⚠ §1.6.2's `@` LIST TAKES ENTER FIRST. While the autocomplete is open, Enter accepts the
+      // highlighted name — otherwise the keyboard path would send `@z` as a message and lose both
+      // the mention and the draft. (This comment used to add 「the list could only be clicked」,
+      // which was the thing that turned out to be false — see the wiring below.)
       input.onkeydown = function (e) {
+        if (cmMention && cmMention.items.length) {
+          if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+            e.preventDefault();
+            var n = cmMention.items.length;
+            cmMention.index = (cmMention.index + (e.key === 'ArrowDown' ? 1 : n - 1)) % n;
+            cmPaintMentions();
+            return;
+          }
+          if (e.key === 'Escape') { e.preventDefault(); cmMention = null; cmPaintMentions(); return; }
+          if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault();
+            cmInsertMention(cmMention.items[cmMention.index].name);
+            return;
+          }
+        }
         if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); cmSend(); }
+      };
+      // The list must close when the caret leaves the token by CLICK too, not only by typing.
+      input.onblur = function () { cmMention = null; cmPaintMentions(); };
+      // §1.6.1's 「右键头像」 is handled on the avatar, but a right-click ON THE INPUT is the other
+      // place a browser offers its own menu; suppressing it here is what lets the room's own
+      // gestures be the only ones that appear.
+      input.oncontextmenu = function (e) { e.preventDefault(); };
+    }
+    // ⚠⚠ §1.6.2's LIST WAS BUILT AND NEVER WIRED. `cmPaintMentions` has always written
+    // `data-at="<name>"` on every suggestion, and NOTHING in the file ever dispatched it: a mouse
+    // click on a suggestion did exactly nothing, and the keyboard path (Enter / ArrowUp / ArrowDown)
+    // was the only one that worked. That is 1.0.0's 「由函数 BUILD 的面板，必须由函数 WIRE」 again —
+    // a feature that answers to the keyboard alone reads to an operator as 「点了没反应」, and no
+    // static assertion could see it, because the attribute really was in the source.
+    //
+    // ⚠ `mousedown`, not `click`, and with `preventDefault()`. A click first BLURS the input, which
+    // runs `input.onblur` and empties the list out from under the pointer before the click lands.
+    // Cancelling the default keeps the caret inside the token, which is also what `cmInsertMention`
+    // measures to decide which characters to replace.
+    var atlist = $('cmMentionList');
+    if (atlist) {
+      atlist.onmousedown = function (e) {
+        var t = (e.target && e.target.closest) ? e.target.closest('[data-at]') : null;
+        if (!t) return;
+        e.preventDefault();
+        cmInsertMention(t.getAttribute('data-at'));
       };
     }
     if ($('cmFbSend')) $('cmFbSend').onclick = cmFbSubmit;
     if ($('cmFbReload')) $('cmFbReload').onclick = cmLoadFeedback;
+
+    // ---- 1.0.3 §一/§二/§三 ----------------------------------------------------------------------
+    // ⚠ DELEGATED, NOT PER-ELEMENT. Every list below is rebuilt wholesale on each read and on every
+    // language switch, so a handler installed per row would have to be reinstalled on every repaint
+    // — and the one repaint that forgot would be an inert button. `#view-community` is the container
+    // all five panes live in, so one listener covers the room, the friend list, the message list and
+    // a profile card.
+    var root = $('view-community');
+    if (root) {
+      root.onclick = cmRootClick;
+      root.oncontextmenu = cmRootContext;
+    }
+    // ⚠⚠ AND THE TWO MASKS ARE *SIBLINGS* OF THAT VIEW, NOT CHILDREN — viewer.html says why (a
+    // container inside the pane it was opened from would be hidden by the next `cmShowTab`) — so
+    // the listener above never sees a click inside them. Their own delegated hooks are wired with
+    // it further down, in the SAME handler that closes the backdrop; see there for why they cannot
+    // be two handlers.
+    if ($('cmChatAttach')) $('cmChatAttach').onclick = function () { cmShareOpen('room', 'archive'); };
+    if ($('cmQuoteClear')) $('cmQuoteClear').onclick = function () { cmQuote = null; cmPaintQuote(); };
+    if ($('cmFriendReload')) $('cmFriendReload').onclick = function () { cmLoadFriends(); cmLoadQuota(); };
+    if ($('cmMsgsReload')) $('cmMsgsReload').onclick = cmLoadMsgs;
+    if ($('cmMsgsReadAll')) $('cmMsgsReadAll').onclick = function () { cmNoticeAct(null, 'all'); };
+    if ($('cmUserBack')) $('cmUserBack').onclick = function () { cmShowTab('chat'); };
+    if ($('cmUserReport')) $('cmUserReport').onclick = function () {
+      if (cmUser) cmReportOpen(cmUser.id, cmUser.user && cmUser.user.username);
+    };
+    if ($('cmShareSendGo')) $('cmShareSendGo').onclick = cmShareGo;
+    if ($('cmShareCancel')) $('cmShareCancel').onclick = cmShareClose;
+    if ($('cmShareVote')) $('cmShareVote').onchange = function () {
+      if (cmShare) { cmShare.vote = !!$('cmShareVote').checked; cmPaintShare(); }
+    };
+    if ($('cmShareTo')) $('cmShareTo').onchange = function () {
+      if (cmShare) { cmShare.to = $('cmShareTo').value || 'room'; cmPaintShare(); }
+    };
+    if ($('cmReportSend')) $('cmReportSend').onclick = cmReportGo;
+    if ($('cmReportCancel')) $('cmReportCancel').onclick = cmReportClose;
+    // The two masks close on a click on the BACKDROP but not inside the sheet — the same rule
+    // `showCtx` applies, expressed with `target === currentTarget`.
+    //
+    // ⚠⚠ ONE HANDLER, NOT TWO, AND THAT IS THE WHOLE POINT. Both masks are siblings of
+    // `#view-community`, so `root.onclick` above never sees a click inside them, and every
+    // delegated hook they own — `data-rc` (the four report categories), `data-sk` (the three share
+    // kinds) and `data-sp` (the pick list) — was a DEAD BUTTON: drawn, styled, clickable, and
+    // wired to nothing. They are all rebuilt on every open, so none of them has an `onclick` of its
+    // own to fall back on.
+    //
+    // ⚠ The first fix attempt added a SECOND assignment (`el.onclick = cmRootClick`) beside this
+    // one and changed nothing at all: `onclick` is a single slot, so the later assignment silently
+    // won and the dispatcher was never installed. A pair of assignments to one slot looks like
+    // composition and behaves like an overwrite — so the two jobs live in one function, and the
+    // backdrop test comes first because it is the narrower case.
+    ['cmShareMask', 'cmReportMask'].forEach(function (id) {
+      var el = $(id);
+      if (!el) return;
+      el.onclick = function (e) {
+        if (e.target === e.currentTarget) {
+          if (id === 'cmShareMask') cmShareClose(); else cmReportClose();
+          return;
+        }
+        cmRootClick(e);
+      };
+    });
+
     cmShowTab(CM_TAB);
+  }
+
+  /**
+   * One click listener for the whole community view — see the note at its installation site for why
+   * this is delegated rather than per-row.
+   *
+   * The order of the `closest()` tests is the order of SPECIFICITY, and it matters: an avatar sits
+   * INSIDE a message and inside a friend row, so an avatar check that ran after the row check would
+   * never fire on a click that landed on a face.
+   */
+  function cmRootClick(e) {
+    var t = e.target;
+    if (!t || !t.closest) return;
+
+    var av = t.closest('[data-cm-av]');
+    if (av) {
+      // ⚠⚠ `stopPropagation()` IS REQUIRED HERE, and it is the SAME trap `#navUser` documents
+      // (viewer.js, the account chip): the menu is a `showCtx` panel, and `showCtx`'s dismissal is a
+      // DOCUMENT-level click listener (`if (!ctx.contains(e.target)) closeCtx()`) that runs on the
+      // very click that opened it. The avatar is not inside `#ctx`, so without this the menu was
+      // populated and wiped before the frame was painted — an avatar that 「点了没反应」, which is
+      // exactly what 1.0.1 fixed for the chip and 1.0.3 reintroduced for every avatar in the room.
+      // `cmMessageMenu` never hit it because it opens from `contextmenu`, which that listener does
+      // not see.
+      e.stopPropagation();
+      cmAvatarMenu(av.getAttribute('data-cm-av'), e);
+      return;
+    }
+
+    var fa = t.closest('[data-fa]');
+    if (fa) { cmFriendActFromButton(fa.getAttribute('data-fid'), fa.getAttribute('data-fa')); return; }
+
+    var sa = t.closest('[data-sa]');
+    if (sa) {
+      var sid = sa.getAttribute('data-sid');
+      if (sa.getAttribute('data-sa') === 'fetch') cmShareFetch(sid); else cmShareConsume(sid);
+      return;
+    }
+
+    var ja = t.closest('[data-ja]');
+    if (ja) { cmJumpToMessage(ja.getAttribute('data-ja')); return; }
+
+    var va = t.closest('[data-vc]');
+    if (va) { cmVoteCast(va.getAttribute('data-vk'), va.getAttribute('data-vc')); return; }
+
+    var vx = t.closest('[data-vclose]');
+    if (vx) { cmVoteClose(vx.getAttribute('data-vk')); return; }
+
+    var rcx = t.closest('[data-rc]');
+    if (rcx) {
+      cmReportCat = rcx.getAttribute('data-rc');
+      cmReportMsg = null;
+      cmPaintReport();
+      return;
+    }
+
+    var sk = t.closest('[data-sk]');
+    if (sk) {
+      if (cmShare) { cmShare.kind = sk.getAttribute('data-sk'); cmShare.pick = null; cmPaintShare(); }
+      return;
+    }
+
+    var sp = t.closest('[data-sp]');
+    if (sp) { cmSharePickItem(sp.getAttribute('data-sp')); return; }
+
+    var ua = t.closest('[data-ua]');
+    if (ua) { cmUserAction(ua.getAttribute('data-ua')); return; }
+
+    var sh = t.closest('[data-cm-cloud]');
+    if (sh) {
+      // §1.1.3's card is the door to §1.4.4's poll and to §1.1.2's 「打开」. The card itself is not
+      // a link — there is no viewer route for a cloud share, and a fake one would be a dead click.
+      if (sh.getAttribute('data-cm-kind')) cmOpenCloud(sh.getAttribute('data-cm-cloud'),
+        sh.getAttribute('data-cm-kind'));
+      return;
+    }
+
+    var go = t.closest('[data-cm-goto]');
+    if (go) { cmJumpToMessage(go.getAttribute('data-cm-goto')); return; }
+  }
+
+  /** §1.6.1's 「右键头像」 and §1.7.1's 「右键消息」. */
+  function cmRootContext(e) {
+    var t = e.target;
+    if (!t || !t.closest) return;
+    // §1.8.1's @提及 ❌, 引用并导航 ❌ and 举报 ❌ all live on this ONE handler — right-clicking an
+    // avatar inserts a mention and right-clicking a message opens 引用/举报 — so the read-only
+    // answer is asked once, here. Returning BEFORE `preventDefault` is the point: the operator gets
+    // the browser's own menu, which is an honest 「这里没有东西」, rather than a popup whose every row
+    // does nothing when clicked — the shape 1.0.0's 「画了没接」 defect took.
+    if (cmReadOnly()) return;
+    var av = t.closest('[data-cm-av]');
+    if (av) {
+      e.preventDefault();
+      var id = av.getAttribute('data-cm-av');
+      if (id && id !== cmUid() && CM_TAB === 'chat') cmInsertMention(cmNameOf(id));
+      return;
+    }
+    var msg = t.closest('[data-cm-msg]');
+    if (msg) {
+      e.preventDefault();
+      var row = cmRows.filter(function (r) { return r.id === msg.getAttribute('data-cm-msg'); })[0];
+      if (row) cmMessageMenu(row, e);
+    }
+  }
+
+  /** §1.5.2's row buttons. The row is looked up by friendship id so the handler does not depend on
+   *  the list's index surviving a repaint between the render and the click. */
+  function cmFriendActFromButton(fid, action) {
+    var list = [];
+    if (cmFriends) {
+      list = (cmFriends.incoming || []).concat(cmFriends.outgoing || [], cmFriends.friends || []);
+    }
+    var f = list.filter(function (x) { return x.friendship && x.friendship.id === fid; })[0];
+    if (!f) return;
+    if (action === 'remark') { cmFriendRemark(f); return; }
+    if (action === 'send') { cmShareOpen(f.otherId, 'archive'); return; }
+    cmFriendAct(f.friendship, action);
+  }
+
+  function cmUserAction(action) {
+    if (!cmUser) return;
+    var rel = cmRelOf(cmUser.id);
+    if (action === 'add') { cmFriendRequest(cmUser.id); return; }
+    if (action === 'send') { cmShareOpen(cmUser.id, 'archive'); return; }
+    if (action === 'accept' && rel) { cmFriendAct(rel, 'accept'); return; }
+    if (action === 'unblock' && rel) { cmFriendAct(rel, 'unblock'); return; }
+  }
+
+  /** §1.6.3's 「点击跳转到对应消息」. The row may be outside the loaded window — §2.3.5 keeps seven
+   *  days and the room pages by 50 — so a miss says so rather than scrolling nowhere. */
+  function cmJumpToMessage(messageId) {
+    var hit = cmRows.filter(function (r) { return r.id === messageId; })[0];
+    cmShowTab('chat');
+    if (!hit) {
+      cmChatMsg = { code: 'jumpMissing', tone: 'err' };
+      cmPaintChatMsg();
+      return;
+    }
+    cmChatMsg = null;
+    cmPaintChatMsg();
+    var el = document.querySelector('[data-cm-msg="' + messageId + '"]');
+    if (!el) return;
+    // ⚠ The scroll must happen AFTER `cmShowTab` has un-hidden the pane: `scrollIntoView` on a
+    // `display:none` node is a silent no-op, which is the 「点了没反应」 shape 1.0.0 shipped once.
+    el.scrollIntoView({ block: 'center' });
+    el.classList.add('cm-flash');
+    window.setTimeout(function () { el.classList.remove('cm-flash'); }, 2000);
+  }
+
+  /** Clicking a share card. §1.1.2's 「打开」 — the same fetch as the 消息 list's, so the card and
+   *  the list cannot disagree about what a share contains. */
+  function cmOpenCloud(cloudId, kind) {
+    if (!cloudId) return;
+    cmMsgsMsg = { code: 'fetched', tone: 'ok' };
+    cmLoadVote(kind, cloudId);
   }
 
   /**
@@ -3951,13 +4384,1185 @@
     GMCommunity.chat.subscribe({ onRow: cmPush, onState: cmPaintState });
     cmLoadNews();
     cmLoadFeedback();
+    // 1.0.3 — three reads and the presence channel. `presence.watch` is safe to call on a channel
+    // that is already open (it tears the old one down first), which is what makes this the right
+    // place rather than a guard: entering 社区 twice must not leave two channels beating.
+    cmLoadFriends();
+    cmLoadQuota();
+    cmLoadMsgs();
+    GMCommunity.presence.watch(function () {
+      cmPresence = GMCommunity.presence.socket();
+      cmPaintFriends();
+      cmPaintMsgs();
+      cmPaintUser();
+      // The room's avatars too: a dot that only updates in the friend list is a dot that says two
+      // different things about the same person on two screens.
+      cmPaintChat();
+    });
   }
 
   /** Leaving closes the socket. The rows stay in `cmRows`, so coming back paints the conversation
    *  immediately and the fresh page is de-duplicated into it rather than replacing it. */
   function cmLeave() {
     if (GMCommunity && GMCommunity.chat) GMCommunity.chat.unsubscribe();
+    // §3.2's channel too. It is a SECOND socket (community.js argues why), so leaving without this
+    // is a presence channel that keeps beating for a page nobody is looking at — and 「在线」 for
+    // someone reading 回放 is a lie the operator cannot see.
+    if (GMCommunity && GMCommunity.presence) GMCommunity.presence.stop();
+    cmStopVoteTick();
+    closeCtx();
   }
+
+  // =====================================================================
+  // 1.0.3 §一/§二/§三 — 好友 / 消息 / 他人主页 / 投票 / 举报 / 状态
+  // =====================================================================
+  // The same split as 1.0.2: `community.js` returns FACTS and every word lives here, because
+  // `_tools/keys.cjs` inventories `T('…')` literals in THIS file and not in that one.
+
+  /** §1.2.5's 「配置」 budget is spent by a BACKUP BUNDLE rather than by one local item, so the
+   *  category list is a decision this view makes — and it is written once, here, rather than being
+   *  re-derived from the 导入导出 page's nine checkboxes (which include 背景图片, i.e. megabytes of
+   *  base64 that §1.2.3's 配置 share has no business carrying). */
+  var CM_CONFIG_CATS = ['settings', 'customQuestions', 'customEngines', 'learnedParams', 'viewerCols'];
+
+  /** How many rows a share-kind picker shows before it stops being a picker. */
+  var CM_PICK_MAX = 200;
+
+  // ---- small derivations ----------------------------------------------------------------------
+
+  /** `userId -> users row`, for `presence.forUser()`. Filled by whichever read brought the name:
+   *  the room's own `chat_messages` rows carry `user_id` and `username` but no `last_seen_at`, so
+   *  without this the dot column can only answer for people the friend list already fetched. */
+  function cmPeoplePut(rows) {
+    var list = rows || [];
+    for (var i = 0; i < list.length; i++) {
+      var r = list[i];
+      if (r && typeof r.id === 'string') cmPeople[r.id] = r;
+    }
+  }
+
+  function cmRowForUser(id) {
+    var p = cmPeople[id];
+    return p || null;
+  }
+
+  function cmNameOf(id) {
+    var p = cmPeople[id];
+    return (p && p.username) || '—';
+  }
+
+  /** §1.3.2's relationship, from the index `cmSetFriends()` builds. Reading the ROWS is not a
+   *  second copy of `friendRelation()` — that function answers the same question for one id, and
+   *  calling it per row would be N promises for a list that is already in hand. */
+  function cmRelOf(id) { return cmRelById[id] || null; }
+
+  function cmPresenceLabel(code) { return cmNamed('cm.presence.', code); }
+
+  /** §3.2.1's dot. The CLASS carries the state and the CSS owns the colour — the 1.0.1 lesson
+   *  (「写了 `var(--x)` ≠ 会变」) cuts the other way here: a colour assigned in JS would be the
+   *  second place the state→colour mapping lives. */
+  function cmDotHtml(userId, row) {
+    var st = GMCommunity.presence.forUser(userId, row || cmRowForUser(userId));
+    return '<span class="cm-dot ' + esc(st) + '" title="' + esc(cmPresenceLabel(st)) + '"></span>';
+  }
+
+  /** §3.1.5's flag. `countryFlagChinaUnified` is applied HERE — the storage keeps the real code and
+   *  港澳台 → 🇨🇳 is a display rule that lives in the shared block, not in this file. */
+  function cmFlagHtml(row) {
+    if (!row || row.hide_country || !row.country_code) return '';
+    var S = GMCommunity.shared() || {};
+    var f = S.countryFlagChinaUnified ? S.countryFlagChinaUnified(row.country_code) : '';
+    if (!f || f === (S.FLAG_FALLBACK || '')) return '';
+    return '<span class="cm-flag" title="' + esc(String(row.country_code)) + '">' + f + '</span>';
+  }
+
+  // ---- §1.1.1 the avatar menu, and §1.6.1 / §1.7.1 the message menu ----------------------------
+
+  /**
+   * A context menu, built the way `openCardMenu` builds its own.
+   *
+   * ⚠ INHERITED TRAP, NOT INVENTED HERE: every `.it` handler must `stopPropagation()`.
+   * `ctx.innerHTML` is replaced by the handler, so by the time the document-level 「clicked
+   * outside?」 listener runs, `ctx.contains(target)` is already false and the menu would be wiped
+   * the instant it appeared.
+   */
+  function cmMenu(html, x, y, actions) {
+    showCtx(html, x, y);
+    Array.prototype.forEach.call(ctx.querySelectorAll('.it'), function (it) {
+      it.onclick = function (e) {
+        e.stopPropagation();
+        var act = it.getAttribute('data-a');
+        closeCtx();
+        var fn = actions[act];
+        if (fn) fn();
+      };
+    });
+  }
+
+  function cmItem(act, label) {
+    return '<div class="it" data-a="' + esc(act) + '">' + esc(label) + '</div>';
+  }
+
+  function cmNoItem(label) {
+    return '<div class="it off">' + esc(label) + '</div>';
+  }
+
+  /** §1.1.1 「点头像可「访问主页 / 添加好友」」 — and, since the same avatar appears in the room,
+   *  the friend list and a profile, ONE builder serves all three. */
+  function cmAvatarMenu(userId, ev) {
+    var me = cmUid();
+    if (!userId || userId === me) return;   // your own avatar has no relationship to offer
+    var name = cmNameOf(userId);
+    var rel = cmRelOf(userId);
+    var html = '<div class="ti">' + esc(name) + '</div>';
+    var acts = {};
+
+    html += cmItem('view', T('community|访问主页'));
+    acts.view = function () { cmOpenUser(userId); };
+
+    // §1.8.3's fourth bullet — 「所有头像不可点击（或点击后只显示「访问主页」）」. We take the
+    // second option: the menu still opens, so 他人主页 stays reachable (§1.8.1's ✅ for 查看他人主页),
+    // and every row that WRITES is simply absent. 添加好友 / 发送 / 接受 / 拒绝 / 解除拉黑 / 举报 are
+    // all §1.8.1's ❌ column, so they are decided here rather than one at a time below.
+    if (cmReadOnly()) {
+      cmMenu(html, ev.clientX, ev.clientY, acts);
+      return;
+    }
+
+    if (!rel) {
+      html += cmItem('add', T('community|添加好友'));
+      acts.add = function () { cmFriendRequest(userId); };
+    } else if (rel.status === 'accepted') {
+      html += cmItem('send', T('community|发送回放 / 样本'));
+      acts.send = function () { cmShareOpen(userId, 'archive'); };
+    } else if (rel.status === 'pending' && rel.requester === me) {
+      html += cmNoItem(T('community|已发送请求'));
+    } else if (rel.status === 'pending') {
+      html += cmItem('accept', T('community|接受请求'));
+      html += cmItem('reject', T('community|拒绝'));
+      acts.accept = function () { cmFriendAct(rel, 'accept'); };
+      acts.reject = function () { cmFriendAct(rel, 'reject'); };
+    } else if (rel.status === 'blocked' && rel.blocked_by === me) {
+      html += cmItem('unblock', T('community|解除拉黑'));
+      acts.unblock = function () { cmFriendAct(rel, 'unblock'); };
+    } else {
+      html += cmNoItem(T('community|对方已拉黑你，无法发送'));
+    }
+
+    html += '<div class="sep"></div>' + cmItem('report', T('community|举报'));
+    acts.report = function () { cmReportOpen(userId, name); };
+
+    cmMenu(html, ev.clientX, ev.clientY, acts);
+  }
+
+  /** §1.7.1's 「引用并回复」 and §2.1's 「消息右键的「举报」」. */
+  function cmMessageMenu(row, ev) {
+    var html = '<div class="ti">' + esc(String(row.username || '—')) + '</div>' +
+      cmItem('quote', T('community|引用并回复'));
+    var acts = { quote: function () { cmStartQuote(row); } };
+    if (row.user_id && row.user_id !== cmUid()) {
+      html += cmItem('report', T('community|举报'));
+      acts.report = function () { cmReportOpen(row.user_id, String(row.username || '')); };
+    }
+    cmMenu(html, ev.clientX, ev.clientY, acts);
+  }
+
+  // ---- §1.6.1/§1.6.2 @提及 ---------------------------------------------------------------------
+
+  /** The names that can be mentioned: §1.6.2's 「好友 + 当前聊天室成员」, minus yourself — §1.6.3
+   *  notifies every id in `mentioned_users`, so mentioning yourself is a notification to yourself. */
+  function cmMentionNames() {
+    var out = [];
+    var seen = {};
+    var me = cmUid();
+    function add(name, id) {
+      var n = String(name == null ? '' : name).trim();
+      if (!n || seen[n.toLowerCase()]) return;
+      if (id && id === me) return;
+      seen[n.toLowerCase()] = true;
+      out.push({ name: n, id: id || '' });
+    }
+    ((cmFriends && cmFriends.friends) || []).forEach(function (f) {
+      add(cmFriendLabel(f), f.otherId);
+    });
+    cmRows.forEach(function (r) { add(r.username, r.user_id); });
+    return out;
+  }
+
+  function cmInsertMention(name) {
+    // §1.8.1 — @提及 is a ❌ for 未激活. `cmRootContext` and the autocomplete's own click are both
+    // already unreachable (the first returns early, the second needs a live input), so this is the
+    // third door closed rather than the first: the insertion is a WRITE into a box that cannot send.
+    if (cmReadOnly()) return;
+    var i = $('cmChatInput');
+    if (!i) return;
+    var caret = (i.selectionStart == null) ? i.value.length : i.selectionStart;
+    var before = i.value.slice(0, caret);
+    var after = i.value.slice(caret);
+    var m = /(^|\s)@([^\s@]*)$/.exec(before);
+    // ⚠ THE TOKEN'S SHAPE COMES FROM THE SHARED BLOCK, not from a literal here. It used to be
+    // `'@' + name + ' '` written inline, while `_shared/community.ts` exported a `mentionToken()`
+    // that nobody called — two spellings of one format, with the server's `MENTION_RE` as a third
+    // reader. A name containing a space or a leading `@` would have been inserted here in a form
+    // `parseMentions` then refused to read back.
+    var token = GMCommunity.shared().mentionToken(name);
+    // Two entry points, one insertion: §1.6.1's RIGHT-CLICK on an avatar has no token under the
+    // caret, and §1.6.2's list always does. Replacing the token when there is one is what makes
+    // 「输入 @z → 选张三」 produce `@张三 ` rather than `@z张三 `.
+    before = m ? (before.slice(0, m.index) + (m[1] || '') + token) : (before + token);
+    i.value = before + after;
+    var pos = before.length;
+    cmMention = null;
+    cmPaintMentions();
+    cmPaintLen();
+    i.focus();
+    if (i.setSelectionRange) i.setSelectionRange(pos, pos);
+  }
+
+  /** §1.6.2's autocomplete list, from the caret's own token. Re-derived on every keystroke rather
+   *  than cached: the candidate set changes with every friend request. */
+  function cmSyncMention() {
+    var i = $('cmChatInput');
+    if (!i) return;
+    var caret = (i.selectionStart == null) ? i.value.length : i.selectionStart;
+    var m = /(^|\s)@([^\s@]*)$/.exec(i.value.slice(0, caret));
+    if (!m) { cmMention = null; cmPaintMentions(); return; }
+    var q = m[2].toLowerCase();
+    var items = cmMentionNames().filter(function (p) {
+      return !q || p.name.toLowerCase().indexOf(q) === 0;
+    });
+    cmMention = { items: items.slice(0, 8), index: 0 };
+    cmPaintMentions();
+  }
+
+  function cmPaintMentions() {
+    var box = $('cmMentionList');
+    if (!box) return;
+    var m = cmMention;
+    if (!m || !m.items.length) { box.classList.add('hidden'); box.innerHTML = ''; return; }
+    box.innerHTML = m.items.map(function (p, k) {
+      return '<div class="cm-at' + (k === m.index ? ' on' : '') + '" data-at="' + esc(p.name) + '">' +
+        esc(p.name) + '</div>';
+    }).join('');
+    box.classList.remove('hidden');
+  }
+
+  // ---- §1.7.1 引用 ------------------------------------------------------------------------------
+
+  function cmStartQuote(row) {
+    cmQuote = { id: row.id, username: String(row.username || ''), content: String(row.content || '') };
+    // §1.7.2 「自动 @ 发布者（自己跳过）」. The skip is the point: quoting your own message and
+    // mentioning yourself would put a notification in your own 消息 list about your own reply.
+    if (row.user_id && row.user_id !== cmUid() && row.username) cmInsertMention(String(row.username));
+    cmPaintQuote();
+    if ($('cmChatInput')) $('cmChatInput').focus();
+  }
+
+  function cmPaintQuote() {
+    var box = $('cmQuoteStrip'), txt = $('cmQuoteText');
+    if (!box) return;
+    if (!cmQuote) { box.classList.add('hidden'); if (txt) txt.textContent = ''; return; }
+    if (txt) {
+      txt.textContent = T('community|引用 {name}：{text}',
+        { name: cmQuote.username, text: cmPreview(cmQuote.content, CM_PREVIEW) });
+    }
+    box.classList.remove('hidden');
+  }
+
+  /** A one-line preview. `GMCommunityShared.previewLine` collapses the whitespace and marks the
+   *  cut — the same helper §2.4.4's cards use, so a quoted line and a card blurb cut alike. */
+  function cmPreview(text, n) {
+    var S = GMCommunity.shared() || {};
+    return S.previewLine ? S.previewLine(text, n) : String(text || '').slice(0, n);
+  }
+
+  // ---- §1.5.2 好友 ------------------------------------------------------------------------------
+
+  /** `otherId -> friendship row`, rebuilt whenever the list lands. Actions read it to know WHICH
+   *  row they are acting on; the server still re-checks what the row permits. */
+  var cmRelById = {};
+
+  function cmFriendLabel(f) {
+    return String((f && f.remark) || (f && f.user && f.user.username) || '—');
+  }
+
+  function cmSetFriends(r) {
+    cmFriends = r;
+    cmRelById = {};
+    if (r && r.rows) {
+      for (var i = 0; i < r.rows.length; i++) {
+        var row = r.rows[i];
+        var other = GMCommunity.friends.otherId(row, cmUid());
+        if (other) cmRelById[other] = row;
+      }
+    }
+    cmPeoplePut(((r && r.friends) || []).map(function (f) { return f.user; }).filter(Boolean));
+    cmPeoplePut(((r && r.incoming) || []).map(function (f) { return f.user; }).filter(Boolean));
+    cmPeoplePut(((r && r.outgoing) || []).map(function (f) { return f.user; }).filter(Boolean));
+  }
+
+  function cmLoadFriends() {
+    if (!cmFriends) { cmFriendMsg = { code: 'loading' }; cmPaintFriendMsg(); }
+    return GMCommunity.friends.list().then(function (r) {
+      if (!r || !r.ok) {
+        cmFriendMsg = { code: 'loadFailed', err: (r && r.error) || 'INTERNAL', tone: 'err' };
+      } else {
+        if (cmFriendMsg && (cmFriendMsg.code === 'loadFailed' || cmFriendMsg.code === 'loading')) {
+          cmFriendMsg = null;
+        }
+        cmSetFriends(r);
+      }
+      cmPaintFriendMsg();
+      cmPaintFriends();
+      cmPaintBadges();
+      cmPaintShare();
+    });
+  }
+
+  function cmLoadQuota() {
+    return GMCommunity.friends.quota().then(function (r) {
+      cmQuota = (r && r.ok) ? r : null;
+      cmPaintFriendQuota();
+      cmPaintShare();
+    });
+  }
+
+  function cmFriendRequest(userId) {
+    if (cmFriendBusy) return;
+    cmFriendBusy = true;
+    cmFriendMsg = null;
+    cmPaintFriendMsg();
+    GMCommunity.friends.request(userId).then(function (r) {
+      cmFriendBusy = false;
+      cmFriendMsg = (r && r.ok)
+        ? { code: 'requested', tone: 'ok' }
+        : { code: 'actFailed', err: (r && r.error) || 'INTERNAL', tone: 'err' };
+      cmPaintFriendMsg();
+      cmLoadFriends();
+    });
+  }
+
+  function cmFriendAct(row, action) {
+    if (cmFriendBusy || !row) return;
+    cmFriendBusy = true;
+    cmFriendMsg = null;
+    cmPaintFriendMsg();
+    GMCommunity.friends.act(row.id, action).then(function (r) {
+      cmFriendBusy = false;
+      cmFriendMsg = (r && r.ok)
+        ? { code: 'actOk', tone: 'ok' }
+        : { code: 'actFailed', err: (r && r.error) || 'INTERNAL', tone: 'err' };
+      cmPaintFriendMsg();
+      cmLoadFriends();
+      cmLoadShare();
+    });
+  }
+
+  /** §1.5.2's 「备注：修改备注名」. Takes the LIST ENTRY (not the bare row), because the current
+   *  remark is `friendsList()`'s own per-entry `remark` — the viewer's side of the `remark_a` /
+   *  `remark_b` pair, already resolved by `friendRemarkFor` in community.js. Reading the column here
+   *  would be the second place that 「which of the two columns is mine」 is decided. */
+  function cmFriendRemark(f) {
+    if (!f || !f.friendship) return;
+    var next = window.prompt(T('community|备注名'), String(f.remark || ''));
+    if (next === null) return;
+    cmFriendBusy = true;
+    GMCommunity.friends.act(f.friendship.id, 'remark', String(next).slice(0, 40)).then(function (r) {
+      cmFriendBusy = false;
+      cmFriendMsg = (r && r.ok)
+        ? { code: 'actOk', tone: 'ok' }
+        : { code: 'actFailed', err: (r && r.error) || 'INTERNAL', tone: 'err' };
+      cmPaintFriendMsg();
+      cmLoadFriends();
+    });
+  }
+
+  function cmPaintFriendMsg() { cmSetMsg($('cmFriendState'), cmFriendMsg); }
+
+  function cmPaintFriendQuota() {
+    var el = $('cmFriendQuota');
+    if (!el) return;
+    if (!cmQuota) { el.textContent = ''; return; }
+    el.textContent = T('community|今日还可发送：回放/样本 {a}/{amax} · 配置 {c}/{cmax}',
+      { a: Math.max(0, cmQuota.maxArchive - cmQuota.archive), amax: cmQuota.maxArchive,
+        c: Math.max(0, cmQuota.maxConfig - cmQuota.config), cmax: cmQuota.maxConfig });
+  }
+
+  function cmPaintFriends() {
+    var box = $('cmFriendList');
+    if (!box) return;
+    if (!cmFriends) {
+      box.innerHTML = '<div class="cm-empty">' + esc(T('community|加载中…')) + '</div>';
+      return;
+    }
+    var parts = [];
+    parts.push(cmFriendSection(T('community|好友请求'), cmFriends.incoming, 'incoming'));
+    parts.push(cmFriendSection(T('community|我已发出'), cmFriends.outgoing, 'outgoing'));
+    parts.push(cmFriendSection(T('community|好友'), cmFriends.friends, 'friends'));
+    box.innerHTML = parts.join('');
+  }
+
+  function cmFriendSection(title, rows, kind) {
+    var list = rows || [];
+    var head = '<div class="cm-sec">' + esc(title) + ' · ' + list.length + '</div>';
+    if (!list.length) {
+      return head + '<div class="cm-empty">' + esc(T('community|暂无')) + '</div>';
+    }
+    return head + list.map(function (f) { return cmFriendRow(f, kind); }).join('');
+  }
+
+  function cmFriendRow(f, kind) {
+    var u = f.user || {};
+    var name = cmFriendLabel(f);
+    var acts = [];
+    if (kind === 'incoming') {
+      acts.push(['accept', T('community|接受')]);
+      acts.push(['reject', T('community|拒绝')]);
+    }
+    if (kind === 'friends') {
+      acts.push(['send', T('community|发送')]);
+      acts.push(['remark', T('community|备注')]);
+    }
+    if (kind === 'friends' || kind === 'outgoing') {
+      acts.push(['remove', T('community|删除')]);
+    }
+    acts.push(['block', T('community|拉黑')]);
+
+    var sub = [];
+    if (f.remark && u.username) sub.push(u.username);
+    if (u.country_code && !u.hide_country) sub.push(cmPresenceLabel(
+      GMCommunity.presence.forUser(f.otherId, u)));
+
+    return '<div class="cm-item cm-frow">' +
+      '<span class="cm-fav" data-cm-av="' + esc(f.otherId) + '">' +
+        cmDotHtml(f.otherId, u) + cmAvatarHtml(u.avatar_url, name) + '</span>' +
+      '<span class="cm-fname">' + esc(name) + cmFlagHtml(u) +
+        (sub.length ? '<span class="cm-fsub">' + esc(sub.join(' · ')) + '</span>' : '') + '</span>' +
+      '<span class="cm-acts">' + acts.map(function (a) {
+        return '<button class="sec" data-fa="' + esc(a[0]) + '" data-fid="' + esc(f.friendship.id) +
+          '">' + esc(a[1]) + '</button>';
+      }).join('') + '</span></div>';
+  }
+
+  // ---- §1.5.3 消息 ------------------------------------------------------------------------------
+
+  function cmLoadMsgs() {
+    cmMsgsLoading = true;
+    cmMsgsMsg = { code: 'loading' };
+    cmPaintMsgsMsg();
+    return Promise.all([
+      cmFriends ? Promise.resolve({ ok: true }) : GMCommunity.friends.list(),
+      GMCommunity.shares.inbox(),
+      GMCommunity.shares.sent(),
+      GMCommunity.notices.list(),
+    ]).then(function (all) {
+      cmMsgsLoading = false;
+      var fr = all[0], ib = all[1], sn = all[2], nt = all[3];
+      if (!cmFriends && fr && fr.ok) cmSetFriends(fr);
+      // ⚠ A FAILED SUB-READ DOES NOT FAIL THE SCREEN. §1.5.3 is four lists from three tables; one
+      // of them being unreachable is one empty section with a reason, not a blank page over the
+      // three that answered — the same rule `friendsList` applies to a failed profile read.
+      var bad = [ib, sn, nt].filter(function (x) { return !x || !x.ok; })[0];
+      cmMsgsMsg = bad ? { code: 'loadFailed', err: (bad && bad.error) || 'INTERNAL', tone: 'err' } : null;
+      cmInbox = (ib && ib.ok && ib.rows) || [];
+      cmSent = (sn && sn.ok && sn.rows) || [];
+      cmNotices = (nt && nt.ok && nt.rows) || [];
+      cmPaintMsgsMsg();
+      cmPaintMsgs();
+      cmPaintBadges();
+      return null;
+    });
+  }
+
+  function cmPaintMsgsMsg() { cmSetMsg($('cmMsgsState'), cmMsgsMsg); }
+
+  function cmPaintMsgs() {
+    // 1) 好友请求 — derived from `friendships`, not from `notifications`. 009_reports.sql states the
+    // rule: a section whose source row DIES when the event is dealt with is derived.
+    var reqs = (cmFriends && cmFriends.incoming) || [];
+    cmFillList('cmMsgsReq',
+      reqs.map(function (f) { return cmFriendRow(f, 'incoming'); }),
+      T('community|暂无好友请求'));
+
+    // 2) 分享 — `friend_shares` addressed to me, still live (§1.2.4's 15 minutes).
+    var live = (cmInbox || []).filter(function (s) { return GMCommunity.shares.isLive(s); });
+    cmFillList('cmMsgsShare', live.map(function (s) { return cmShareRow(s, 'in'); }),
+      T('community|暂无待接收的分享'));
+    // 「我还发出去了什么」 sits under the same heading: §1.2.4's 「A 需重发」 is a decision the
+    // SENDER makes, and a sent list nobody can see is a share nobody knows to resend.
+    var mine = (cmSent || []).filter(function (s) { return GMCommunity.shares.isLive(s); });
+    if (mine.length) {
+      var box = $('cmMsgsShare');
+      if (box) box.innerHTML += '<div class="cm-sec">' + esc(T('community|我发出的')) + '</div>' +
+        mine.slice(0, 20).map(function (s) { return cmShareRow(s, 'out'); }).join('');
+    }
+
+    // 3) @提及 — the `mention` rows of `notifications`, split out by KIND rather than by table.
+    var ats = (cmNotices || []).filter(function (n) { return n.kind === 'mention'; });
+    cmFillList('cmMsgsAt', ats.map(function (n) { return cmNoticeRow(n, true); }),
+      T('community|暂无提及'));
+
+    // 4) 系统通知 — everything else in that table (a 警告 is not derivable — see 009).
+    var sys = (cmNotices || []).filter(function (n) { return n.kind !== 'mention'; });
+    cmFillList('cmMsgsSys', sys.map(function (n) { return cmNoticeRow(n, false); }),
+      T('community|暂无通知'));
+  }
+
+  function cmFillList(id, htmlRows, emptyText) {
+    var box = $(id);
+    if (!box) return;
+    box.innerHTML = htmlRows.length
+      ? htmlRows.join('')
+      : '<div class="cm-empty">' + esc(emptyText) + '</div>';
+  }
+
+  function cmShareRow(s, dir) {
+    var other = dir === 'in' ? s.from_user : s.to_user;
+    var S = GMCommunity.shared() || {};
+    var left = '';
+    if (s.expires_at) {
+      var ms = Date.parse(s.expires_at) - Date.now();
+      left = ms > 0 ? cmDuration(ms) : '';
+    }
+    var acts = dir === 'in'
+      ? [['fetch', T('community|打开')], ['consume', T('community|导入到本地')]]
+      : [];
+    return '<div class="cm-item cm-srow">' +
+      '<span class="cm-fname">' + esc(cmNameOf(other)) + '</span>' +
+      '<span class="cm-meta">' + esc(cmNamed('cm.share.', s.kind)) +
+        ' · ' + esc(String(s.created_at || '').slice(0, 16).replace('T', ' ')) +
+        (left ? ' · ' + esc(left) : '') + '</span>' +
+      (acts.length ? '<span class="cm-acts">' + acts.map(function (a) {
+        return '<button class="sec" data-sa="' + esc(a[0]) + '" data-sid="' + esc(s.id) + '">' +
+          esc(a[1]) + '</button>';
+      }).join('') + '</span>' : '') + '</div>';
+  }
+
+  function cmNoticeRow(n, isMention) {
+    var d = n.data || {};
+    var who = d.username ? String(d.username) : '';
+    var body = n.body ? String(n.body) : '';
+    if (isMention && !body) body = cmPreview(String(d.content || ''), CM_PREVIEW);
+    return '<div class="cm-item' + (n.read ? '' : ' unread') + '">' +
+      '<span class="cm-fname">' + esc(n.title || (isMention ? T('community|@提及') : T('community|系统通知'))) +
+        (who ? '<span class="cm-fsub">' + esc(who) + '</span>' : '') + '</span>' +
+      '<span class="cm-meta">' + esc(String(n.created_at || '').slice(0, 16).replace('T', ' ')) + '</span>' +
+      (body ? '<div class="cm-body-txt">' + esc(body) + '</div>' : '') +
+      // §1.6.3's 「点击跳转到对应消息」 — the mention row carries `message_id`, so the jump is a
+      // scroll to a row the room already has.
+      (isMention && d.message_id
+        ? '<span class="cm-acts"><button class="sec" data-ja="' + esc(d.message_id) +
+          '">' + esc(T('community|跳到原消息')) + '</button></span>'
+        : '') + '</div>';
+  }
+
+  function cmNoticeAct(id, action) {
+    var P = (action === 'read') ? GMCommunity.notices.markRead : GMCommunity.notices.markAllRead;
+    return P(id).then(function (r) {
+      if (!r || !r.ok) {
+        cmMsgsMsg = { code: 'loadFailed', err: (r && r.error) || 'INTERNAL', tone: 'err' };
+        cmPaintMsgsMsg();
+        return;
+      }
+      cmLoadMsgs();
+    });
+  }
+
+  function cmDuration(ms) {
+    var s = Math.max(0, Math.floor(ms / 1000));
+    var h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
+    return (h < 10 ? '0' : '') + h + ':' + (m < 10 ? '0' : '') + m + ':' + (sec < 10 ? '0' : '') + sec;
+  }
+
+  // ---- §1.3 他人主页 ----------------------------------------------------------------------------
+
+  function cmOpenUser(userId) {
+    if (!userId) return;
+    cmUser = { id: userId, user: null, sampleCount: 0, presence: 'offline', loading: true };
+    cmShowTab('user');
+    cmPaintUser();
+    GMCommunity.members.profile(userId).then(function (r) {
+      if (!r || !r.ok) {
+        cmUser.loading = false;
+        cmUser.error = (r && r.error) || 'INTERNAL';
+      } else {
+        cmUser.loading = false;
+        cmUser.user = r.user || null;
+        cmUser.sampleCount = r.sampleCount || 0;
+        cmUser.presence = r.presence || 'offline';
+        if (cmUser.user) cmPeoplePut([cmUser.user]);
+      }
+      cmPaintUser();
+    });
+  }
+
+  function cmPaintUser() {
+    var box = $('cmUserCard');
+    var head = $('cmUserName');
+    var state = $('cmUserState');
+    if (!box) return;
+    if (!cmUser) { box.innerHTML = ''; if (head) head.textContent = '—'; return; }
+    if (cmUser.loading) {
+      if (head) head.textContent = '—';
+      if (state) state.textContent = T('community|加载中…');
+      box.innerHTML = '';
+      return;
+    }
+    if (cmUser.error || !cmUser.user) {
+      if (head) head.textContent = '—';
+      if (state) state.textContent = cloudErrText(cmUser.error || 'NOT_FOUND');
+      box.innerHTML = '';
+      return;
+    }
+    var u = cmUser.user;
+    if (state) state.textContent = '';
+    if (head) head.textContent = u.username || '—';
+    var rel = cmRelOf(cmUser.id);
+    var acts = [];
+    if (!rel) acts.push(['add', T('community|添加好友')]);
+    else if (rel.status === 'accepted') acts.push(['send', T('community|发送回放 / 样本')]);
+    else if (rel.status === 'pending' && rel.requester !== cmUid()) acts.push(['accept', T('community|接受请求')]);
+    else if (rel.status === 'pending') acts.push(['none', T('community|已发送请求')]);
+    else if (rel.status === 'blocked' && rel.blocked_by === cmUid()) acts.push(['unblock', T('community|解除拉黑')]);
+
+    var facts = [
+      T('community|加入时间：{t}', { t: String(u.created_at || '').slice(0, 10) }),
+      // §1.3.1's 「样本库：N 个」
+      T('community|样本库：{n} 个', { n: cmUser.sampleCount }),
+      // §1.3.1's 「国籍」 — with §3.1.6's 隐藏国籍 respected on BOTH sides (the server blanks the
+      // code when the owner hides it, and a reader who hides their own sees nothing here either).
+      T('community|国籍：{f}', { f: (u.hide_country ? T('community|已隐藏') : (cmFlagHtml({ country_code: u.country_code, hide_country: false }) || '—')) }),
+      T('community|状态：{s}', { s: cmPresenceLabel(cmUser.presence) }),
+    ];
+
+    box.innerHTML =
+      '<span class="cm-pav">' + cmAvatarHtml(u.avatar_url, u.username || '—') + '</span>' +
+      '<span class="cm-pmain">' +
+        '<div class="cm-pname">' + esc(u.username || '—') + '</div>' +
+        '<div class="cm-pfacts">' + facts.map(function (f) {
+          return '<div>' + f + '</div>';
+        }).join('') + '</div>' +
+        (u.bio ? '<div class="cm-body-txt" style="margin-top:8px">' + esc(u.bio) + '</div>' : '') +
+      '</span>' +
+      '<span class="cm-pside">' + acts.map(function (a) {
+        if (a[0] === 'none') return '<span class="hint">' + esc(a[1]) + '</span>';
+        return '<button class="sec" data-ua="' + esc(a[0]) + '">' + esc(a[1]) + '</button>';
+      }).join('') + '</span>';
+
+    var hint = $('cmUserReportHint');
+    if (hint) hint.textContent = T('community|举报会送到管理员信箱。');
+  }
+
+  // ---- §1.4 投票 --------------------------------------------------------------------------------
+
+  function cmStopVoteTick() {
+    if (cmVoteTick) { clearInterval(cmVoteTick); cmVoteTick = null; }
+  }
+
+  /** The poll under one shared card, filled from `votes.forTarget()`.
+   *
+   *  ⚠ §1.4.4's countdown is a TICK, not a server push, and it stops with the pane: an interval
+   *  that outlives its element writes into a detached node forever, which is the leak 0.5.x paid
+   *  for on the detect page. */
+  var cmVotes = {};   // `${kind}:${cloudId}` -> {vote, tally, mine, open}
+
+  function cmVoteKey(kind, id) { return String(kind) + ':' + String(id); }
+
+  function cmLoadVote(kind, cloudId) {
+    var key = cmVoteKey(kind, cloudId);
+    return GMCommunity.votes.forTarget(kind, cloudId).then(function (r) {
+      cmVotes[key] = (r && r.ok) ? r : { vote: null, tally: null, mine: null, open: false };
+      cmPaintVotes();
+    });
+  }
+
+  function cmVoteHtml(kind, cloudId) {
+    var v = cmVotes[cmVoteKey(kind, cloudId)];
+    if (!v || !v.vote) return '';
+    var S = GMCommunity.shared() || {};
+    var tally = v.tally || {};
+    var choices = S.VOTE_CHOICES || [];
+    var total = 0;
+    choices.forEach(function (c) { total += Number(tally[c] || 0); });
+    var rows = choices.map(function (c) {
+      var n = Number(tally[c] || 0);
+      var pct = total ? Math.round((n / total) * 100) : 0;
+      return '<div class="cm-vrow' + (v.mine === c ? ' mine' : '') + '">' +
+        '<button class="sec cm-vbtn" data-vc="' + esc(c) + '" data-vk="' + esc(cmVoteKey(kind, cloudId)) +
+          '"' + (v.open && !v.mine && v.vote && !cmReadOnly() ? '' : ' disabled') + '>' +
+          esc(cmNamed('cm.vote.', c)) + '</button>' +
+        '<span class="cm-vn">' + n + '</span>' +
+        '<span class="cm-vbar"><i style="width:' + pct + '%"></i></span></div>';
+    }).join('');
+    var left = '';
+    if (v.open && v.vote.closes_at) {
+      left = cmDuration(Date.parse(v.vote.closes_at) - Date.now());
+    }
+    return '<div class="cm-vote" data-votek="' + esc(cmVoteKey(kind, cloudId)) + '">' + rows +
+      '<div class="cm-vfoot">' +
+        (left ? '<span class="hint">' + esc(T('community|距离投票结束：{t}', { t: left })) + '</span>'
+              : '<span class="hint">' + esc(T('community|投票已结束')) + '</span>') +
+        (v.open && v.vote.creator_id === cmUid() && !cmReadOnly()
+          ? '<button class="sec" data-vk="' + esc(cmVoteKey(kind, cloudId)) +
+            '" data-vclose="1">' + esc(T('community|关闭投票')) + '</button>' : '') +
+      '</div></div>';
+  }
+
+  function cmPaintVotes() {
+    Array.prototype.forEach.call(document.querySelectorAll('[data-votehost]'), function (host) {
+      var k = host.getAttribute('data-votehost');
+      var at = k.indexOf(':');
+      var html = cmVoteHtml(k.slice(0, at), k.slice(at + 1));
+      var slot = host.querySelector('.cm-vslot');
+      if (slot) slot.innerHTML = html;
+    });
+    // One tick, started by the first open poll and stopped with the pane.
+    var anyOpen = false;
+    Object.keys(cmVotes).forEach(function (k) { if (cmVotes[k] && cmVotes[k].open) anyOpen = true; });
+    if (anyOpen && !cmVoteTick) cmVoteTick = setInterval(cmPaintVotes, 1000);
+    if (!anyOpen) cmStopVoteTick();
+  }
+
+  function cmVoteCast(key, choice) {
+    // §1.8.1's 投票 ❌. The buttons are already `disabled`, so this is the second lock rather than
+    // the first — a stray dispatch (a replayed event, a future caller) must not reach the Function,
+    // because the Function's refusal would be answered with a `cloudErrText` line in the ROOM's
+    // status strip, which is a sentence about the wrong screen.
+    if (cmReadOnly()) return;
+    var at = key.indexOf(':');
+    var v = cmVotes[key];
+    if (!v || !v.vote) return;
+    GMCommunity.votes.cast(v.vote.id, choice).then(function (r) {
+      if (!r || !r.ok) {
+        cmChatMsg = { code: 'sendFailed', err: (r && r.error) || 'INTERNAL', tone: 'err' };
+        cmPaintChatMsg();
+        return;
+      }
+      // ⚠ The tally comes back from the server and is NOT incremented here — `vote-cast` computes it
+      // from `vote_tally` after the insert, and adding to it would be the second arithmetic.
+      v.tally = r.tally || v.tally;
+      v.mine = choice;
+      cmPaintVotes();
+    });
+  }
+
+  function cmVoteClose(key) {
+    var v = cmVotes[key];
+    if (!v || !v.vote) return;
+    GMCommunity.votes.close(v.vote.id).then(function (r) {
+      if (r && r.ok) {
+        v.vote = r.vote || v.vote;
+        v.tally = r.tally || v.tally;
+        v.open = false;
+      }
+      cmPaintVotes();
+    });
+  }
+
+  // ---- §1.1.2/§1.2.3 发送选择器 ------------------------------------------------------------------
+
+  function cmShareOpen(to, kind) {
+    cmShare = { to: to || 'room', kind: kind || 'archive', vote: false, pick: null };
+    cmShareMsg = null;
+    if (!cmQuota) cmLoadQuota();
+    cmPaintShare();
+    if ($('cmShareMask')) $('cmShareMask').classList.remove('hidden');
+  }
+
+  function cmShareClose() {
+    if ($('cmShareMask')) $('cmShareMask').classList.add('hidden');
+    cmShare = null;
+    cmShareMsg = null;
+  }
+
+  function cmShareFilled(kind) {
+    return !!cmQuota && (kind === 'config' ? cmQuota.config < cmQuota.maxConfig
+                                           : cmQuota.archive < cmQuota.maxArchive);
+  }
+
+  function cmPaintShare() {
+    if (!cmShare) return;
+    var S = GMCommunity.shared() || {};
+    var kinds = S.SHARE_KINDS || ['archive', 'sample', 'config'];
+
+    var who = $('cmShareWho');
+    if (who) {
+      who.textContent = cmShare.to === 'room'
+        ? T('community|发送到聊天室')
+        : T('community|发送给 {name}', { name: cmNameOf(cmShare.to) });
+    }
+
+    var kb = $('cmShareKinds');
+    if (kb) {
+      kb.innerHTML = kinds.map(function (k) {
+        return '<button class="tw-cat' + (k === cmShare.kind ? ' on' : '') + '" data-sk="' + esc(k) +
+          '">' + esc(cmNamed('cm.share.', k)) + '</button>';
+      }).join('');
+    }
+
+    cmPaintSharePick();
+
+    var sel = $('cmShareTo');
+    if (sel) {
+      // 「聊天室」 first because §1.1.2 is where this picker is opened from, and because the room is
+      // the only destination a POLL can attach to — see the vote row below.
+      var opts = ['<option value="room">' + esc(T('community|聊天室')) + '</option>'];
+      ((cmFriends && cmFriends.friends) || []).forEach(function (f) {
+        opts.push('<option value="' + esc(f.otherId) + '">' + esc(cmFriendLabel(f)) + '</option>');
+      });
+      sel.innerHTML = opts.join('');
+      sel.value = cmShare.to;
+      if (!sel.value) sel.value = 'room';
+    }
+
+    // §1.4.1 — a poll is only meaningful on a ROOM share. `votes.target_cloud_id` references
+    // `cloud_shares` (008), and a `cloud_shares` row is what `chat-send` creates for an attachment;
+    // a `friend_shares` row is private and has no cloud copy at all. So the box is disabled rather
+    // than hidden, and the hint says which of the two facts is the reason.
+    var vm = $('cmShareVote');
+    var vh = $('cmShareVoteHint');
+    var votable = cmShare.to === 'room' && cmShare.kind !== 'config';
+    if (vm) {
+      vm.disabled = !votable;
+      if (!votable) cmShare.vote = false;
+      vm.checked = !!cmShare.vote;
+    }
+    if (vh) {
+      vh.textContent = votable
+        ? T('community|投票持续 24 小时，仅对聊天室分享生效。')
+        : T('community|投票只对聊天室分享生效（好友分享是私密的）。');
+    }
+
+    var hint = $('cmShareHint');
+    if (hint) {
+      if (!cmQuota) hint.textContent = '';
+      else if (cmShare.kind === 'config') {
+        hint.textContent = T('community|今日还可发送配置 {n} 个。',
+          { n: Math.max(0, cmQuota.maxConfig - cmQuota.config) });
+      } else {
+        hint.textContent = T('community|今日还可发送回放/样本 {n} 个。',
+          { n: Math.max(0, cmQuota.maxArchive - cmQuota.archive) });
+      }
+    }
+    cmSetMsg($('cmShareState'), cmShareMsg);
+  }
+
+  /** §1.2.3's 「选择内容」. For 配置 there is nothing to pick — the bundle is built from
+   *  `CM_CONFIG_CATS` — so the slot says so instead of drawing an empty list. */
+  function cmPaintSharePick() {
+    var box = $('cmSharePick');
+    if (!box || !cmShare) return;
+    if (cmShare.kind === 'config') {
+      box.innerHTML = '<div class="cm-empty">' +
+        esc(T('community|配置包包含设置、自定义问题、自定义引擎、学习参数与列折叠偏好（不含 API Key 与背景图片）。')) +
+        '</div>';
+      return;
+    }
+    var list = cmShare.kind === 'sample' ? samples : archives;
+    var rows = (list || []).slice(0, CM_PICK_MAX);
+    if (!rows.length) {
+      box.innerHTML = '<div class="cm-empty">' + esc(T('community|本地没有可发送的内容。')) + '</div>';
+      return;
+    }
+    box.innerHTML = rows.map(function (r) {
+      var mine = cmShare.pick === r.id;
+      return '<div class="cm-pick' + (mine ? ' on' : '') + '" data-sp="' + esc(r.id) + '">' +
+        esc(String(r.name || '—')) +
+        '<span class="cm-meta">' + esc(String(r.createdAt || '').slice(0, 10)) + '</span></div>';
+    }).join('');
+  }
+
+  function cmSharePickItem(id) {
+    if (!cmShare) return;
+    cmShare.pick = (cmShare.pick === id) ? null : id;
+    cmPaintSharePick();
+  }
+
+  /** §1.2.4's 「数据已是结构化 JSON；直接调用现有的 importArchives / importSamples /
+   *  importCustomData」 — so the payload is exactly the bundle those importers already read. */
+  function cmSharePayload() {
+    if (!cmShare) return Promise.resolve(null);
+    if (cmShare.kind === 'config') {
+      return Promise.resolve().then(function () {
+        return G.exportCustomData(CM_CONFIG_CATS);
+      }).then(function (env) {
+        return env ? { kind: 'config', name: T('community|配置包'), payload: env } : null;
+      });
+    }
+    var isSample = cmShare.kind === 'sample';
+    var list = isSample ? samples : archives;
+    var item = (list || []).filter(function (r) { return r.id === cmShare.pick; })[0];
+    if (!item) return Promise.resolve(null);
+    var payload = isSample
+      ? { kind: 'gomoku-samples', version: 1, exportedAt: Date.now(), samples: [item] }
+      : { kind: 'gomoku-archives', version: 1, exportedAt: Date.now(), archives: [item] };
+    return Promise.resolve({ kind: cmShare.kind, name: String(item.name || '—'), payload: payload });
+  }
+
+  function cmShareGo() {
+    if (cmShareBusy || !cmShare) return;
+    var to = cmShare.to;
+    var kind = cmShare.kind;
+    if (!cmShareFilled(kind)) {
+      cmShareMsg = { code: 'quota', tone: 'err' };
+      cmPaintShare();
+      return;
+    }
+    cmShareBusy = true;
+    cmShareMsg = null;
+    cmPaintShare();
+    var btn = $('cmShareSendGo');
+    if (btn) btn.disabled = true;
+
+    cmSharePayload().then(function (built) {
+      if (!built) {
+        cmShareBusy = false;
+        if (btn) btn.disabled = false;
+        cmShareMsg = { code: 'pickFirst', tone: 'err' };
+        cmPaintShare();
+        return null;
+      }
+      if (to === 'room') {
+        // §1.1.2 — the room path is a MESSAGE with an attachment, not a `friend_shares` row. The
+        // upload and the message happen in one call; see chat-send/index.ts.
+        return GMCommunity.chat.send('', {
+          attachment: { kind: built.kind, name: built.name, payload: built.payload },
+        }).then(function (r) {
+          if (r && r.ok && r.row) {
+            cmPush(r.row);
+            var cid = r.row.attachment && r.row.attachment.cloud_id;
+            if (cmShare.vote && cid) return GMCommunity.votes.create(built.kind, cid);
+          }
+          return r;
+        });
+      }
+      return GMCommunity.shares.send({
+        to_user: to, kind: built.kind, name: built.name, payload: built.payload,
+      }).then(function (r) { return r; });
+    }).then(function (r) {
+      cmShareBusy = false;
+      if (btn) btn.disabled = false;
+      if (!r) return;
+      if (!r.ok) {
+        cmShareMsg = { code: 'shareFailed', err: (r && r.error) || 'INTERNAL', tone: 'err' };
+        cmPaintShare();
+        return;
+      }
+      cmShareMsg = { code: 'shared', tone: 'ok' };
+      cmPaintShare();
+      cmLoadQuota();
+      cmLoadShare();
+      cmLoadMsgs();
+      // The mask closes only on success: a refusal that closed it would leave the operator with no
+      // sentence about what went wrong, which is the 1.0.1 lesson about a status line and the thing
+      // it describes living in different places.
+      window.setTimeout(cmShareClose, 700);
+    });
+  }
+
+  // ---- §1.5.3's share inbox actions --------------------------------------------------------------
+
+  function cmLoadShare() {
+    return Promise.all([GMCommunity.shares.inbox(), GMCommunity.shares.sent()]).then(function (b) {
+      cmInbox = (b[0] && b[0].ok && b[0].rows) || [];
+      cmSent = (b[1] && b[1].ok && b[1].rows) || [];
+      cmPaintMsgs();
+      cmPaintBadges();
+    });
+  }
+
+  /** §1.2.4's 「打开」 — fetch the payload and draw its summary. It is deliberately NOT an import:
+   *  §1.2.4 separates 「直接打开」 from 「选择性导入本地」, and the 15-minute clock is not a reason to
+   *  write to somebody's sample library. */
+  function cmShareFetch(id) {
+    GMCommunity.shares.fetch(id).then(function (r) {
+      if (!r || !r.ok) {
+        cmMsgsMsg = { code: 'loadFailed', err: (r && r.error) || 'INTERNAL', tone: 'err' };
+        cmPaintMsgsMsg();
+        return;
+      }
+      var p = r.payload || {};
+      var items = (p.archives || p.samples || []);
+      var first = items[0] || {};
+      cmMsgsMsg = { code: 'fetched', tone: 'ok', n: items.length, name: String(first.name || '—') };
+      cmPaintMsgsMsg();
+    });
+  }
+
+  /** §1.2.4's 「选择性导入本地」, through the SAME importers the 导入 page uses. `consume` runs only
+   *  AFTER the local write succeeded — a recipient whose import failed must still see the share. */
+  function cmShareConsume(id) {
+    GMCommunity.shares.fetch(id).then(function (r) {
+      if (!r || !r.ok) return { ok: false, error: (r && r.error) || 'INTERNAL' };
+      var p = r.payload || {};
+      if (Array.isArray(p.archives)) return G.importArchives(p.archives).then(function () { return { ok: true }; });
+      if (Array.isArray(p.samples)) return G.importSamples(p.samples).then(function () { return { ok: true }; });
+      return { ok: false, error: 'BAD_REQUEST' };
+    }).then(function (r) {
+      if (!r.ok) {
+        cmMsgsMsg = { code: 'loadFailed', err: r.error, tone: 'err' };
+        cmPaintMsgsMsg();
+        return;
+      }
+      return GMCommunity.shares.consume(id).then(function () {
+        cmMsgsMsg = { code: 'imported', tone: 'ok' };
+        cmPaintMsgsMsg();
+        cmLoadMsgs();
+      });
+    });
+  }
+
+  // ---- §2.1 举报 --------------------------------------------------------------------------------
+
+  function cmReportOpen(userId, name) {
+    var me = cmUid();
+    if (!userId || userId === me) return;
+    cmReport = { id: userId, name: String(name || cmNameOf(userId)) };
+    cmReportCat = '';
+    cmReportMsg = null;
+    var S = GMCommunity.shared() || {};
+    var cats = $('cmReportCats');
+    if (cats) {
+      cats.innerHTML = (S.REPORT_CATEGORIES || []).map(function (c) {
+        return '<button class="tw-cat" data-rc="' + esc(c) + '">' + esc(cmNamed('cm.report.', c)) +
+          '</button>';
+      }).join('');
+    }
+    var who = $('cmReportWho');
+    if (who) who.textContent = T('community|被举报人：{name}', { name: cmReport.name });
+    var det = $('cmReportDetail');
+    if (det) {
+      det.value = '';
+      det.maxLength = S.REPORT_DETAIL_MAX || 2000;
+    }
+    cmPaintReport();
+    if ($('cmReportMask')) $('cmReportMask').classList.remove('hidden');
+  }
+
+  function cmReportClose() {
+    if ($('cmReportMask')) $('cmReportMask').classList.add('hidden');
+    cmReport = null;
+    cmReportMsg = null;
+  }
+
+  function cmPaintReport() {
+    Array.prototype.forEach.call(document.querySelectorAll('[data-rc]'), function (b) {
+      b.classList.toggle('on', b.getAttribute('data-rc') === cmReportCat);
+    });
+    cmSetMsg($('cmReportState'), cmReportMsg);
+  }
+
+  function cmReportGo() {
+    if (!cmReport) return;
+    if ((GMCommunity.shared() || {}).REPORT_CATEGORIES &&
+        (GMCommunity.shared().REPORT_CATEGORIES || []).indexOf(cmReportCat) < 0) {
+      cmReportMsg = { code: 'reportCat', tone: 'err' };
+      cmPaintReport();
+      return;
+    }
+    var btn = $('cmReportSend');
+    if (btn) btn.disabled = true;
+    cmReportMsg = null;
+    cmPaintReport();
+    var detail = String(($('cmReportDetail') || {}).value || '').trim();
+    GMCommunity.reports.submit({ reported_id: cmReport.id, category: cmReportCat, detail: detail })
+      .then(function (r) {
+        if (btn) btn.disabled = false;
+        if (!r || !r.ok) {
+          cmReportMsg = { code: 'reportFailed', err: (r && r.error) || 'INTERNAL', tone: 'err' };
+          cmPaintReport();
+          return;
+        }
+        cmReportMsg = { code: 'reported', tone: 'ok' };
+        cmPaintReport();
+        window.setTimeout(cmReportClose, 700);
+      });
+  }
+
+  // ---- §1.6.3's red dots -------------------------------------------------------------------------
+
+  /** The two badges on the new tabs. Derived, not stored: 好友 counts the requests awaiting an
+   *  answer and 消息 counts what is unread — both are questions about rows already in hand. */
+  function cmPaintBadges() {
+    var reqs = (cmFriends && cmFriends.incoming) ? cmFriends.incoming.length : 0;
+    var live = (cmInbox || []).filter(function (s) { return GMCommunity.shares.isLive(s); }).length;
+    var unread = (cmNotices || []).filter(function (n) { return !n.read; }).length;
+    cmBadge('cmFriendsBadge', reqs);
+    cmBadge('cmMsgsBadge', live + unread);
+  }
+
+  function cmBadge(id, n) {
+    var el = $(id);
+    if (!el) return;
+    el.textContent = n > 99 ? '99+' : String(n);
+    el.classList.toggle('hidden', n <= 0);
+  }
+
+  /**
+   * §1.8 — 「未激活」, and it is NOT the question `activationOpen()` answers.
+   *
+   * ⚠⚠ THIS PREDICATE EXISTS BECAUSE THE OTHER ONE IS THE WRONG SHAPE, and getting it wrong made
+   * §1.8.3 dead code. `activationOpen()` is `GMAuth.gateOpen()` is `isActivated()`, and `stateOf`
+   * (auth.js) decides that from the SESSION ALONE — a token that is present, unexpired and belongs
+   * to an unbanned account is 「activated」, whatever `activated_at` says. So an account that
+   * registered but never entered an activation code sailed through the gate and got an ENABLED
+   * room, while the server's Functions refused every send with `NOT_ACTIVATED`: a chat box that
+   * looks live and answers 「未知错误」 is worse than a disabled one, because it teaches the operator
+   * that their text is the problem.
+   *
+   * §1.8's own server-side spelling is the answer, and it is a fact about the ACCOUNT:
+   *
+   *     「未激活」在服务端如何判定：`users.activated_at is null`   — 1.0.3 §1.8.2
+   *
+   * `activated_at` rides the session's `user` projection (`toPublicUser`), so the client can ask
+   * the same question without a round trip. ONE predicate, and every write surface in the room
+   * asks it: the chat gate, the 建议 submit button, the avatar menu, the poll buttons, the
+   * message menu. A second spelling of 「能不能写」 would be this project's most expensive defect
+   * shape again — and §1.8's matrix is nine rows that must all give the same answer.
+   *
+   * ⚠ A build with NO BACKEND is not 「未激活」 — same carve-out `gateOpen()` makes, and for the
+   * same reason (with no server there is nobody to issue a code, so a gate would be a brick). It
+   * is also unreachable in practice: `viewAllowed('community')` hides the tab on such a build, but
+   * the predicate says so itself rather than depending on that.
+   */
+  function cmReadOnly() {
+    var c = window.GMCloud;
+    if (!(c && c.isConfigured && c.isConfigured())) return false;
+    var u = (GMAuth.status() || {}).user || null;
+    if (!u) return false;              // no account at all: the tab is hidden, nothing to lock
+    return !u.activated_at;
+  }
+
+  /** §1.8.3's 「聊天室：只读——输入框禁用，显示「激活后参与讨论」提示」.
+   *
+   *  ⚠ `cmReadOnly()` and NOT `activationOpen()` — see that function. This is also where the
+   *  §1.8.3 bullet 「Bug 与建议：只读，但「提交」按钮禁用」 is honoured, so 「which surfaces go
+   *  read-only」 is one list rather than one list per panel.
+   *
+   *  ⚠ A `MUTED` account is a DIFFERENT state and is deliberately NOT painted here: the client
+   *  cannot know it (`muted_until` is on its own row, not on anybody else's) and the refusal is the
+   *  server's, which has the `cloudErrText` branch for it. Painting a lock the server did not ask
+   *  for would be the client inventing a verdict. */
+  function cmPaintGate() {
+    var gate = $('cmChatGate');
+    var input = $('cmChatInput');
+    var send = $('cmChatSend');
+    var att = $('cmChatAttach');
+    var fb = $('cmFbSend');
+    var open = true;
+    try { open = !cmReadOnly(); } catch (e) { open = true; }
+    if (gate) {
+      if (open) { gate.classList.add('hidden'); gate.textContent = ''; }
+      else { gate.textContent = T('viewer|激活后参与讨论'); gate.classList.remove('hidden'); }
+    }
+    if (input) input.disabled = !open;
+    if (send) send.disabled = !open;
+    if (att) att.disabled = !open;
+    // §1.8.3's third bullet. The form itself stays editable — an unactivated operator may compose
+    // and be told what is missing — but the button that writes is inert.
+    if (fb) fb.disabled = !open;
+  }
+
 
   /**
    * Which view is ON SCREEN, as a name. Read from the `.view` element that is marked `active`
@@ -4169,6 +5774,22 @@
     if (err === 'NOT_ACTIVATED') return T('viewer|此功能需要已激活的账户');
     if (err === 'CONTENT_TOO_LONG') return T('viewer|内容超出长度上限');
     if (err === 'CONTENT_REJECTED') return T('viewer|内容包含不当词汇，未能提交');
+    // ---- 1.0.3 §一/§二/§三 的十个判词 ----
+    // Ten codes, ten different next actions, and NOT ONE of them is 「没有权限」. Written here for
+    // the reason 1.0.2 had to write three: a screen with no matching sentence falls through to
+    // 「未知错误（MUTED）」, which names the code and nothing else. `verify-064`/`verify-065` walk
+    // `_shared/errors.ts`'s `ErrorCode` union against these branches, so the day a twelfth code is
+    // added without a sentence here is a red suite rather than a Chinese box in the community view.
+    if (err === 'MUTED') return T('viewer|你已被禁言，暂时无法发言');
+    if (err === 'CHAT_DISABLED') return T('viewer|聊天室当前已关闭');
+    if (err === 'SHARE_EXPIRED') return T('viewer|这个分享已超过 15 分钟，需要对方重发');
+    if (err === 'QUOTA_EXCEEDED') return T('viewer|今日发送数量已达上限');
+    if (err === 'FRIEND_EXISTS') return T('viewer|你们已是好友，或已有待处理的请求');
+    if (err === 'NOT_FRIENDS') return T('viewer|只有好友之间可以发送');
+    if (err === 'BLOCKED_BY_USER') return T('viewer|对方已拉黑你，无法发送');
+    if (err === 'VOTE_CLOSED') return T('viewer|投票已结束');
+    if (err === 'VOTE_ALREADY_CAST') return T('viewer|你已经投过票了');
+    if (err === 'TARGET_NOT_FOUND') return T('viewer|目标不存在或已被删除');
     // ⚠ A 404 with no `error` key is the platform saying the function slug does not exist. This is
     // the sentence the bring-up needed and did not have: it used to reach the operator as
     // 「网络错误」 while their network was demonstrably fine.

@@ -110,10 +110,26 @@
     });
   }
 
-  /** §2.3's send. The row comes back so the sender sees their message without waiting for a push. */
-  function chatSend(text) {
+  /**
+   * §2.3's send. The row comes back so the sender sees their message without waiting for a push.
+   *
+   * `opts` is 1.0.3 §1.1.2 / §1.7: `{attachment: {kind, name, summary, payload}}` and
+   * `{replyTo: <message id>}`. Both are passed through UNTOUCHED and neither is validated here —
+   * `chat-send` owns the attachment's shape, the size threshold that decides inline-vs-Storage, and
+   * whether the quoted message is still in the retention window. A check here would be a second
+   * opinion that refuses things the server would have taken (or worse, accepts things it will not).
+   *
+   * ⚠ `attachment` AND `reply_to` GO IN THE SAME CALL as `content`, deliberately. A separate
+   * upload step would make 「上传成功，发消息失败」 reachable, and the artefact would be a bucket
+   * object nothing points at — see the note in chat-send/index.ts.
+   */
+  function chatSend(text, opts) {
     if (!jwt()) return Promise.resolve(noSession());
-    return cloud().call('chat-send', { content: String(text == null ? '' : text) }, { jwt: jwt() })
+    var o = opts || {};
+    var body = { content: String(text == null ? '' : text) };
+    if (o.attachment) body.attachment = o.attachment;
+    if (o.replyTo) body.reply_to = String(o.replyTo);
+    return cloud().call('chat-send', body, { jwt: jwt() })
       .then(function (r) {
         if (!r.ok) return r;
         return { ok: true, status: r.status, row: (r.data && r.data.message) || null };
@@ -465,6 +481,920 @@
     });
   }
 
+  // =====================================================================
+  // 1.0.3 — the two wrappers every block below is built from
+  // =====================================================================
+
+  /** A PostgREST read with the caller's bearer. The `rest()` side of §1.8's read/write split. */
+  function restRead(table, query) {
+    if (!jwt()) return Promise.resolve(noSession());
+    return cloud().rest(table, { query: query, jwt: jwt() });
+  }
+
+  /**
+   * An Edge Function write.
+   *
+   * ⚠ EVERY 1.0.3 WRITE GOES THROUGH HERE, and that is §1.8.2's 「服务端 RLS 依然拦截」 implemented
+   * rather than promised: `friendships`, `friend_shares`, `votes`, `vote_ballots`, `reports` and
+   * `daily_quotas` have NO client write policy at all (011). A cracked client that skips this can
+   * still not write — the database refuses. See 011's header for why the INSERT policy §1.8.2
+   * sketches is deliberately not created.
+   */
+  function fnCall(name, body) {
+    if (!jwt()) return Promise.resolve(noSession());
+    return cloud().call(name, body || {}, { jwt: jwt() });
+  }
+
+  /** The public projection 011 §3 grants the client. Spelled out rather than `select=*` — the same
+   *  reason `CHAT_COLS` is: a column added to `users` later must not start travelling by default,
+   *  and `email` is exactly the column that would. */
+  var USER_PUBLIC_COLS =
+    'id,username,avatar_url,bio,created_at,country_code,hide_country,manual_status,last_seen_at';
+
+  /** §1.2.1's row shape, by name for the same reason. */
+  var FRIEND_COLS =
+    'id,user_a,user_b,status,blocked_by,requester,remark_a,remark_b,created_at,updated_at';
+
+  // =====================================================================
+  // §1.3 他人主页
+  // =====================================================================
+
+  /**
+   * §1.3.1's card: 用户名 / 加入时间 / 样本库 N 个 / 国籍 / 简介 / 当前状态.
+   *
+   * Goes through `profile-get` rather than PostgREST because of the SAMPLE COUNT — see that
+   * Function's header. `status` comes back already resolved (§3.2.1's three states), computed by
+   * the same `presenceState` the room and the friend list use.
+   *
+   * ⚠ THE FLAG IS NOT RESOLVED HERE. `country_code` and `hide_country` both come back and the VIEW
+   * applies `countryFlagChinaUnified` — §3.1.5 「存储仍保留真实 code，仅在显示时映射」 is the point
+   * of that pair, and resolving it in this file would put the display rule in two places.
+   */
+  function memberProfile(userId) {
+    var id = String(userId == null ? '' : userId);
+    if (!id) return Promise.resolve({ ok: false, error: 'BAD_REQUEST' });
+    return fnCall('profile-get', { user_id: id }).then(function (r) {
+      if (!r.ok) return r;
+      var d = r.data || {};
+      return {
+        ok: true,
+        status: r.status,
+        user: d.user || null,
+        sampleCount: Number(d.sampleCount) || 0,
+        presence: typeof d.status === 'string' ? d.status : 'offline',
+      };
+    });
+  }
+
+  // =====================================================================
+  // §1.2 好友系统
+  // =====================================================================
+
+  /** The other party in an ordered pair. §1.2.1 makes `user_a < user_b`, so this is a comparison
+   *  and not a lookup — and it is the ONE spelling of 「这一行里的对方是谁」. */
+  function friendOtherId(row, me) {
+    if (!row) return '';
+    var self = me || uid();
+    return row.user_a === self ? row.user_b : row.user_a;
+  }
+
+  /** §1.5.2's 「备注：修改备注名」 as the VIEWER sees it. Mirrors `remarkFor` on the server (it has
+   *  to be readable without a round trip, since the list renders dozens of rows). */
+  function friendRemarkFor(row, me) {
+    if (!row) return null;
+    var self = me || uid();
+    return self === row.user_a ? (row.remark_a || null) : (row.remark_b || null);
+  }
+
+  /** The relationship between me and one account, or null. Used by §1.3.2's 「添加好友 / 已添加好友」
+   *  button and by §1.5.2's 拉黑 check. */
+  function friendRelation(otherId, rows) {
+    var me = uid();
+    var other = String(otherId == null ? '' : otherId);
+    if (!me || !other || other === me) return Promise.resolve(null);
+    if (rows) return Promise.resolve(findRelation(rows, me, other));
+    return friendshipsMine().then(function (r) {
+      return (r && r.ok) ? findRelation(r.rows, me, other) : null;
+    });
+  }
+
+  function findRelation(rows, me, other) {
+    var list = rows || [];
+    for (var i = 0; i < list.length; i++) {
+      var r = list[i];
+      if (friendOtherId(r, me) === other) return r;
+    }
+    return null;
+  }
+
+  /** Every `friendships` row the caller is a party to. 011 §6 admits exactly those rows, and the
+   *  `or=` filter says the same thing again so the result cannot change when a policy changes. */
+  function friendshipsMine() {
+    var me = uid();
+    if (!me) return Promise.resolve(noSession());
+    var filter = '&or=' + encodeURIComponent('(user_a.eq.' + me + ',user_b.eq.' + me + ')');
+    return restRead('friendships',
+      'select=' + FRIEND_COLS + filter + '&order=updated_at.desc&limit=300').then(function (r) {
+      if (!r.ok) return r;
+      return { ok: true, status: r.status, rows: Array.isArray(r.data) ? r.data : [] };
+    });
+  }
+
+  /**
+   * §1.5.2's 好友列表 and §1.5.3's 消息 screen's first two sections, in ONE round trip each.
+   *
+   * ⚠ TWO QUERIES AND A JOIN, NOT A `select=*,users(...)` EMBED. PostgREST can embed `users` here
+   * (there is a foreign key), and an embed would silently return the WHOLE `users` row — including
+   * `email` — because an embed's column list is a separate expression and the narrowed column grant
+   * (011 §3) applies to the EMBEDDED relation, where a bare `users(...)` means all of it. Two
+   * explicit reads keep the projection where this file can see it.
+   *
+   * ⚠ THE JOIN IS IN THE CLIENT, so it must not also be in a policy. It is not: the two queries ask
+   * for "my rows" and "these ids" and both are admitted by their own policy.
+   *
+   * Returns `{ friends, incoming, outgoing }` — accepted / 「请求添加你为好友」 / 「我已发出」.
+   * `blocked` rows are EXCLUDED from all three: §1.5.2's 拉黑 is 「不再接收对方消息」, and a blocked
+   * relationship is not a friendship to render. The view reaches them through `relation()` when it
+   * needs to offer 「解除拉黑」.
+   */
+  function friendsList() {
+    var me = uid();
+    if (!me) return Promise.resolve(noSession());
+    return friendshipsMine().then(function (r) {
+      if (!r.ok) return r;
+      var rows = r.rows;
+      var ids = [];
+      for (var i = 0; i < rows.length; i++) {
+        if (rows[i].status === 'blocked') continue;
+        var other = friendOtherId(rows[i], me);
+        if (other && ids.indexOf(other) < 0) ids.push(other);
+      }
+      if (ids.length === 0) {
+        return { ok: true, status: r.status, friends: [], incoming: [], outgoing: [], rows: rows };
+      }
+      return restRead('users',
+        'select=' + USER_PUBLIC_COLS + '&id=in.(' + ids.join(',') + ')&limit=300').then(function (u) {
+        // ⚠ A FAILED PROFILE READ DOES NOT FAIL THE LIST. The friendships are the answer; the names
+        // are decoration on it, and refusing the whole screen because one profile could not be
+        // fetched would hide 「王五 请求添加你为好友」 from the person who has to answer it.
+        var byId = {};
+        var list = (u && u.ok && Array.isArray(u.data)) ? u.data : [];
+        for (var k = 0; k < list.length; k++) byId[list[k].id] = list[k];
+
+        var out = { friends: [], incoming: [], outgoing: [] };
+        for (var j = 0; j < rows.length; j++) {
+          var row = rows[j];
+          if (row.status === 'blocked') continue;
+          var otherId = friendOtherId(row, me);
+          var entry = {
+            friendship: row,
+            user: byId[otherId] || null,
+            otherId: otherId,
+            remark: friendRemarkFor(row, me),
+          };
+          if (row.status === 'accepted') out.friends.push(entry);
+          else if (row.requester === me) out.outgoing.push(entry);
+          else out.incoming.push(entry);
+        }
+        // §1.5.2's list is ordered by name so the dot column does not reshuffle on every reload; the
+        // message list keeps the table's own order (newest first), which is what a queue wants.
+        out.friends.sort(function (a, b) {
+          var an = (a.remark || (a.user && a.user.username) || '').toLowerCase();
+          var bn = (b.remark || (b.user && b.user.username) || '').toLowerCase();
+          return an < bn ? -1 : (an > bn ? 1 : 0);
+        });
+        out.rows = rows;
+        return { ok: true, status: r.status, friends: out.friends,
+                 incoming: out.incoming, outgoing: out.outgoing, rows: rows };
+      });
+    });
+  }
+
+  /** §1.2.2's 「A 点击「添加好友」」. `user_id` is the TARGET — the server decides the pair order. */
+  function friendRequest(userId) {
+    return fnCall('friend-request', { user_id: String(userId == null ? '' : userId) })
+      .then(function (r) {
+        if (!r.ok) return r;
+        return { ok: true, status: r.status, friendship: (r.data && r.data.friendship) || null };
+      });
+  }
+
+  /**
+   * §1.2.2's accept/reject and §1.5.2's 备注 / 删除 / 拉黑, through one verb table.
+   *
+   * ⚠ ONE ENDPOINT, SIX VERBS — see `friend-accept`'s header. The view supplies the verb; nothing
+   * here re-implements 「我可以对这条记录做什么」, because that question is answered against the row
+   * (`blocked_by`, `requester`, the caller's side of the pair) and this file does not have the row.
+   */
+  function friendAct(friendshipId, action, remark) {
+    var body = { friendship_id: String(friendshipId == null ? '' : friendshipId), action: action };
+    if (remark !== undefined) body.remark = remark;
+    return fnCall('friend-accept', body).then(function (r) {
+      if (!r.ok) return r;
+      return { ok: true, status: r.status,
+               friendship: (r.data && r.data.friendship) || null,
+               removed: !!(r.data && r.data.removed) };
+    });
+  }
+
+  // =====================================================================
+  // §1.2.3–§1.2.5 好友间分享
+  // =====================================================================
+
+  /** §1.2.5's 「今日还可发送 N 个」. Reads the caller's own row; 011 §6 admits exactly that row. */
+  function shareQuota() {
+    var me = uid();
+    var S = shared() || {};
+    if (!me) return Promise.resolve(noSession());
+    // ⚠ The day KEY comes from the shared block, and it is the ONLY spelling of it. This line used
+    // to read `S.serverDate ? S.serverDate() : new Date()…` while `serverDate` lived below the
+    // shared marker — server only — so the guard's first branch could never be taken and the two
+    // spellings of 「今天」 were the fallback and the server's. See the note on `serverDate`.
+    var today = S.serverDate();
+    return restRead('daily_quotas',
+      'select=user_id,date,shares_archive,shares_config' +
+      '&user_id=eq.' + encodeURIComponent(me) + '&date=eq.' + today).then(function (r) {
+      if (!r.ok) return r;
+      var row = (Array.isArray(r.data) && r.data[0]) || null;
+      return {
+        ok: true, status: r.status, date: today,
+        archive: row ? Number(row.shares_archive) || 0 : 0,
+        config: row ? Number(row.shares_config) || 0 : 0,
+        maxArchive: S.SHARE_DAILY_ARCHIVE_MAX || 0,
+        maxConfig: S.SHARE_DAILY_CONFIG_MAX || 0,
+      };
+    });
+  }
+
+  /**
+   * §1.2.3 「A 在好友列表中选择 B → 点击「发送」 → 选择内容」.
+   *
+   * ⚠ `payload` IS THE ALREADY-STRUCTURED JSON — §1.2.4's 「数据已是结构化 JSON；直接调用现有的
+   * importArchives / importSamples / importCustomData」 is the SAME object format this project
+   * already exports, so nothing is re-packed here. A 「二次打包」 would be a second serialisation of
+   * one archive, and the two would drift the first time an archive field was added.
+   */
+  function shareSend(input) {
+    var i = input || {};
+    return fnCall('friend-share', {
+      action: 'send',
+      to_user: String(i.to_user == null ? '' : i.to_user),
+      kind: String(i.kind == null ? '' : i.kind),
+      name: String(i.name == null ? '' : i.name),
+      summary: i.summary === undefined ? null : i.summary,
+      payload: i.payload === undefined ? null : i.payload,
+    }).then(function (r) {
+      if (!r.ok) return r;
+      return { ok: true, status: r.status, share: (r.data && r.data.share) || null };
+    });
+  }
+
+  /**
+   * §1.2.4 「客户端拉取 payload（或下载 storage_url）」 → 「展示预览」.
+   *
+   * ⚠ RESOLVES TO A PAYLOAD EITHER WAY. A share under 500 KB carries its body in the row; a larger
+   * one is a signed URL. The caller needs the same thing from both — the JSON, so it can draw
+   * 「黑 72 / 白 85 · 全局 · 42 手」 — so the download happens HERE, through `GMCloud.getJson`, and
+   * the caller never learns which storage route was used. The raw answer is still on the returned
+   * object as `url`/`stored` for the suite and for a future 「另存为」 path.
+   *
+   * ⚠ A SIGNED URL IS SHORT-LIVED (`SIGNED_URL_SECONDS` = 60), so an expired signature arrives as a
+   * transport failure and the remedy is to call this again — which is why the error is passed
+   * through in the standard vocabulary rather than being swallowed into 「分享坏了」.
+   */
+  function shareFetch(shareId) {
+    var id = String(shareId == null ? '' : shareId);
+    if (!id) return Promise.resolve({ ok: false, error: 'BAD_REQUEST' });
+    return fnCall('friend-share', { action: 'fetch', share_id: id }).then(function (r) {
+      if (!r.ok) return r;
+      var d = r.data || {};
+      if (d.payload !== undefined && d.payload !== null) {
+        return { ok: true, status: r.status, payload: d.payload, kind: d.kind || null,
+                 stored: false, url: null };
+      }
+      if (!d.url) return { ok: false, error: 'NOT_FOUND', status: r.status };
+      return cloud().getJson(d.url).then(function (g) {
+        if (!g.ok) return g;
+        return { ok: true, status: r.status, payload: g.data, kind: d.kind || null,
+                 stored: true, url: d.url };
+      });
+    });
+  }
+
+  /** §1.2.4 「若选「导入」，立即写入，并标记 consumed = true」. Called AFTER the local write
+   *  succeeded — a recipient whose import failed must still see the share as untaken. */
+  function shareConsume(shareId) {
+    return fnCall('friend-share', { action: 'consume', share_id: String(shareId == null ? '' : shareId) })
+      .then(function (r) {
+        if (!r.ok) return r;
+        return { ok: true, status: r.status, share: (r.data && r.data.share) || null };
+      });
+  }
+
+  /** §1.2.4's 「B 在消息列表看到「A 发送了一个存档」」 — sent TO me, still live, not yet taken. */
+  function shareInbox() {
+    var me = uid();
+    if (!me) return Promise.resolve(noSession());
+    return restRead('friend_shares',
+      'select=id,from_user,to_user,kind,size_bytes,created_at,expires_at,consumed' +
+      '&to_user=eq.' + encodeURIComponent(me) + '&consumed=is.false' +
+      '&order=created_at.desc&limit=100').then(function (r) {
+      if (!r.ok) return r;
+      return { ok: true, status: r.status, rows: Array.isArray(r.data) ? r.data : [] };
+    });
+  }
+
+  /** 「我还发出去了什么」 — the sender's half of §1.2.4, so 「A 需重发」 is a decision the sender can
+   *  make rather than guess. */
+  function shareSent() {
+    var me = uid();
+    if (!me) return Promise.resolve(noSession());
+    return restRead('friend_shares',
+      'select=id,from_user,to_user,kind,size_bytes,created_at,expires_at,consumed' +
+      '&from_user=eq.' + encodeURIComponent(me) + '&order=created_at.desc&limit=100').then(function (r) {
+      if (!r.ok) return r;
+      return { ok: true, status: r.status, rows: Array.isArray(r.data) ? r.data : [] };
+    });
+  }
+
+  /** §1.2.4's window, client-side, through the shared block so the 15 minutes are one number. */
+  function shareIsLive(row) {
+    var S = shared() || {};
+    return S.isShareLive ? S.isShareLive(row) : false;
+  }
+
+  // =====================================================================
+  // §1.4 投票
+  // =====================================================================
+
+  /** §1.4.2's 「24 小时 或 发布者手动关闭」, through the shared block. */
+  function voteIsOpen(row) {
+    var S = shared() || {};
+    return S.isVoteOpen ? S.isVoteOpen(row) : false;
+  }
+
+  /**
+   * §1.4.4's poll for one shared item: the `votes` row, its four counts, and MY ballot.
+   *
+   * ⚠ THREE QUERIES, AND THEY CANNOT BE ONE. The tally is a VIEW (`vote_tally`) because §七.3's
+   * anonymity is enforced by aggregation under `security_invoker = false`; my ballot is readable
+   * only through `vote_ballots_read_self`; the poll row is public. They are three different
+   * visibility rules, so they are three requests.
+   *
+   * ⚠ THE COUNT IS ZERO-FILLED BY `voteTally` IN THE SHARED BLOCK, not here: the view emits rows
+   * only for choices somebody picked, and a renderer iterating raw rows would draw two buttons on a
+   * poll nobody has voted in.
+   */
+  function voteForTarget(targetKind, cloudId) {
+    var S = shared() || {};
+    var me = uid();
+    var kind = String(targetKind == null ? '' : targetKind);
+    var id = String(cloudId == null ? '' : cloudId);
+    if (!kind || !id) return Promise.resolve({ ok: false, error: 'BAD_REQUEST' });
+    return restRead('votes',
+      'select=id,target_kind,target_cloud_id,creator_id,created_at,closes_at,closed_manually' +
+      '&target_kind=eq.' + encodeURIComponent(kind) +
+      '&target_cloud_id=eq.' + encodeURIComponent(id)).then(function (r) {
+      if (!r.ok) return r;
+      var vote = (Array.isArray(r.data) && r.data[0]) || null;
+      if (!vote) return { ok: true, status: r.status, vote: null, tally: null, mine: null };
+      return Promise.all([
+        restRead('vote_tally', 'select=vote_id,choice,n&vote_id=eq.' + encodeURIComponent(vote.id)),
+        me
+          ? restRead('vote_ballots',
+              'select=vote_id,choice&vote_id=eq.' + encodeURIComponent(vote.id) +
+              '&user_id=eq.' + encodeURIComponent(me))
+          : Promise.resolve({ ok: true, data: [] }),
+      ]).then(function (both) {
+        var tallyRows = (both[0] && both[0].ok && Array.isArray(both[0].data)) ? both[0].data : [];
+        var mineRows = (both[1] && both[1].ok && Array.isArray(both[1].data)) ? both[1].data : [];
+        return {
+          ok: true, status: r.status, vote: vote,
+          tally: S.voteTally ? S.voteTally(tallyRows) : null,
+          mine: (mineRows[0] && mineRows[0].choice) || null,
+          open: voteIsOpen(vote),
+        };
+      });
+    });
+  }
+
+  /** §1.4.1 「发布者在发送存档或样本时可勾选「启用投票」」. Ownership is the server's check. */
+  function voteCreate(targetKind, cloudId) {
+    return fnCall('vote-create', {
+      target_kind: String(targetKind == null ? '' : targetKind),
+      target_cloud_id: String(cloudId == null ? '' : cloudId),
+    }).then(function (r) {
+      if (!r.ok) return r;
+      return { ok: true, status: r.status, vote: (r.data && r.data.vote) || null,
+               created: !!(r.data && r.data.created) };
+    });
+  }
+
+  /** §1.4.3's ballot. `close` is the same endpoint — see `vote-cast`. */
+  function voteCast(voteId, choice) {
+    return fnCall('vote-cast', { vote_id: String(voteId == null ? '' : voteId), choice: choice })
+      .then(function (r) {
+        if (!r.ok) return r;
+        // The tally comes back FRESH and must not be incremented again by the caller — see the
+        // Function's header, which says so where the arithmetic lives.
+        return { ok: true, status: r.status, tally: (r.data && r.data.tally) || null,
+                 total: Number(r.data && r.data.total) || 0 };
+      });
+  }
+
+  /** §1.4.4's 「[关闭投票]（发布者可见）」. */
+  function voteClose(voteId) {
+    return fnCall('vote-cast', { action: 'close', vote_id: String(voteId == null ? '' : voteId) })
+      .then(function (r) {
+        if (!r.ok) return r;
+        return { ok: true, status: r.status, vote: (r.data && r.data.vote) || null,
+                 tally: (r.data && r.data.tally) || null,
+                 total: Number(r.data && r.data.total) || 0 };
+      });
+  }
+
+  // =====================================================================
+  // §二.1 举报
+  // =====================================================================
+
+  /** §2.1's form → §2.3.4's 信箱. The rate limit and the category set are the server's. */
+  function reportSubmit(input) {
+    var i = input || {};
+    return fnCall('report-submit', {
+      reported_id: String(i.reported_id == null ? '' : i.reported_id),
+      category: String(i.category == null ? '' : i.category),
+      detail: i.detail === undefined ? '' : i.detail,
+      evidence: i.evidence === undefined ? null : i.evidence,
+    }).then(function (r) {
+      if (!r.ok) return r;
+      return { ok: true, status: r.status, report: (r.data && r.data.report) || null };
+    });
+  }
+
+  /** 「我提交的举报」. The `reporter_id` filter is what makes an ADMIN's view of this page match what
+   *  the page says, for the same reason `feedbackMine` carries one. */
+  function reportMine() {
+    var me = uid();
+    if (!me) return Promise.resolve(noSession());
+    return restRead('reports',
+      'select=id,reported_id,category,detail,status,admin_action,handled_at,created_at' +
+      '&reporter_id=eq.' + encodeURIComponent(me) + '&order=created_at.desc&limit=50').then(function (r) {
+      if (!r.ok) return r;
+      return { ok: true, status: r.status, rows: Array.isArray(r.data) ? r.data : [] };
+    });
+  }
+
+  // =====================================================================
+  // §1.5.3 消息 / §1.6.3 提醒
+  // =====================================================================
+
+  /**
+   * The 系统通知 and @提及 rows.
+   *
+   * ⚠ §1.5.3's OTHER TWO SECTIONS DO NOT COME FROM HERE — 好友请求 is `friendships` and 分享 is
+   * `friend_shares`, both read above. The rule and its reasons are written out in
+   * 009_reports.sql: a section whose source row DIES when the event is dealt with is derived, and a
+   * section that needs an unread marker gets a row in this table. A reminder to "make it uniform"
+   * should read that file first.
+   */
+  function noticesList() {
+    var me = uid();
+    if (!me) return Promise.resolve(noSession());
+    return restRead('notifications',
+      'select=id,kind,title,body,data,read,created_at,read_at' +
+      '&user_id=eq.' + encodeURIComponent(me) + '&order=created_at.desc&limit=100').then(function (r) {
+      if (!r.ok) return r;
+      return { ok: true, status: r.status, rows: Array.isArray(r.data) ? r.data : [] };
+    });
+  }
+
+  /** §1.6.3's 「头像上小红点」, as a count. `head: true` so no rows travel — the badge needs a
+   *  number and `notifications_update_own` is the only write this client has. */
+  function noticesUnread() {
+    var me = uid();
+    if (!me) return Promise.resolve(noSession());
+    return restRead('notifications',
+      'select=id&user_id=eq.' + encodeURIComponent(me) + '&read=is.false').then(function (r) {
+      // `rest()` cannot ask for a count without an extra header, so this reads the rows it is going
+      // to count. Capped at the same 100 the list uses, and the badge renders 「99+」 above it — a
+      // badge is not a ledger.
+      if (!r.ok) return r;
+      var n = Array.isArray(r.data) ? r.data.length : 0;
+      return { ok: true, status: r.status, count: n };
+    });
+  }
+
+  /**
+   * Mark one notification read.
+   *
+   * ⚠ THIS IS THE ONE CLIENT WRITE IN 1.0.3, and 011 §6 argues it at length: the column grant is
+   * `update (read, read_at)`, so the same policy cannot be used to rewrite `kind` or `body` — i.e.
+   * to forge a 警告 out of an existing row. The rows themselves are only created by
+   * `admin-handle-report` (service role).
+   */
+  function noticeMarkRead(id) {
+    var me = uid();
+    if (!me) return Promise.resolve(noSession());
+    if (!id) return Promise.resolve({ ok: false, error: 'BAD_REQUEST' });
+    var now = new Date().toISOString();
+    return cloud().rest('notifications', {
+      query: 'id=eq.' + encodeURIComponent(String(id)) + '&user_id=eq.' + encodeURIComponent(me),
+      jwt: jwt(),
+      method: 'PATCH',
+      body: { read: true, read_at: now },
+      // `resolution=merge-duplicates` is PostgREST's upsert intent; for a PATCH it is meaningless
+      // and actively wrong, so only `return=representation` is set here.
+      prefer: 'return=representation',
+    }).then(function (r) {
+      if (!r.ok) return r;
+      return { ok: true, status: r.status, rows: Array.isArray(r.data) ? r.data : [] };
+    });
+  }
+
+  /** 「全部标记已读」, as ONE request rather than N. ⚠ PostgREST refuses an unfiltered write, so the
+   *  `read=is.false` filter is what makes this legal as well as narrow. */
+  function noticesMarkAllRead() {
+    var me = uid();
+    if (!me) return Promise.resolve(noSession());
+    return cloud().rest('notifications', {
+      query: 'user_id=eq.' + encodeURIComponent(me) + '&read=is.false',
+      jwt: jwt(),
+      method: 'PATCH',
+      body: { read: true, read_at: new Date().toISOString() },
+      prefer: 'return=representation',
+    }).then(function (r) {
+      if (!r.ok) return r;
+      return { ok: true, status: r.status, rows: Array.isArray(r.data) ? r.data : [] };
+    });
+  }
+
+  // =====================================================================
+  // §3.1.6 / §3.2.3 — the two user-owned settings
+  // =====================================================================
+
+  /**
+   * §3.1.6's 「隐藏国籍」 and §3.2.3's 「在线状态」, in one PATCH.
+   *
+   * ⚠ STRAIGHT THROUGH PostgREST, unlike every other 1.0.3 write, and 011 §4 is where that is
+   * argued: these are the caller's own two cosmetic columns, they affect nobody else's data, and
+   * the policies and column grants that make that safe are the same ones 002_rls.sql already uses
+   * for `username` / `bio` / `avatar_url`. A Function here would be an eleventh Function to change
+   * a boolean.
+   *
+   * ⚠ `country_code` / `country_updated_at` / `last_seen_at` are NOT writable this way — 011 §4
+   * explains why (a client that could write its own country would make §3.1 a claim rather than an
+   * observation) and `geo-update` is the route.
+   */
+  function settingsPatch(patch) {
+    var me = uid();
+    if (!me) return Promise.resolve(noSession());
+    var body = {};
+    if (patch && patch.hide_country !== undefined) body.hide_country = !!patch.hide_country;
+    if (patch && patch.manual_status !== undefined) {
+      var S = shared() || {};
+      var allowed = S.MANUAL_STATUSES || ['online', 'busy', 'hidden'];
+      // §3.2.3's three radios. Checked here so a bad value is a local refusal rather than a 23514
+      // from `users_manual_status_known` — the constraint still exists as the backstop.
+      if (allowed.indexOf(patch.manual_status) < 0) return Promise.resolve({ ok: false, error: 'BAD_REQUEST' });
+      body.manual_status = patch.manual_status;
+    }
+    if (Object.keys(body).length === 0) return Promise.resolve({ ok: false, error: 'BAD_REQUEST' });
+    return cloud().rest('users', {
+      query: 'id=eq.' + encodeURIComponent(me),
+      jwt: jwt(),
+      method: 'PATCH',
+      body: body,
+      prefer: 'return=representation',
+    }).then(function (r) {
+      if (!r.ok) return r;
+      var row = (Array.isArray(r.data) && r.data[0]) || null;
+      return { ok: true, status: r.status, user: row };
+    });
+  }
+
+  // =====================================================================
+  // §3.2 状态系统 — the Realtime presence channel
+  // =====================================================================
+  // §3.2.2's snippet is supabase-js, which this extension cannot load (see this file's header), so
+  // the channel is spoken directly like the chat one. The frame set is smaller: a join carrying a
+  // `presence` config, a `presence` message to announce ourselves, and `presence_state` /
+  // `presence_diff` coming back.
+  //
+  // ⚠ ITS OWN SOCKET, NOT THE CHAT ROOM'S. Phoenix multiplexes channels over one socket, and sharing
+  // would be the obvious economy — but the chat socket's retry budget, join timeout and fallback are
+  // tuned for 「a room that must keep updating」 (it degrades to polling). A presence channel that
+  // fails must NOT drag the room into polling with it, and a presence channel on a recycled socket
+  // must not spend the room's two retries. Two sockets, two budgets, no coupling.
+  //
+  // ⚠ WHAT THIS ADDS OVER `last_seen_at`. §3.2.1's thresholds are already answerable from the
+  // timestamp the server stamps on every authenticated call (`touchLastSeen`), and that is the BASE
+  // — it covers 「他是谁，在线吗」 for anybody, including an account that has never opened the
+  // community. The socket is the ENHANCEMENT: it turns join/leave into an event, so a friend list
+  // updates the moment somebody arrives rather than up to one beat later, and it is the only source
+  // for a user who is in the room while this page is open. `stateOf` reads the socket first and falls
+  // back to the row, so a page with no socket still shows a truthful dot.
+
+  /** §3.2.2's channel name. One presence channel for the product, keyed by user id. */
+  var PRESENCE_TOPIC = 'realtime:presence';
+  var PRESENCE_RETRY_MS = 3000;
+  var PRESENCE_MAX_ATTEMPTS = 2;
+
+  /**
+   * The `phx_join` for the presence channel.
+   *
+   * ⚠ THE DIFFERENCE FROM `joinFrame` IS THE WHOLE FRAME: `presence.key` carries MY user id (the
+   * chat frame sends an empty key because it wants no presence), and there is NO `postgres_changes`
+   * entry — this channel is not subscribed to a table, so asking for one would be a subscription the
+   * server has nothing to send.
+   */
+  function presenceJoinFrame(ref, token, userId) {
+    return {
+      topic: PRESENCE_TOPIC,
+      event: 'phx_join',
+      payload: {
+        config: {
+          broadcast: { ack: false, self: false },
+          presence: { key: String(userId == null ? '' : userId) },
+        },
+        access_token: token,
+      },
+      ref: String(ref),
+    };
+  }
+
+  /** §3.2.2's `presenceChannel.track({ status, last_seen })`, as the raw frame. `status` is the
+   *  caller's `manual_status` (or 'online' when they never chose) — the SERVER stores the choice and
+   *  this repeats it, so 「隐身」 stays hidden on every reader's screen. */
+  function presenceTrackFrame(ref, status, lastSeenIso) {
+    return {
+      topic: PRESENCE_TOPIC,
+      event: 'presence',
+      payload: { status: String(status || 'online'), last_seen: String(lastSeenIso || '') },
+      ref: String(ref),
+    };
+  }
+
+  /**
+   * The presence map inside a `presence_state` / `presence_diff` frame.
+   *
+   * Phoenix sends `{ <key>: { metas: [ { phx_ref, status, last_seen }, … ] } }`. ⚠ `metas` is a LIST
+   * because one key may be tracked several times (two tabs, a reconnect that has not timed out yet),
+   * and reading `payload[key].status` — the shape supabase-js's `presenceState()` returns — would be
+   * undefined on every entry. The FIRST meta is what is rendered; a second tab is not a second
+   * person.
+   */
+  function presenceFromFrame(event, payload) {
+    var out = { joins: {}, leaves: {} };
+    var p = payload || {};
+    if (event === 'presence_state') {
+      out.joins = p;
+      return out;
+    }
+    if (event === 'presence_diff') {
+      out.joins = p.joins || {};
+      out.leaves = p.leaves || {};
+      return out;
+    }
+    return out;
+  }
+
+  // ---- the presence socket's lifecycle ---------------------------------------------------------
+  var PR = {
+    status: 'off',      // 'off' | 'connecting' | 'live'
+    ws: null,
+    ref: 0,
+    joinRef: 0,
+    hb: null,
+    beat: null,
+    joinTimer: null,
+    retry: null,
+    attempts: 0,
+    closed: true,
+    metav: {},          // userId -> { refs: { phx_ref: status-obj }, order: [phx_ref] }
+    onState: null,
+  };
+
+  function prStateOf(userId) {
+    var entry = PR.metav[String(userId == null ? '' : userId)];
+    if (!entry || !entry.order.length) return null;
+    var first = entry.refs[entry.order[0]];
+    return first || null;
+  }
+
+  /** Apply one frame's joins/leaves to `metav`. Keys whose last meta left are DROPPED, which is what
+   *  turns a `leave` into 「他走了」 rather than 「他有零个连接」. */
+  function prApply(frame) {
+    var keys = Object.keys(frame.joins);
+    var i, key, metas, m;
+    for (i = 0; i < keys.length; i++) {
+      key = keys[i];
+      metas = (frame.joins[key] && frame.joins[key].metas) || [];
+      if (!PR.metav[key]) PR.metav[key] = { refs: {}, order: [] };
+      for (var j = 0; j < metas.length; j++) {
+        m = metas[j];
+        var rid = m && m.phx_ref ? String(m.phx_ref) : ('k' + j);
+        if (!PR.metav[key].refs[rid]) PR.metav[key].order.push(rid);
+        PR.metav[key].refs[rid] = { status: m && m.status, last_seen: m && m.last_seen };
+      }
+    }
+    var lkeys = Object.keys(frame.leaves);
+    for (i = 0; i < lkeys.length; i++) {
+      key = lkeys[i];
+      metas = (frame.leaves[key] && frame.leaves[key].metas) || [];
+      var entry = PR.metav[key];
+      if (!entry) continue;
+      for (var k = 0; k < metas.length; k++) {
+        m = metas[k];
+        var lid = m && m.phx_ref ? String(m.phx_ref) : null;
+        if (lid && entry.refs[lid]) {
+          delete entry.refs[lid];
+          var at = entry.order.indexOf(lid);
+          if (at >= 0) entry.order.splice(at, 1);
+        }
+      }
+      if (entry.order.length === 0) delete PR.metav[key];
+    }
+  }
+
+  /** The caller's own §3.2.3 choice, from the cached session's user projection. Defaults to
+   *  'online' — which is §3.2.2's own `user.manualStatus || 'online'`, not a default invented here. */
+  function myManualStatus() {
+    var a = auth();
+    var s = a && a.session && a.session();
+    var v = s && s.user && s.user.manual_status;
+    var S = shared() || {};
+    return (S.MANUAL_STATUSES || []).indexOf(v) >= 0 ? v : 'online';
+  }
+
+  function prTrack() {
+    if (!PR.ws || PR.ws.readyState !== 1) return;
+    // ⚠ `last_seen` IS NOW, not the row's stored value: this is §3.2.2's `track({ last_seen })`, and
+    // the whole point of the beat is that it advances. The row's timestamp is the fallback for
+    // accounts that are not in this channel.
+    var payload = presenceTrackFrame(++PR.ref, myManualStatus(), new Date().toISOString());
+    try { PR.ws.send(JSON.stringify(payload)); } catch (e) { /* rtFail via close */ }
+  }
+
+  function prDropTimers() {
+    if (PR.hb) { clearInterval(PR.hb); PR.hb = null; }
+    if (PR.beat) { clearInterval(PR.beat); PR.beat = null; }
+    if (PR.joinTimer) { clearTimeout(PR.joinTimer); PR.joinTimer = null; }
+    if (PR.retry) { clearTimeout(PR.retry); PR.retry = null; }
+  }
+
+  function prKill() {
+    var ws = PR.ws;
+    PR.ws = null;
+    if (!ws) return;
+    ws.onopen = ws.onmessage = ws.onerror = ws.onclose = null;
+    try { ws.close(); } catch (e) { /* already closing */ }
+  }
+
+  function prNotify() {
+    if (PR.onState) { try { PR.onState(); } catch (e) { /* a repaint must not kill the socket */ } }
+  }
+
+  function prSetStatus(s) {
+    if (PR.status === s) return;
+    PR.status = s;
+    prNotify();
+  }
+
+  function prFail() {
+    if (PR.closed) return;
+    prDropTimers();
+    prKill();
+    // ⚠ NO POLLING FALLBACK, unlike the chat room. There is nothing to poll: `last_seen_at` is
+    // already the row-based answer and `stateOf` reads it — so a failed socket degrades to the BASE
+    // rather than to a slower copy of itself. Retrying is still worth two attempts, because a
+    // recycled socket is the common failure and it is one retry away from working.
+    if (PR.attempts < PRESENCE_MAX_ATTEMPTS) {
+      PR.attempts++;
+      prSetStatus('connecting');
+      PR.retry = setTimeout(function () { PR.retry = null; prConnect(); }, PRESENCE_RETRY_MS);
+      return;
+    }
+    prSetStatus('off');
+  }
+
+  function prFrame(raw) {
+    var f = parseFrame(raw);
+    if (!f) return;
+    if (f.event === 'phx_reply') {
+      if (String(f.ref) !== String(PR.joinRef)) return;
+      if (f.payload && f.payload.status === 'ok') prLive(); else prFail();
+      return;
+    }
+    if (f.event === 'presence_state' || f.event === 'presence_diff') {
+      prApply(presenceFromFrame(f.event, f.payload));
+      prNotify();
+      return;
+    }
+    if (f.event === 'phx_error' || f.event === 'phx_close') prFail();
+  }
+
+  function prLive() {
+    if (PR.closed) return;
+    if (PR.joinTimer) { clearTimeout(PR.joinTimer); PR.joinTimer = null; }
+    PR.attempts = 0;
+    if (!PR.hb) {
+      PR.hb = setInterval(function () {
+        if (!PR.ws || PR.ws.readyState !== 1) return;
+        try { PR.ws.send(JSON.stringify(heartbeatFrame(++PR.ref))); } catch (e) { /* via close */ }
+      }, RT_HEARTBEAT_MS);
+    }
+    if (!PR.beat) {
+      var S = shared() || {};
+      PR.beat = setInterval(prTrack, (S.PRESENCE_BEAT_MS || 60000));
+    }
+    prSetStatus('live');
+    prTrack();
+  }
+
+  function prConnect() {
+    if (PR.closed) return;
+    var C = cloud();
+    var W = g.WebSocket;
+    if (typeof W !== 'function' || !C || typeof C.realtimeUrl !== 'function') {
+      prSetStatus('off');
+      return;
+    }
+    var ws;
+    try { ws = new W(C.realtimeUrl()); } catch (e) { prFail(); return; }
+    PR.ws = ws;
+    PR.joinRef = ++PR.ref;
+    prSetStatus('connecting');
+
+    PR.joinTimer = setTimeout(function () { PR.joinTimer = null; prFail(); }, RT_JOIN_TIMEOUT_MS);
+    ws.onopen = function () {
+      try { ws.send(JSON.stringify(presenceJoinFrame(PR.joinRef, jwt(), uid()))); }
+      catch (e) { prFail(); }
+    };
+    ws.onmessage = function (ev) { prFrame(ev && ev.data); };
+    ws.onerror = function () { };
+    ws.onclose = function () { prFail(); };
+  }
+
+  /**
+   * Join the presence channel. `onChange()` is called on every arrival and departure.
+   *
+   * ⚠ SAFE TO CALL WHEN A CHANNEL IS ALREADY OPEN — it is torn down first, exactly like
+   * `chatSubscribe`. The view calls it on entering 社区 and on switching to a sub-view that shows
+   * dots, and a second call must not leave the first socket streaming into a dead list.
+   */
+  function presenceWatch(onChange) {
+    presenceStop();
+    PR.onState = onChange || null;
+    PR.closed = false;
+    PR.attempts = 0;
+    PR.metav = {};
+    var C = cloud();
+    if (!C || typeof C.isConfigured !== 'function' || !C.isConfigured() || !jwt() || !uid()) {
+      prSetStatus('off');
+      return Promise.resolve({ ok: false, error: 'NOT_CONFIGURED' });
+    }
+    prConnect();
+    return Promise.resolve({ ok: true });
+  }
+
+  /** Leave. Safe to call when not watching; called on every view change, like `chatUnsubscribe`. */
+  function presenceStop() {
+    PR.closed = true;
+    prDropTimers();
+    prKill();
+    PR.metav = {};
+    PR.onState = null;
+    PR.status = 'off';
+  }
+
+  /** `'off' | 'connecting' | 'live'` — what the view prints beside a status column. */
+  function presenceStateOf() { return PR.status; }
+
+  /** The socket's own admission that it is live. The room's 「实时」 label uses the same idea for
+   *  the same reason: a dot that keeps refreshing is indistinguishable from a stale one. */
+  function presenceIsLive() { return PR.status === 'live'; }
+
+  /**
+   * §3.2.1's state for one account, SOCKET FIRST, ROW SECOND.
+   *
+   * `row` is a `users` public-projection row (or anything with `manual_status` / `last_seen_at`), and
+   * it may be absent — a user id we have never fetched. In that case only the socket can answer, and
+   * an unknown user reads 离线.
+   *
+   * ⚠ BOTH HALVES GO THROUGH ONE `presenceState`. The socket's payload carries `status` (which
+   * §3.2.2 filled from `manual_status`) and `last_seen`; the row carries the same two facts. Feeding
+   * them to the same function is what stops 「隐身」 from meaning one thing in the room and another
+   * on a profile page.
+   */
+  function presenceStateFor(userId, row) {
+    var S = shared() || {};
+    var live = prStateOf(userId);
+    var manual = live ? live.status : (row && row.manual_status);
+    var seen = live ? live.last_seen : (row && row.last_seen_at);
+    if (!S.presenceState) return 'offline';
+    return S.presenceState(seen, manual, Date.now());
+  }
+
   g.GMCommunity = {
     // §2.3.5's limits, §2.4.4's fallback chain and the word list are defined once, in the shared
     // block generated from _shared/community.ts. Handed out through one accessor rather than
@@ -478,6 +1408,36 @@
     news: { load: newsLoad },
     feedback: { submit: feedbackSubmit, mine: feedbackMine },
 
+    // ---- 1.0.3 §一/§二/§三 -------------------------------------------------------------------
+    members: { profile: memberProfile },
+    friends: {
+      list: friendsList,
+      relation: friendRelation,
+      request: friendRequest,
+      act: friendAct,
+      otherId: friendOtherId,
+      // The two §1.2.5 budgets, read off the shared block so the view's 「今日还可发送 …」 and the
+      // Function's refusal cannot disagree about the ceiling.
+      quota: shareQuota,
+    },
+    shares: {
+      send: shareSend, fetch: shareFetch, consume: shareConsume,
+      inbox: shareInbox, sent: shareSent,
+      isLive: shareIsLive,
+    },
+    votes: { forTarget: voteForTarget, create: voteCreate, cast: voteCast,
+             close: voteClose, isOpen: voteIsOpen },
+    reports: { submit: reportSubmit, mine: reportMine },
+    notices: { list: noticesList, unread: noticesUnread, markRead: noticeMarkRead,
+               markAllRead: noticesMarkAllRead },
+    // ⚠ TWO DIFFERENT ANSWERS, TWO NAMES. `socket` is 「这个页面连着实时吗」 (for the dot column's
+    // header); `forUser` is 「这个人在线吗」 (for every avatar). Collapsing them into one `state`
+    // would be the shape this project keeps paying for.
+    presence: { watch: presenceWatch, stop: presenceStop,
+                socket: presenceStateOf, forUser: presenceStateFor,
+                isLive: presenceIsLive, manualStatus: myManualStatus },
+    settings: { patch: settingsPatch },
+
     // Pure protocol pieces. Exported for the suite: they are the only part of the socket that can
     // be exercised without a server, and the join frame's shape is the part that fails silently.
     _frames: {
@@ -486,6 +1446,10 @@
       heartbeat: heartbeatFrame,
       parse: parseFrame,
       rowFromChange: rowFromChange,
+      presenceTopic: PRESENCE_TOPIC,
+      presenceJoin: presenceJoinFrame,
+      presenceTrack: presenceTrackFrame,
+      presenceFrom: presenceFromFrame,
     },
   };
 

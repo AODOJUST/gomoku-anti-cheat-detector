@@ -18,6 +18,9 @@
 
 import { createClient, type SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { fail, HttpStatus, unauthorized } from "./errors.ts";
+// 1.0.3 §3.2: the presence beat's interval. Imported rather than re-declared — see `touchLastSeen`.
+// The dependency runs ONE WAY (client → community); community.ts imports nothing from here.
+import { PRESENCE_BEAT_MS } from "./community.ts";
 
 // ---------------------------------------------------------------------------
 // The two product limits every session path shares (§0 #2 / #8 of the 1.0.0 定稿).
@@ -48,6 +51,19 @@ export interface UserRow {
   deleted_at: string | null;
   /** 1.0.1 §3.7 — bumped to invalidate every token already issued to this account. */
   token_epoch: number | null;
+  // --- 1.0.3 (010_users_ext.sql) ---------------------------------------------------------------
+  /** §2.4's mute deadline. ⚠ There is deliberately NO `is_muted` column: 「他现在被禁言了吗」 is
+   *  `muted_until > now()`, derived rather than stored, so a served mute expires by itself. */
+  muted_until: string | null;
+  /** §3.1.2's ISO 3166-1 alpha-2, written only by `geo-update`. */
+  country_code: string | null;
+  country_updated_at: string | null;
+  /** §3.1.6 — when true every reader renders 白旗 (`FLAG_FALLBACK`) instead of the flag. */
+  hide_country: boolean | null;
+  /** §3.2.3 — 'online' | 'busy' | 'hidden', or null for 「没选过」. */
+  manual_status: string | null;
+  /** Stamped by `touchLastSeen` on every authenticated call — see the note on `requireUser`. */
+  last_seen_at: string | null;
 }
 
 /** The only user projection the client ever receives. */
@@ -60,6 +76,60 @@ export interface PublicUser {
   is_admin: boolean;
   activated_at: string | null;
   created_at: string | null;
+  // --- 1.0.3 -----------------------------------------------------------------------------------
+  // ⚠ THESE ARE ON THE **OWN-PROFILE** PROJECTION, which is the one `profile-get` builds for the
+  // caller. Reading somebody ELSE's 国籍 / 状态 is a different path (011 §3's narrowed `select`
+  // grant over PostgREST), and `email` is on this projection precisely because it never leaves
+  // through the other one. Adding a field here is therefore safe for the caller's own screen and
+  // says nothing about the 他人主页 — do not reuse this interface for it.
+  country_code: string | null;
+  hide_country: boolean;
+  manual_status: string | null;
+  last_seen_at: string | null;
+  /** §2.4's 「你已被禁言至 YYYY-MM-DD HH:MM」 — null unless a mute is currently in force. The
+   *  DURATION, not a boolean; the client derives 「还在禁言中」 the same way the server does. */
+  muted_until: string | null;
+}
+
+/**
+ * §1.3's 他人主页 projection — the same row MINUS everything that is the account's own business.
+ *
+ * ⚠ IT IS A SEPARATE FUNCTION FROM `toPublicUser`, NOT A FLAG ON IT. `toPublicUser` deliberately
+ * carries `email` (it is what `profile-get` hands the caller about THEMSELVES), so 「拿掉一个字段」
+ * is not something a parameter can express safely: the day somebody adds a private column to the
+ * own-profile shape, a flag-based version would publish it to every 他人主页 by default. Two named
+ * functions mean the dangerous direction is the one that has to be written out.
+ *
+ * ⚠ `muted_until` IS DROPPED HERE. §2.4's client half prints 「你已被禁言至 …」 to the muted account;
+ * telling everyone else that somebody is muted is a moderation record, and §2.3.4 keeps those in the
+ * 信箱. `is_banned` is dropped for the same reason and a stronger one — 011 §3 does not grant it, so
+ * a banned account is simply ABSENT from a 他人主页 (`users_select_public` requires
+ * `is_banned = false`).
+ */
+export interface ForeignUser {
+  id: string;
+  username: string | null;
+  avatar_url: string | null;
+  bio: string | null;
+  created_at: string | null;
+  country_code: string | null;
+  hide_country: boolean;
+  manual_status: string | null;
+  last_seen_at: string | null;
+}
+
+export function toForeignUser(row: UserRow): ForeignUser {
+  return {
+    id: row.id,
+    username: row.username,
+    avatar_url: row.avatar_url,
+    bio: row.bio,
+    created_at: row.created_at,
+    country_code: row.country_code ?? null,
+    hide_country: row.hide_country === true,
+    manual_status: row.manual_status ?? null,
+    last_seen_at: row.last_seen_at ?? null,
+  };
 }
 
 /** Build the public projection, coercing nullable booleans. */
@@ -73,6 +143,16 @@ export function toPublicUser(row: UserRow): PublicUser {
     is_admin: row.is_admin === true,
     activated_at: row.activated_at,
     created_at: row.created_at,
+    country_code: row.country_code ?? null,
+    hide_country: row.hide_country === true,
+    manual_status: row.manual_status ?? null,
+    last_seen_at: row.last_seen_at ?? null,
+    // ⚠ A MUTE THAT HAS ALREADY LAPSED IS REPORTED AS NULL, not as its old timestamp. The column
+    // keeps the date and `isMuted` is the predicate, but this projection is what the account
+    // settings screen renders — handing it a deadline in the past would print 「你已被禁言至
+    // (昨天)」 on an account that can post. The rule is one predicate (`isMuted` in the shared
+    // block), applied here to a presentation field.
+    muted_until: row.muted_until && Date.parse(row.muted_until) > Date.now() ? row.muted_until : null,
   };
 }
 
@@ -184,6 +264,39 @@ export function bearerToken(req: Request): string | null {
  * and GoTrue remains the credential authority (it is what `auth-login` and `auth-change-password`
  * hand the password to) — which is the split the two roles should have had all along.
  */
+/**
+ * Stamp `users.last_seen_at`, at most once per `PRESENCE_BEAT_MS`, and never fatally.
+ *
+ * See the call site in `requireUser` for why the beat lives on the auth path and why 011 does not
+ * grant the column to the client. This function owns the two things that make it safe to call on
+ * every request:
+ *
+ *   * THE THROTTLE IS A READ, NOT A TIMER. `userRow` was already loaded, so a fresh row costs one
+ *     comparison and no round trip; only a stale one writes. `<=` rather than `<` so a row stamped
+ *     exactly one beat ago is refreshed, which keeps the beat from drifting out of phase with
+ *     §3.2.1's 2-minute 在线 window on a slow cadence.
+ *   * A FAILURE IS LOGGED AND SWALLOWED. Presence is decoration on a profile and this is on the
+ *     critical path of every Function in the product — a valid request must never be refused
+ *     because a cosmetic timestamp could not be written.
+ *
+ * ⚠ An UNPARSEABLE `last_seen_at` (a value from before the column existed, a hand-edited row) reads
+ * as stale, so it heals itself on the next call rather than sitting wrong forever.
+ */
+async function touchLastSeen(sb: SupabaseClient, userRow: UserRow): Promise<void> {
+  const now = Date.now();
+  const seen = userRow.last_seen_at ? Date.parse(userRow.last_seen_at) : NaN;
+  if (!isNaN(seen) && now - seen < PRESENCE_BEAT_MS) return;
+  try {
+    const { error } = await sb
+      .from("users")
+      .update({ last_seen_at: new Date(now).toISOString() })
+      .eq("id", userRow.id);
+    if (error) console.error("client: last_seen beat failed:", error);
+  } catch (err) {
+    console.error("client: last_seen beat threw:", err);
+  }
+}
+
 export async function requireUser(req: Request, sb: SupabaseClient): Promise<RequireUserResult> {
   const token = bearerToken(req);
   if (!token) {
@@ -224,6 +337,33 @@ export async function requireUser(req: Request, sb: SupabaseClient): Promise<Req
   if (Number(claims.epoch ?? 0) !== Number(userRow.token_epoch ?? 0)) {
     return { caller: null, response: unauthorized("Token has been revoked") };
   }
+
+  // -------------------------------------------------------------------------------------------
+  // 1.0.3 §3.2 — the presence beat
+  // -------------------------------------------------------------------------------------------
+  // §3.2.1 defines 在线 as 「最近 2 分钟内有活动」, so SOMETHING has to record activity. §3.2.2 uses
+  // Supabase Realtime Presence for the live half, and this is the other half: the stored timestamp
+  // that answers 「他在线吗」 for an account that is not standing in the room (a 他人主页 opened from
+  // the room, a friend list). Without it, every such answer is 离线 and §3.2.4's three display
+  // locations show one state.
+  //
+  // ⚠ IT LIVES HERE BECAUSE THIS IS THE ONE PLACE EVERY AUTHENTICATED CALL PASSES THROUGH, AND
+  // BECAUSE 011 DELIBERATELY DOES NOT GRANT `users.last_seen_at` TO THE CLIENT. The alternative — a
+  // `presence-beat` Edge Function on a timer, or a client UPDATE — buys nothing and costs either an
+  // eleventh Function or a column a client could pin to 「刚刚」 forever, which is a capability
+  // `manual_status` does not give it (011 §4 explains why 隐身/忙碌 may be chosen but 在线 is not a
+  // claim: 在线 means 「按活跃度来」).
+  //
+  // ⚠ THROTTLED BY THE READ, NOT BY A TIMER. The row is already in hand, so the common case is one
+  // comparison and no write; the update happens at most once per PRESENCE_BEAT_MS per account, no
+  // matter how many Functions it calls. `PRESENCE_BEAT_MS` comes from the shared block so the beat
+  // and §3.2.1's two thresholds stay one arithmetic — it is imported rather than re-declared here,
+  // and community.ts does not import this file, so the edge runs one way.
+  //
+  // ⚠ A FAILED BEAT DOES NOT FAIL THE CALL. This is decoration on a profile; a Function that
+  // refused a valid request because a timestamp could not be stamped would trade a working feature
+  // for a cosmetic one. Logged, and the row is left as it was.
+  await touchLastSeen(sb, userRow);
 
   return {
     caller: {

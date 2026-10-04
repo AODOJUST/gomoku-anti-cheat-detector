@@ -339,4 +339,34 @@ GMI18n.register('zh-CN', {
   'cm.newscat.changelog': '更新日志',
   'cm.newscat.announcement': '公告',
 
+  // ---- 1.0.3 §一/§二/§三 — 分享种类 / 投票选项 / 举报类型 / 状态 ----
+  //
+  // Same reason as the nine above: §1.2.3's `kind`, §1.4.2's `choice`, §2.1's `category` and
+  // §3.2.1's resolved state are all stored as VALUES, so each label is a dotted runtime key
+  // reached through `cmNamed()` rather than a source-text key. `cm.presence.*` is a THIRD family
+  // again — those three are the strings `presenceState()` returns, and `cm.manual.*` are the
+  // three §3.2.3 radios the operator picks from; they are the same three words today and must
+  // still be two key families, because 「我声明我在线」 and 「系统测得他在线」 are different claims
+  // and one of them will get a fourth value before the other does.
+  //
+  // ⚠ Registered in `_tools/i18n-extra.js` TOO — that file supplies the text to translate FROM
+  // and this one is what makes zh-CN itself resolve the key instead of printing `cm.vote.both-ai`.
+  'cm.share.archive': '存档',
+  'cm.share.sample': '样本',
+  'cm.share.config': '配置',
+  'cm.vote.black-ai': '黑方 AI',
+  'cm.vote.white-ai': '白方 AI',
+  'cm.vote.both-ai': '双方 AI',
+  'cm.vote.both-human': '双方人类',
+  'cm.report.cheat': '作弊',
+  'cm.report.abuse': '辱骂/骚扰',
+  'cm.report.spam': '广告/刷屏',
+  'cm.report.other': '其他',
+  'cm.manual.online': '在线',
+  'cm.manual.busy': '忙碌中',
+  'cm.manual.hidden': '隐身',
+  'cm.presence.online': '在线',
+  'cm.presence.busy': '忙碌中',
+  'cm.presence.offline': '离线',
+
 });
