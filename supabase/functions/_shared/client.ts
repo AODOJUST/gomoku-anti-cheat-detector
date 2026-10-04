@@ -36,6 +36,30 @@ export const MAX_DEVICES = 3;
 /** §0 #8 「JWT 有效期 30 天」. The client mirrors it in `auth.js`; this is the authority. */
 export const SESSION_DAYS = 30;
 
+/**
+ * 1.0.5 审计 P2 — how long a soft-deleted account is kept before the cron hard-deletes it.
+ *
+ * ⚠ IT MOVED HERE FROM `auth-delete-account`, WHICH WAS ITS ONLY COPY. The audit's finding was
+ * 「账户删除后的云端数据清理没有闭环」: `auth-delete-account` stamps `deleted_at` and returns a
+ * `purgeAt` computed from this number, while NOTHING anywhere actually deleted anything — and
+ * `supabase/README.md` documented the cleanup as a `pg_cron` job that the operator had to write by
+ * hand. The `purgeAt` the client shows and the deadline the cron enforces are the same fact, so
+ * they are now the same constant, read by the door (`auth-delete-account`) and by the job
+ * (`friend-share-purge`).
+ */
+export const PURGE_AFTER_DAYS = 30;
+
+/**
+ * §3.6's Storage bucket for profile pictures: `avatars/{user_id}.jpg`.
+ *
+ * ⚠ IT LIVES HERE BECAUSE 1.0.5 GAVE IT A SECOND READER. Until the audit's P2 was closed only
+ * `profile-update` knew this name; the account purge (`friend-share-purge` §4) has to remove the
+ * object too, and the audit's P2 fix is the last place that should invent a second copy of a bucket
+ * name — a wrong name there fails silently as 「the picture was not deleted」. `verify-067 §10` asserts
+ * the literal appears in exactly this one file.
+ */
+export const AVATAR_BUCKET = "avatars";
+
 /** Shape of a row in public.users. */
 export interface UserRow {
   id: string;
@@ -64,6 +88,10 @@ export interface UserRow {
   manual_status: string | null;
   /** Stamped by `touchLastSeen` on every authenticated call — see the note on `requireUser`. */
   last_seen_at: string | null;
+  // --- 1.0.5 §二.2 (017_super_admin.sql) --------------------------------------------------------
+  /** 'user' | 'admin' | 'super_admin'. THE AUTHORITY — `is_admin` above is trigger-derived from it
+   *  (017 explains), so nothing here may decide admin-ness by writing `is_admin` directly. */
+  role: string | null;
 }
 
 /** The only user projection the client ever receives. */
@@ -89,6 +117,12 @@ export interface PublicUser {
   /** §2.4's 「你已被禁言至 YYYY-MM-DD HH:MM」 — null unless a mute is currently in force. The
    *  DURATION, not a boolean; the client derives 「还在禁言中」 the same way the server does. */
   muted_until: string | null;
+  // --- 1.0.5 §二.2 ------------------------------------------------------------------------------
+  /** ⚠ ONLY EVER THE CALLER'S OWN ROLE. §2.2.5 requires 超级管理员 to be visually identical to an
+   *  ordinary admin, so this field exists for one job — letting the console render §2.2.3's
+   *  super-only buttons without a second round trip — and `role` is NOT on the column-level SELECT
+   *  grant over PostgREST (017 §4), so nobody can read anybody else's. */
+  role: string;
 }
 
 /**
@@ -118,17 +152,43 @@ export interface ForeignUser {
   last_seen_at: string | null;
 }
 
-export function toForeignUser(row: UserRow): ForeignUser {
+/**
+ * The TypeScript twin of `018_user_directory.sql`, and the only place the two per-reader rules are
+ * written on this side of the wire.
+ *
+ * `opts.self` / `opts.friend` are passed in rather than derived here because this function has no
+ * database handle: the caller already knows 「我在看谁」 (`profile-get` compares the target id with
+ * `caller.id`) and asks the pair question once. Deriving it here would mean a query inside a pure
+ * projection.
+ *
+ * 1.0.5 审计 P0-2 — **`country_code` is withheld, not merely unrendered.** Before this, 隐藏国籍
+ * controlled nothing but which glyph the client drew; `get /rest/v1/users?select=country_code` still
+ * answered, so the PRIVACY.md promise was a rendering convention. The account itself always sees its
+ * own code (its own settings screen shows what it hid), a friend does too — 「隐藏国籍」 is §3.1.6's
+ * 「给陌生人看的旗子」 switch, not a secrecy pact with one's friends — and everyone else gets `null`
+ * plus `hide_country: true`, which is what makes the client draw 白旗.
+ *
+ * 1.0.5 审计 P0-3 — **`last_seen_at` travels only to self and accepted friends.** `presenceState`
+ * already refused to report a 隐身 account as 在线, but the raw timestamp was readable by any
+ * authenticated caller, and it is stamped every `PRESENCE_BEAT_MS` (60 s) — finer than the dot it
+ * feeds. `null` here is indistinguishable from 「好久没上线」 to the client, which is the point.
+ */
+export function toForeignUser(
+  row: UserRow,
+  opts?: { self?: boolean; friend?: boolean },
+): ForeignUser {
+  const self = !!(opts && opts.self);
+  const friend = !!(opts && opts.friend);
   return {
     id: row.id,
     username: row.username,
     avatar_url: row.avatar_url,
     bio: row.bio,
     created_at: row.created_at,
-    country_code: row.country_code ?? null,
+    country_code: (row.hide_country === true && !self) ? null : (row.country_code ?? null),
     hide_country: row.hide_country === true,
     manual_status: row.manual_status ?? null,
-    last_seen_at: row.last_seen_at ?? null,
+    last_seen_at: (self || friend) ? (row.last_seen_at ?? null) : null,
   };
 }
 
@@ -153,7 +213,44 @@ export function toPublicUser(row: UserRow): PublicUser {
     // (昨天)」 on an account that can post. The rule is one predicate (`isMuted` in the shared
     // block), applied here to a presentation field.
     muted_until: row.muted_until && Date.parse(row.muted_until) > Date.now() ? row.muted_until : null,
+    // 1.0.5 §二.2 — the caller's OWN role. Normalised to the three known values so a null from a
+    // pre-017 row (or a hand-edited one) reads as `'user'` rather than as `undefined` — the client
+    // branches on this string, and an unexpected fourth value would take the 「not a super admin」
+    // arm by falling through, which is the safe direction but should be the EXPLICIT one.
+    role: toRole(row.role),
   };
+}
+
+/** §2.2.2's three values, in ONE place. Anything unrecognised is `'user'`. */
+export const ROLES = ["user", "admin", "super_admin"] as const;
+export type Role = typeof ROLES[number];
+export function toRole(value: unknown): Role {
+  return (ROLES as readonly string[]).indexOf(String(value)) >= 0 ? (String(value) as Role) : "user";
+}
+export function isSuperAdminRole(value: unknown): boolean {
+  return toRole(value) === "super_admin";
+}
+
+/**
+ * §2.2.5 「视觉上超级管理员和普通管理员完全相同」 — enforced on the WIRE, not in the renderer.
+ *
+ * Everywhere a caller can see somebody else's role (`admin-list-users`) the value is flattened to
+ * `'admin'`, so 「谁是超级管理员」 is not a fact the API hands out at all. A rendering convention
+ * would leave the truth one 「View source / Network」 away, and §2.2.1 is explicit that the elevation
+ * is 「获取方式隐藏」 rather than merely undecorated.
+ *
+ * `self` is the caller's OWN row: an account is always told what it really is, because that is what
+ * §2.2.5's conditional button needs and it is the only role fact the client is entitled to.
+ *
+ * ⚠ THE COARSE HALF IS DELIBERATELY PRESERVED: an ordinary admin still sees 「this account is an
+ * admin」, which is what §2.2.3's 「罢免普通管理员」 button has to know. Flattening to `'user'` would
+ * hide the super admin by making the console unable to list administrators — and demoting a super
+ * admin is refused by the Function anyway, so the client does not need the finer value to be safe.
+ */
+export function roleAsSeenBy(value: unknown, self: boolean): Role {
+  const role = toRole(value);
+  if (self) return role;
+  return role === "user" ? "user" : "admin";
 }
 
 // ---------------------------------------------------------------------------
@@ -221,6 +318,11 @@ export interface Caller {
   isAdmin: boolean;
   isBanned: boolean;
   deletedAt: string | null;
+  /** 1.0.5 §二.2 — 'user' | 'admin' | 'super_admin', read from the database row on every call.
+   *  `isAdmin` above stays the coarse gate the eight admin-* functions already ask; this is the
+   *  finer one, and only §2.2.3's three super-only operations consult it. */
+  role: Role;
+  isSuperAdmin: boolean;
   row: UserRow | null;
 }
 
@@ -373,10 +475,40 @@ export async function requireUser(req: Request, sb: SupabaseClient): Promise<Req
       isAdmin: userRow.is_admin === true,
       isBanned: userRow.is_banned === true,
       deletedAt: userRow.deleted_at ?? null,
+      // 1.0.5 §二.2 — read from the ROW, never from a claim: a token is minted once and lives 30
+      // days, and a role decided at mint time would leave a demoted admin privileged until expiry.
+      // (`is_admin` is trigger-derived from `role` in 017, so the two can never disagree.)
+      role: toRole(userRow.role),
+      isSuperAdmin: isSuperAdminRole(userRow.role),
       row: userRow,
     },
     response: null,
   };
+}
+
+/**
+ * requireUser + the SUPER-admin gate, for §2.2.3's three operations nobody but the original
+ * developer may perform (罢免管理员 / 任命管理员 / 修改全局设置 / 删除用户数据).
+ *
+ * ⚠ IT IS A SEPARATE FUNCTION FROM `requireAdmin` RATHER THAN A FLAG, for the same reason
+ * `toForeignUser` is separate from `toPublicUser`: the dangerous direction (letting an ordinary
+ * admin through) must be the one somebody has to type out. A `requireAdmin(req, sb, {super: true})`
+ * reads almost identically at the call site to the plain one, and this repo has paid for
+ * near-identical call sites before.
+ */
+export async function requireSuperAdmin(req: Request, sb: SupabaseClient): Promise<RequireUserResult> {
+  const result = await requireUser(req, sb);
+  if (result.response) return result;
+  if (!result.caller.isSuperAdmin) {
+    // 403 FORBIDDEN, same code `requireAdmin` uses for the coarse gate: to the caller the two are
+    // one fact (「你不够格」), and §2.2.5 requires that nothing about the response distinguishes a
+    // super admin from an ordinary one.
+    return {
+      caller: null,
+      response: fail("FORBIDDEN", HttpStatus.FORBIDDEN, "Super administrator privileges required"),
+    };
+  }
+  return result;
 }
 
 /**

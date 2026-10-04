@@ -41,6 +41,12 @@
       ok: true,
       user: d.user || null,
       sampleCount: Number(d.sampleCount) || 0,
+      // 1.0.5 §三.1 — §3.2.2's other two numbers, added to the Function's own-profile answer. Both
+      // default to 0 rather than to `undefined` so a 1.0.4-era server (which does not send them)
+      // renders zeros instead of 「NaN」 — the client and the Function are deployed separately and
+      // there is always a window where one is ahead of the other.
+      archiveCount: Number(d.archiveCount) || 0,
+      friendCount: Number(d.friendCount) || 0,
       // Passed through rather than synthesised, so that when the server starts filling them the
       // panel needs no change. Absent means 「还没实现」, and the view renders the grey 「即将推出」
       // block for exactly that case.
@@ -49,6 +55,78 @@
       accuracy: (d.accuracy === undefined) ? null : d.accuracy,
       friends: Array.isArray(d.friends) ? d.friends : [],
     };
+  }
+
+  /**
+   * §3.2.2's 游戏统计, and §3.2.3's fix for 「主页的样本库数目与实际样本库数目不匹配」.
+   *
+   * The server half is one `profile-get` call (sampleCount / archiveCount / friendCount / badges —
+   * see that Function's own-profile branch). The LOCAL half is the part §3.2.3 is about: the cloud
+   * only knows about rows that were ever pushed, and 云同步 是 **off by default**, so a page that
+   * renders `sampleCount` alone under-reports every sample the operator has captured since.
+   *
+   * ⚠ §3.2.3 writes the rule as 「云端计数 + 本地未同步计数 = 真实数量」, and that sum is the size of
+   * the UNION — which is worth saying out loud because the two obvious simplifications are both
+   * wrong. 「就地取本地条数」 under-counts when another device pushed rows this one never pulled;
+   * 「就地取云端计数」 is the defect being fixed. So the local ids are diffed against the cloud's.
+   *
+   * ⚠ The cloud side of the diff is read as IDS, not as a count: PostgREST cannot subtract two sets,
+   * and `count()` would answer 「云端有几条」 — a question that is already answered exactly by
+   * `profile-get`. The ids only ever decide WHICH local rows are missing up there. The `limit=1000`
+   * is therefore a cap on the diff's accuracy, not on the number shown: past a thousand cloud rows
+   * the count stays exact and the diff can only over-report the delta. A player with more than a
+   * thousand samples on one account is a case §3.2.3's own arithmetic does not cover either.
+   *
+   * ⚠ §3.2.3 also sketches a `syncedToCloud` flag written on each sample. There is no such field in
+   * this project and adding one would be adding a THIRD answer to 「这条样本上云了吗」 — `sync.js`
+   * already decides that by comparing `updated_at` against the remote row (§7.3), and a stored flag
+   * would go stale the moment a row was edited on another device. The diff asks the cloud.
+   */
+  async function getProfileStats() {
+    var base = await getProfile();
+    if (!base.ok) return base;
+    var out = {
+      ok: true,
+      user: base.user,
+      badges: base.badges,
+      achievements: base.achievements,
+      accuracy: base.accuracy,
+      samples: base.sampleCount,
+      archives: base.archiveCount,
+      // §3.2.2 lists 检测对局 with 「同上」 in the 来源 column: it is the archive count, drawn twice.
+      played: base.archiveCount,
+      friends: base.friendCount,
+      unsynced: 0,
+    };
+
+    var local = [];
+    try { local = (await g.GMStorage.loadSamples()) || []; } catch (e) { local = []; }
+    if (!local.length) return out;
+
+    var t = jwt();
+    if (!t || !cloud().isConfigured()) {
+      // No cloud at all (or no session): the LOCAL store is the only truth there is, and it is also
+      // exactly the number the 样本库 page shows — which is the property §3.2.3 is protecting.
+      out.samples = local.length;
+      out.unsynced = local.length;
+      return out;
+    }
+    var res = await cloud().rest('samples', { method: 'GET', query: 'select=id&limit=1000', jwt: t });
+    if (!res.ok) {
+      // The diff failed but the page must still draw. Falling back to the local count here is
+      // deliberate: the two numbers on screen are 「这一页」 and 「样本库那一页」, and the whole
+      // complaint §3.2.3 answers is that they disagreed.
+      out.samples = local.length;
+      return out;
+    }
+    var seen = {};
+    var rows = Array.isArray(res.data) ? res.data : [];
+    for (var i = 0; i < rows.length; i++) seen[String(rows[i] && rows[i].id)] = true;
+    for (var j = 0; j < local.length; j++) {
+      if (!seen[String(local[j] && local[j].id)]) out.unsynced++;
+    }
+    out.samples = base.sampleCount + out.unsynced;
+    return out;
   }
 
   // ---- 预留接口 (§5.2) ------------------------------------------------------------------------
@@ -95,9 +173,17 @@
     if (!t) return { ok: false, error: 'UNAUTHORIZED' };
     var body = {};
     if (code) body.code = auth().normalizeCode(code);
+    // Read the id BEFORE the round trip: `logout()` below clears the session, and after that
+    // `status().user` is null and there is nothing left to name the credential that must go.
+    var meId = ((auth().status() || {}).user || {}).id || '';
     var res = await cloud().call('auth-delete-account', body, { jwt: t });
     if (!res.ok) return { ok: false, error: res.error, status: res.status };
+    // 1.0.5 §一.1 — `forgetAccount`, not `forgetAccounts`: the other remembered accounts belong to
+    // other people, and deleting one of them is not a statement about the rest. Leaving the deleted
+    // one in the list would be worse than untidy — the drawer would offer a 免密 switch to an account
+    // the server has already refused, i.e. a button whose every press ends in NEED_PASSWORD.
     await auth().logout();
+    if (meId) { try { await auth().forgetAccount(meId); } catch (e) {} }
     return { ok: true, purgeAt: (res.data && res.data.purgeAt) || 0 };
   }
 
@@ -245,6 +331,7 @@
     AVATAR_TYPES: AVATAR_TYPES,
 
     getProfile: getProfile,
+    getProfileStats: getProfileStats,
     updateProfile: updateProfile,
     uploadAvatar: uploadAvatar,
     changePassword: changePassword,

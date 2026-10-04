@@ -184,11 +184,23 @@
       // features, so there is no second finer-grained flag to keep in sync.
       cloudUsable: st === 'active' || st === 'grace',
       isAdmin: !!(s && s.user && s.user.is_admin),
+      // 1.0.5 §二.2 — the caller's OWN role, straight off `users.role` as `toPublicUser` reported it
+      // at login. It drives VISIBILITY only (`admin.js:setRole`'s comment says why): a client
+      // patched to claim `super_admin` reaches the same 403 as any other impostor.
+      // ⚠ `'user'` when there is no session, NOT `null`: three values is the whole vocabulary, and a
+      // fourth ("unknown") would force every consumer to handle it for a case that cannot act.
+      role: (s && s.user && s.user.role) || 'user',
+      isSuperAdmin: !!(s && s.user && s.user.role === 'super_admin'),
     };
   }
 
   function isActivated() { var st = state(); return st === 'active' || st === 'grace'; }
   function isAdmin() { return !!(g.GMCloud.isConfigured() && _session && _session.user && _session.user.is_admin); }
+  /** §二.2 — same shape as `isAdmin()` above, so the two conditionals in the UI read alike. */
+  function isSuperAdmin() {
+    return !!(g.GMCloud.isConfigured() && _session && _session.user &&
+      _session.user.role === 'super_admin');
+  }
 
   /**
    * 1.0.1 §1.2 — **the** 准入判定, and there is exactly one of it.
@@ -318,12 +330,21 @@
    * 登出. Local-only (see `clearCloudSession`): §3.6 and §4.2 both require that leaving the account
    * never touches local data, and a logout that needed the network would be unusable exactly when
    * the operator wants it.
+   *
+   * 1.0.5 §一.1 — it clears the POINTER, not the LIST. §1.1.1 defines 切换账号 as 「保留已登录账号的
+   * 会话」, and a 退出登录 that also forgot every credential would leave nothing to switch back to —
+   * i.e. it would make the new feature impossible. The consequence is worth stating once, plainly:
+   * **a remembered account's sealed token outlives 退出登录**. That is the point of the feature, and
+   * it is documented in PRIVACY.md §4.5 next to the other at-rest secrets. `forgetAccount` is how a
+   * single credential is thrown away, and `forgetAccounts` how all of them are.
    */
   async function logout() {
     await load();
     await store().clearCloudSession();
     _session = null;
     _loaded = true;
+    var got = await store().loadAccounts();
+    await store().saveAccounts(got.accounts, '');
     emit();
     return { ok: true };
   }
@@ -334,6 +355,167 @@
     _loaded = true;
     emit();
     return status();
+  }
+
+  // =============================================================================================
+  // 1.0.5 §一.1 切换账号（免密登录）
+  // =============================================================================================
+  // §1.1.1「区别于退出登录」 is the whole design: 退出登录 clears the LIVE session and nothing else,
+  // while 切换账号 keeps a list of credentials that survive it — which is what 「免密」 means.
+  //
+  // ⚠⚠ **THIS PROJECT HAS NO REFRESH TOKEN, AND THE FIXTURE THIS FEATURE WAS SPECCED AGAINST IS
+  // SUPABASE AUTH.** §1.1.2's storage sketch carries `refreshToken` and §1.1.3 calls
+  // `supabase.auth.setSession({access_token, refresh_token})`. Neither exists here: 1.0.0 mints its
+  // own 30-day JWT (`signJwt` in `_shared/client.ts`) and the only way to exchange it for a fresh
+  // one is `auth-renew` — which takes a Bearer token and re-signs it, accepting a token up to 30
+  // days past `exp` (its own `RENEW_GRACE_DAYS`). That function IS this project's refresh, so
+  // `switchAccount` calls it with the TARGET account's token, and the row stores `expiresAt`
+  // instead of a `refreshToken` that nothing could ever fill.
+  // A stored `refreshToken: null` would have been the worse answer: a field that is always null
+  // reads as 「not implemented yet」 to everyone who comes after, and the storage shape would then
+  // be telling a story the code does not.
+  //
+  // Everything else in §1.1.2 holds literally: at most five accounts, same account updates in
+  // place, and the JWT is sealed with AES-256-GCM before it is written.
+
+  /** §1.1.4's seal, and the ONLY place the device key is resolved. A `null` answer means WebCrypto
+   *  is missing (a stripped harness) — the caller refuses to remember rather than store a token in
+   *  the clear, because a plaintext credential is worse than no convenience. */
+  async function sealToken(jwt) {
+    if (!g.GMCrypto || !g.GMCrypto.available()) return null;
+    return g.GMCrypto.encryptToken(jwt, await store().getDeviceKey());
+  }
+
+  async function openToken(envelope) {
+    if (!g.GMCrypto || !g.GMCrypto.available()) return null;
+    return g.GMCrypto.decryptToken(envelope, await store().getDeviceKey());
+  }
+
+  /**
+   * §1.1.2's upsert. Newest first, because storage.js's ceiling is 「淘汰最旧的」 and it can only cut
+   * from one end — the sort lives in storage.js beside the cut so both read the same field.
+   */
+  async function rememberAccount(session) {
+    var s = session || _session;
+    var u = s && s.user;
+    if (!u || !u.id) return null;
+    var envelope = await sealToken(s.jwt);
+    if (!envelope) return null;
+    var got = await store().loadAccounts();
+    var row = {
+      userId: String(u.id),
+      username: u.username || '',
+      email: u.email || '',
+      // §1.1.2 spells it `avatarUrl`; the `users` column is `avatar_url`. Mapped here, at the one
+      // boundary where a server row becomes a stored credential.
+      avatarUrl: u.avatar_url || '',
+      jwt: envelope,
+      // The addition §1.1.2 does not have — see the header block: this is what lets the drawer say
+      // 「免密」 instead of guessing, without a network call.
+      expiresAt: Number(s.expiresAt) || 0,
+      lastLoginAt: Date.now(),
+      isAdmin: u.is_admin === true,
+    };
+    var next = [row].concat(got.accounts.filter(function (a) { return a.userId !== row.userId; }));
+    return store().saveAccounts(next, row.userId);
+  }
+
+  /** §1.1.2's list, newest login first — the order the drawer draws and the order the ceiling cuts. */
+  async function getStoredAccounts() {
+    var got = await store().loadAccounts();
+    return got.accounts;
+  }
+
+  /** §1.1.2's writer, exposed so the drawer can act on the list without re-deriving the pointer. */
+  function saveStoredAccounts(accounts, activeId) {
+    return store().saveAccounts(accounts, activeId);
+  }
+
+  /** Forget every remembered account — 「删除账号」 only. 退出登录 deliberately keeps them. */
+  function forgetAccounts() { return store().clearAccounts(); }
+
+  /** §一.1 — throw away ONE credential (删除账号 for that account). The others are untouched: they
+   *  are different people's sessions and this action says nothing about them. */
+  async function forgetAccount(userId) {
+    var id = String(userId == null ? '' : userId);
+    var got = await store().loadAccounts();
+    var next = got.accounts.filter(function (a) { return a.userId !== id; });
+    var active = got.activeId === id ? '' : got.activeId;
+    return store().saveAccounts(next, active);
+  }
+
+  /**
+   * §1.1.3's `switchAccount`, adapted to the token model described above.
+   *
+   * Two questions have to be answered before a stored credential may become the live session:
+   * 「它还能用吗」 and 「服务端还认它吗」. The first is local (`expiresAt`), the second is `auth-renew`
+   * — the same call §3.4 already makes every 7 days, so a switch costs exactly one request and
+   * leaves the operator holding a token that is good for another 30 days rather than the remainder
+   * of the old one. On success the new session goes through `adoptSession`, so the row is re-sealed
+   * with the FRESH token and marked active — one funnel, no second write path.
+   *
+   * The failure cases, and why each gets the answer it does:
+   *   ACCOUNT_NOT_FOUND  the id is not in the list (a stale drawer).
+   *   NEED_PASSWORD      §1.1.5's 「refresh token 过期 → 弹出密码输入」. Reached when the local copy is
+   *                      past `expiresAt`, when the seal will not open (key rotated / store edited),
+   *                      or when the server rejects it with 401/403 — a revoked `token_epoch`, a
+   *                      deleted account, a ban. All four mean the same thing to the operator: this
+   *                      account cannot be entered without the password.
+   *   offline            a transport failure is NOT a rejection. If the local copy is still inside
+   *                      its window the switch proceeds with it (the boot-time `renew()` will verify
+   *                      it and clear it on a 401), because refusing would make 切换账号 useless for
+   *                      the developer who is testing a build with the network off.
+   */
+  async function switchAccount(userId) {
+    if (!cloud().isConfigured()) return { ok: false, error: 'NOT_CONFIGURED' };
+    await load();
+    var id = String(userId == null ? '' : userId);
+    var got = await store().loadAccounts();
+    var target = null;
+    for (var i = 0; i < got.accounts.length; i++) {
+      if (got.accounts[i].userId === id) { target = got.accounts[i]; break; }
+    }
+    if (!target) return { ok: false, error: 'ACCOUNT_NOT_FOUND' };
+    if (_session && _session.user && _session.user.id === id) {
+      return { ok: true, user: _session.user, already: true };
+    }
+    var exp = Number(target.expiresAt) || 0;
+    if (!(exp > Date.now())) return { ok: false, error: 'NEED_PASSWORD' };
+    var jwt = await openToken(target.jwt);
+    if (!jwt) return { ok: false, error: 'NEED_PASSWORD' };
+
+    var deviceId = await store().getDeviceId();
+    var res = await cloud().call('auth-renew', { deviceId: deviceId },
+      { jwt: jwt, timeoutMs: 8000 });
+    if (res.ok) {
+      var d = res.data || {};
+      await adoptSession({
+        jwt: d.jwt || jwt,
+        expiresAt: d.expiresAt,
+        user: {
+          id: target.userId,
+          username: target.username,
+          email: target.email,
+          avatar_url: target.avatarUrl,
+          is_admin: target.isAdmin === true,
+        },
+      });
+      return { ok: true, user: _session.user };
+    }
+    if (res.status === 401 || res.status === 403) return { ok: false, error: 'NEED_PASSWORD', status: res.status };
+    // Transport failure (offline / timeout / 5xx). The credential is still locally valid.
+    await adoptSession({
+      jwt: jwt,
+      expiresAt: exp,
+      user: {
+        id: target.userId,
+        username: target.username,
+        email: target.email,
+        avatar_url: target.avatarUrl,
+        is_admin: target.isAdmin === true,
+      },
+    });
+    return { ok: true, user: _session.user, unverified: true };
   }
 
   /** `status()` plus the expiry, for the account row's 「有效期至 …」 line. */
@@ -348,11 +530,11 @@
    * the presence channel — which reads `myManualStatus()` off this projection — keeps announcing
    * 在线 until the page is reloaded. Two answers to 「我的状态是什么」, one of them stale.
    *
-   * ⚠ It merges rather than replaces, and it does not accept `is_admin` / `is_banned` / `id`: those
-   * are the fields the server decides on every call, and a local write to them would be this
-   * project's recurring 「客户端复述服务端判据」 defect in the one place where it would also be a
-   * privilege escalation. The caller passes the row PostgREST returned; the merge is field-by-field
-   * so a column the policy did not let through simply is not there.
+   * ⚠ It merges rather than replaces, and it does not accept `is_admin` / `is_banned` / `id` /
+   * `role`: those are the fields the server decides on every call, and a local write to them would
+   * be this project's recurring 「客户端复述服务端判据」 defect in the one place where it would also
+   * be a privilege escalation. The caller passes the row PostgREST returned; the merge is
+   * field-by-field so a column the policy did not let through simply is not there.
    */
   async function patchUser(fields) {
     await load();
@@ -392,6 +574,12 @@
     };
     _loaded = true;
     await store().saveCloudSession(_session);
+    // 1.0.5 §一.1.2 — a fresh session is also a remembering. FOUR callers funnel through here
+    // (activate / register / login / switchAccount), and §1.1.2's 「同一账号重复登录时更新记录，
+    // 不重复添加」 is exactly an upsert, so it belongs at the funnel rather than at each door.
+    // Failures are swallowed on purpose: not remembering an account costs the operator a password
+    // next time, while throwing here would undo a login that already succeeded.
+    try { await rememberAccount(_session); } catch (e) { /* the session is what matters, not the memo */ }
     emit();
     return _session;
   }
@@ -573,6 +761,7 @@
     renewAfterMs: renewAfterMs,
     isActivated: isActivated,
     isAdmin: isAdmin,
+    isSuperAdmin: isSuperAdmin,
     gateOpen: gateOpen,        // 1.0.1 §1.2 — the ONE 准入判定; every gated surface asks this
 
     activate: activate,
@@ -581,6 +770,15 @@
     logout: logout,
     refresh: refresh,
     onChange: onChange,
+
+    // 1.0.5 §一.1 — 切换账号. `switchAccount` is the only verb the UI calls; the other four are the
+    // list's readers/writers, exported so the drawer does not have to reach into `GMStorage` itself
+    // (and so a future caller cannot invent a second write path around `saveAccounts`).
+    switchAccount: switchAccount,
+    getStoredAccounts: getStoredAccounts,
+    saveStoredAccounts: saveStoredAccounts,
+    forgetAccount: forgetAccount,
+    forgetAccounts: forgetAccounts,
 
     // 1.0.1 §二 — the two-step flow and its neighbours.
     validateCode: validateCode,

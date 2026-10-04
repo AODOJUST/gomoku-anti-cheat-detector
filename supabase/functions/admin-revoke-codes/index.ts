@@ -46,7 +46,11 @@ serve(async (req: Request): Promise<Response> => {
         .from("activation_codes")
         .update({ revoked: true })
         .eq("revoked", false)
-        .is("redeemed_by", null) // redeemable, unused codes only
+        // ⚠ 1.0.5 审计 P2 — 「还没被用」 is `redeemed`, not `redeemed_by is null`. The two were one
+        // column until 020, and they still agree for every code that has an owner; they stop agreeing
+        // the moment a redeemer's account is purged, which nulls `redeemed_by` and would have made
+        // 「撤销所有未使用的码」 also revoke codes that were already spent.
+        .eq("redeemed", false) // redeemable, unused codes only
         .select("code");
       if (error) throw error;
       return json({ revoked: (updated ?? []).length });

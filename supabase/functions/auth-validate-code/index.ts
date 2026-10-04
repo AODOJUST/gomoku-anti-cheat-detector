@@ -44,7 +44,7 @@ serve(async (req: Request): Promise<Response> => {
     const sb = serviceClient();
     const { data: codeRow, error } = await sb
       .from("activation_codes")
-      .select("code, revoked, redeemed_by")
+      .select("code, revoked, redeemed")
       .eq("code", code)
       .maybeSingle();
     if (error) throw error;
@@ -53,7 +53,10 @@ serve(async (req: Request): Promise<Response> => {
     // Order matters and is §2.2's: a revoked code that was also used reports REVOKED, because
     // 「已被撤销」 is the fact the operator has to act on (ask for a new one).
     if (codeRow.revoked === true) return json({ valid: false, reason: "REVOKED" });
-    if (codeRow.redeemed_by) return json({ valid: false, reason: "ALREADY_USED" });
+    // ⚠ 1.0.5 审计 P2 — `redeemed`, not `redeemed_by`. `redeemed_by` is now `on delete set null`
+    // (020) so a purged account's code would read as unused here and this step would green-light a
+    // code that has already been spent. `verify-067 §10` pins the three readers together.
+    if (codeRow.redeemed === true) return json({ valid: false, reason: "ALREADY_USED" });
 
     return json({ valid: true });
   } catch (err) {

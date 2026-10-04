@@ -99,6 +99,38 @@
   }
 
   /**
+   * 1.0.5 (audit P3) — the PostgREST code that `wireCode` deliberately does not read.
+   *
+   * The reason `wireCode` reads only `data.error` is a real one: the platform's gateway answers a
+   * missing function with `{"code":"NOT_FOUND"}`, which is character for character the spelling this
+   * project uses for 「激活码不存在」, and folding the two namespaces together would print
+   * 「激活码无效」 over a deployment problem. The cost of that decision is that the OTHER native code
+   * disappears too: `{"code":"PGRST301","message":"JWT expired"}` reaches the caller as `HTTP_401`,
+   * and 「token 过期」 and 「RLS 拒绝」 — a login problem and a permissions problem — become the same
+   * string. PostgREST tells the two apart; we were the ones dropping it.
+   *
+   * So the code is carried BESIDE the vocabulary instead of inside it: the error CODE stays exactly
+   * what it was (no catalogue branch moves, no collision is possible), and the native code rides in
+   * the message, where a human reads it and nothing branches on it.
+   */
+  var NATIVE_CODE_RE = /^[A-Za-z][A-Za-z0-9_]{1,39}$/;
+  function nativeWireCode(data) {
+    if (!data || typeof data !== 'object') return '';
+    var c = data.code;
+    // Shape-checked: our own envelopes carry no `code`, and a numeric `code` (some proxies use one)
+    // would render as noise rather than as a name.
+    return (typeof c === 'string' && NATIVE_CODE_RE.test(c)) ? c : '';
+  }
+
+  /** The `message` half of a failed response, with the native code appended when there is one. */
+  function wireMessage(data) {
+    var msg = (data && typeof data.message === 'string') ? data.message : '';
+    var native = nativeWireCode(data);
+    if (!native) return msg;
+    return (msg ? msg + ' ' : '') + '[' + native + ']';
+  }
+
+  /**
    * The single outbound call. NEVER rejects.
    *
    * Resolves to exactly one of:
@@ -153,7 +185,7 @@
         ok: false,
         error: wireCode(data, res.status),
         status: res.status,
-        message: (data && data.message) || '',
+        message: wireMessage(data),
       };
     }
     return { ok: true, data: data, status: res.status };
@@ -212,7 +244,7 @@
         ok: false,
         error: wireCode(data, res.status),
         status: res.status,
-        message: (data && data.message) || '',
+        message: wireMessage(data),
       };
     }
     return { ok: true, data: data, status: res.status };
@@ -235,6 +267,26 @@
    * The `http`→`ws` swap is done on the scheme rather than by string-replacing the host, so the
    * local-stack case (`http://127.0.0.1:54321`) yields `ws://` — which is what a `supabase start`
    * backend actually listens on.
+   *
+   * ⚠ 1.0.5 审计 P3 — WHY THE ANON KEY IS STILL IN THE QUERY STRING, AFTER WE TRIED THE HEADER FORM.
+   * The audit's note is right on its face: 「anon key 在 URL 里，会出现在浏览器历史、代理日志、服务器
+   * 访问日志里…… Supabase Realtime 支持 `apikey` 走 query 或走 `Sec-WebSocket-Protocol`，当前实现选了
+   * 前者。」 The second form was implemented and measured against the SHIPPED backend
+   * (`wss://<ref>.supabase.co/realtime/v1/websocket?vsn=1.0.0` with the key offered as the
+   * `supabase-realtime` subprotocol and no `apikey` parameter): the server closes the handshake, and
+   * the channel never joins. So the choice is not a preference — with this backend, the header form
+   * does not work, and shipping it would silently break the chat room and the presence channel.
+   *
+   * What is done instead, and why it is enough:
+   *   * the key is the **anon** key, which is public by design and is already packaged in every copy
+   *     of the extension (see `cloud.js`'s own header). It authorises nothing on its own — every read
+   *     is filtered by RLS and every write goes through an Edge Function with the user's JWT;
+   *   * a `WebSocket` URL cannot carry an `Authorization` header, so the query string is the only
+   *     place a browser will accept it;
+   *   * the alternative that does remove it from URLs (a server-minted short-lived Realtime token)
+   *     would require a new endpoint and a token-refresh path for a key that is not a secret.
+   * Documented rather than silently kept: `verify-067 §10` pins BOTH the shape and this paragraph, so
+   * the decision cannot be reversed by someone who only reads the diff.
    */
   function realtimeUrl() {
     return SUPABASE_URL.replace(/\/+$/, '').replace(/^http/, 'ws') +

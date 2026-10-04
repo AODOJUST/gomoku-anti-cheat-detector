@@ -97,8 +97,12 @@
       <li><strong>不会上传棋谱原始数据</strong>——对局的逐手记录留在本机；</li>
       <li><strong>不会上传检测结果</strong>——风险分、每一步的判定都只在本机计算并保存；</li>
       <li><strong>不会上传本地设置</strong>——除非你自己打开云同步；</li>
-      <li><strong>不会上传黑名单</strong>——同样除非你自己打开云同步。</li>
+      <li><strong>不会上传黑名单</strong>——这一类的默认值就是<strong>不同步</strong>：即使打开了云同步，
+        也只有你在「云账户与同步」里单独勾选它，它才会离开本机。</li>
     </ul>
+    <h3>3.1 关于对手的数据</h3>
+    <p>样本、回放存档与黑名单里带有<strong>对手的显示名</strong>（以及你给对手写的备注）。开启云同步并把
+      这几类勾上之后，这些名字会随之上传：它们是你自己采集到的内容。默认只同步样本库，存档与黑名单都不同步。</p>
     <p>云同步<strong>默认关闭</strong>，且<strong>逐类可选</strong>：你可以只同步样本库而不同步设置。</p>
 
     <h2>4. 数据存放在哪里</h2>
@@ -128,6 +132,32 @@
 
     <h2>9. 联系方式</h2>
     <p>管理员联系邮箱：<strong>（待管理员补充）</strong></p>
+
+    <h2>10. 在你自己的电脑上：哪些东西是明文的</h2>
+    <p><code>chrome.storage.local</code> <strong>本身不加密</strong>。以下内容以明文存在你的浏览器配置目录里，
+      任何能读到该目录的程序（同机上的其他软件、备份、扩展调试端口）都能拿到：</p>
+    <ul>
+      <li><strong>「自动提问」用的 LLM API Key</strong>——<strong>导出的备份文件里会剥离它</strong>，本机不剥离；</li>
+      <li><strong>云账户的登录令牌（JWT）</strong>——有效期 30 天，被读到即等同于被冒充登录。它被刻意放在
+        <code>settings</code> <strong>之外</strong>，所以导出/导入与云同步都不会带上它。</li>
+    </ul>
+    <p>如果你不信任本机上的其他程序，请不要启用「自动提问」，也不要登录云账户——核心检测功能两者都不需要。</p>
+
+    <h2>11. 在线状态与国籍的可见范围</h2>
+    <p>「最后活跃时间」在你每次带认证的请求中更新（约每 60 秒一次）。它的可见范围是
+      <strong>你自己 + 你的好友</strong>：对其他账户一律返回<strong>空值</strong>，客户端据此显示「离线」。
+      这是<strong>数据层</strong>的约束，不是渲染约定——其他账户直接调
+      <code>GET /rest/v1/users?select=last_seen_at</code> 得到的也是空值。</p>
+    <p>「隐身」改变的是别人看到的状态，而不是这个判定：其他客户端拿不到你的时间戳，因此既算不出你何时在线，
+      也无法从原始字段里恢复出来。国籍同理——勾选「隐藏国籍」之后，其他用户读到的是<strong>空值</strong>
+      加一个「已隐藏」标记，客户端据此画白旗；原始 <code>country_code</code> 对非好友<strong>根本不返回</strong>。</p>
+    <p>⚠ <strong>一处例外，需要说明：Realtime 的在线状态频道。</strong>客户端之间还有一个 <code>presence</code>
+      频道，用于让好友列表在对方上线时立刻更新。它是<strong>全产品共用的一个</strong>频道，不按好友关系分片，
+      因此<strong>任何已登录账户</strong>订阅它都能看到「现在有哪些账户在线、状态是「在线 / 忙碌」」。
+      能看到的只有<strong>当前是否在场</strong>这一个事实（以及加入频道的时刻），<strong>看不到</strong>
+      历史活跃时间——那个时间戳仍然只对你自己和你的好友可见。</p>
+    <p>把状态设为「隐身」会让其他人看到你<strong>离线</strong>，但<strong>不会</strong>让你从频道的成员列表里
+      消失。我们选择把这个事实写在这里，而不是假装它不存在。</p>
   </section>
 
   <!-- ============================ English ============================ -->
@@ -160,8 +190,14 @@
       <li><strong>Your game records are not uploaded</strong> — the per-move data stays local;</li>
       <li><strong>Your detection results are not uploaded</strong> — scores and per-move verdicts are computed and stored locally;</li>
       <li><strong>Your settings are not uploaded</strong> — unless you enable cloud sync;</li>
-      <li><strong>Your blacklist is not uploaded</strong> — again, unless you enable cloud sync.</li>
+      <li><strong>Your blacklist is not uploaded</strong> — its default is NOT SYNCED: even with cloud sync
+        on, it leaves this machine only if you tick 黑名单 itself.</li>
     </ul>
+    <h3>3.1 Data about your opponents</h3>
+    <p>Samples, replay archives and blacklist rows carry your opponent's <strong>display name</strong>
+      (and whatever note you wrote about them). With cloud sync on and those categories ticked, those
+      names travel too — they are content you collected. The sample library is the only one of the
+      three that is on by default.</p>
     <p>Cloud sync is <strong>off by default</strong> and <strong>per-category</strong>: you can sync
       the sample library without syncing your settings.</p>
 
@@ -195,10 +231,45 @@
 
     <h2>9. Contact</h2>
     <p>Administrator contact email: <strong>(to be filled in by the operator)</strong></p>
+
+    <h2>10. On your own machine: what is stored in the clear</h2>
+    <p><code>chrome.storage.local</code> is <strong>not encrypted</strong>. These live as plain text in
+      your browser profile directory, readable by any process that can read that directory (other
+      software on the same machine, backups, a debugging port):</p>
+    <ul>
+      <li><strong>the LLM API key used by 「自动提问」</strong> — an exported backup file
+        <em>strips</em> it; the local store does not;</li>
+      <li><strong>the cloud account's login token (JWT)</strong> — valid for 30 days, and reading it is
+        equivalent to impersonating the account. It is kept <strong>outside</strong> <code>settings</code>,
+        so neither export/import nor cloud sync carries it.</li>
+    </ul>
+    <p>If you do not trust the other programs on this machine, do not enable 「自动提问」 and do not sign
+      in to a cloud account — the core detection needs neither.</p>
+
+    <h2>11. Who can see your online status and country</h2>
+    <p>Your last-seen timestamp is refreshed by every authenticated request (about once per 60 s). It is
+      visible to <strong>you and your accepted friends only</strong>; every other account is answered
+      with <strong>null</strong>, and the client draws 「offline」 from that. That is enforced in the
+      DATA, not in the rendering — another account calling
+      <code>GET /rest/v1/users?select=last_seen_at</code> gets null, and the raw
+      <code>country_code</code> is not returned to a non-friend at all.</p>
+    <p>「隐身」 changes what others are told, not how the answer is computed — other clients never
+      receive the timestamp. The same holds for nationality: with 「隐藏国籍」 ticked, other users read
+      <strong>null</strong> plus a 「hidden」 flag, which is what makes the client draw a white flag.</p>
+    <p>⚠ <strong>One exception, stated plainly: the Realtime presence channel.</strong> Clients also
+      share a <code>presence</code> channel so a friend list updates the moment somebody arrives rather
+      than at the next refresh. It is <strong>one channel for the whole product, not sharded per
+      friendship</strong>, so <strong>any signed-in account</strong> that subscribes to it can see which
+      accounts are currently present and whether they are 「online」 or 「busy」. What it reveals is
+      <strong>presence only</strong> (and the moment a client joined the channel); it does
+      <strong>not</strong> reveal the historical last-seen timestamp, which stays friends-only.</p>
+    <p>Setting your status to 「隐身」 makes others see you as <strong>offline</strong>, but it does
+      <strong>not</strong> remove you from the channel's member list. We would rather write that here
+      than pretend otherwise.</p>
   </section>
 
   <footer class="dim">
-    <div id="updated">最后更新 / Last updated: 2026-10-03</div>
+    <div id="updated">最后更新 / Last updated: 2026-10-04</div>
     <div>白身 (Baishen) · <span id="repo"></span></div>
   </footer>
 </main>

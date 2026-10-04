@@ -10,7 +10,7 @@
 import { serve } from "https://deno.land/std/http/server.ts";
 import { handlePreflight } from "../_shared/cors.ts";
 import { badRequest, internal, json, methodNotAllowed } from "../_shared/errors.ts";
-import { requireAdmin, serviceClient, toPublicUser, type UserRow } from "../_shared/client.ts";
+import { requireAdmin, roleAsSeenBy, serviceClient, toPublicUser, type UserRow } from "../_shared/client.ts";
 
 const DEFAULT_LIMIT = 50;
 const MIN_LIMIT = 1;
@@ -18,10 +18,18 @@ const MAX_LIMIT = 200;
 const DEFAULT_PAGE = 1;
 const MAX_QUERY_LENGTH = 100;
 
-/** Admin console needs the ban/deletion state on top of the public projection. */
-function toAdminUser(row: UserRow): Record<string, unknown> {
+/**
+ * Admin console needs the ban/deletion state on top of the public projection.
+ *
+ * 1.0.5 §二.2 adds `role`, run through `roleAsSeenBy` — see that function: the console is told
+ * 「user」 or 「admin」 and NEVER 「super_admin」, so the elevation §2.2.1 calls 「获取方式隐藏」 is not
+ * a fact the API emits. `self` is passed so the caller's own row (which `toPublicUser` already
+ * carries truthfully) is not the one inconsistent entry in the list.
+ */
+function toAdminUser(row: UserRow, viewerId: string): Record<string, unknown> {
   return {
     ...toPublicUser(row),
+    role: roleAsSeenBy(row.role, row.id === viewerId),
     is_banned: row.is_banned === true,
     deleted_at: row.deleted_at,
   };
@@ -95,7 +103,7 @@ serve(async (req: Request): Promise<Response> => {
     if (error) throw error;
 
     const rows = (data ?? []) as UserRow[];
-    return json({ users: rows.map(toAdminUser), total: count ?? 0 });
+    return json({ users: rows.map((row) => toAdminUser(row, auth.caller.id)), total: count ?? 0 });
   } catch (err) {
     console.error("admin-list-users failed:", err);
     return internal("Could not list users");

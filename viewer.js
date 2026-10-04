@@ -2400,7 +2400,101 @@
     note.innerHTML = warn;
     note.style.display = warn ? '' : 'none';
     $('setResetLearn').disabled = !lp;
+    // §一.2 — LAST, because §1.2.3 builds each row's label from its panel's `<h2>` and the labels
+    // above are what fills them. (`buildCloudPanel` calls it again: 云账号与同步's title is written
+    // asynchronously, and a nav that kept a `—` row until the next repaint would look broken.)
+    buildSettingsNav();
   }
+
+  // =====================================================================
+  // 1.0.5 §一.2 / §二.3 竖向快速导航（设置页与管理员面板共用一份实现）
+  // =====================================================================
+  // Split into 「which rows exist」 and 「what each row says」, because the two change for different
+  // reasons: the panel list and its visibility come from the MARKUP and the gate, while every label
+  // follows the language and several are written later (`buildCloudPanel`, `renderAdmin`).
+  //
+  // ⚠ ONE IMPLEMENTATION FOR BOTH PAGES. §2.3.1 asks the admin console for 「同设置页」, and the
+  // obvious way to do that is to copy the function — which is this project's most expensive habit
+  // (five separate defects, one per copy). The two pages differ only in the two ids, so those are
+  // the arguments and there is no second copy.
+  //
+  // ⚠ The nav NAMES NOTHING BY HAND. §1.2.3 reads each row's text off its own panel's `<h2>`, and
+  // that is not tidiness: a hand-written list in JS is a second copy of the panel names. It also
+  // means a panel added to the markup gets a nav row for free, and one deleted loses it instead of
+  // leaving a row that scrolls nowhere.
+  //
+  // ⚠ `data-section` is the join, and it is on the PANEL. The `<nav>` ships empty and is filled
+  // here; nothing else in the page reads the attribute.
+  var navObservers = {};
+
+  function sectionNav(viewId, navId) {
+    var nav = $(navId);
+    var view = $(viewId);
+    if (!nav || !view) return;
+    var all = view.querySelectorAll('.panel[data-section]');
+    var rows = [];
+    for (var i = 0; i < all.length; i++) {
+      var h = all[i].querySelector('h2');
+      var t = h ? String(h.textContent || '').trim() : '';
+      if (t === '—') t = '';
+      // A `hidden` panel gets no row at all, and the reason is §2.2.5: the 超级管理 panel ships
+      // hidden and is revealed only for a super_admin, so a row for it would be exactly the
+      // 「标识」 that section forbids — the nav would announce that there is a section the operator
+      // cannot reach, which is the same as announcing what they are not.
+      if (!t || all[i].classList.contains('hidden')) continue;
+      rows.push({ panel: all[i], slug: all[i].dataset.section, label: t });
+    }
+    var sig = rows.map(function (r) { return r.slug; }).join(',');
+    if (nav.getAttribute('data-sig') !== sig) {
+      nav.setAttribute('data-sig', sig);
+      var html = '';
+      for (var j = 0; j < rows.length; j++) {
+        html += '<a class="set-nav-item" data-target="' + esc(rows[j].slug) + '">' +
+          esc(rows[j].label) + '</a>';
+      }
+      nav.innerHTML = html;
+      // ONE delegated handler for all rows, hung off the nav itself. `onclick` is a single slot, so
+      // per-row handlers would be rewritten whenever a row is recreated — and a row that was
+      // recreated without one is a row that does nothing when pressed.
+      nav.onclick = function (e) {
+        var it = (e.target && e.target.closest) ? e.target.closest('.set-nav-item') : null;
+        if (!it || !it.dataset.target) return;
+        var t = view.querySelector('.panel[data-section="' + it.dataset.target + '"]');
+        if (!t) return;
+        // §1.2.2's 「平滑滚动」. `block:'start'` puts the panel's heading at the top, which is also
+        // what the observer's `rootMargin` measures against — a `center` alignment would make the
+        // highlight jump to whichever panel happened to be under the fold.
+        if (t.scrollIntoView) t.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      };
+      if (navObservers[navId] && navObservers[navId].disconnect) navObservers[navId].disconnect();
+      navObservers[navId] = null;
+      // §1.2.2's 「滚动时高亮当前可见面板」. Absent in a stripped harness and in very old engines —
+      // the nav still scrolls, it just stops highlighting, which is the honest degradation.
+      if (typeof IntersectionObserver === 'function') {
+        navObservers[navId] = new IntersectionObserver(function (entries) {
+          entries.forEach(function (entry) {
+            if (!entry.isIntersecting) return;
+            var n = nav.querySelectorAll('.set-nav-item');
+            for (var k = 0; k < n.length; k++) {
+              n[k].classList.toggle('active',
+                n[k].dataset.target === entry.target.dataset.section);
+            }
+          });
+        }, { rootMargin: '-80px 0px -60% 0px' });
+        for (var m = 0; m < rows.length; m++) navObservers[navId].observe(rows[m].panel);
+      }
+    } else {
+      // Same rows: only their words can have changed, so the labels are patched in place and the
+      // observer (and the `active` class it owns) is left alone.
+      var items = nav.querySelectorAll('.set-nav-item');
+      for (var k2 = 0; k2 < items.length && k2 < rows.length; k2++) {
+        if (items[k2].textContent !== rows[k2].label) items[k2].textContent = rows[k2].label;
+      }
+    }
+  }
+
+  function buildSettingsNav() { sectionNav('view-settings', 'settingsNav'); }
+  function buildAdminNav() { sectionNav('view-admin', 'adminNav'); }
 
   // =====================================================================
   // 0.4.0 §一: self-update — the banner and the manual check
@@ -6294,18 +6388,107 @@
       '<div class="it" data-u="profile">' + T('viewer|主页') + '</div>' +
       '<div class="it" data-u="account">' + T('viewer|账号设置') + '</div>' +
       '<div class="sep"></div>' +
+      // 1.0.5 §1.1.5 — 「切换账号 ▸」, between the account pages and 退出登录, exactly where the
+      // sketch puts it: it is a thing you do TO the account, and it sits with the other one (登出)
+      // rather than with 主页/账号设置, which are places you go.
+      // The ▸ is a text glyph, not an icon: §1.1.5 draws one, and a caret is the one affordance
+      // that says 「this row opens another list」 rather than 「this row is a link」.
+      '<div class="it" data-u="switch">' + T('viewer|切换账号') + ' ▸</div>' +
+      '<div class="sep"></div>' +
       '<div class="it danger" data-u="logout">' + T('viewer|退出登录') + '</div>',
       x, y);
     ctx.querySelectorAll('[data-u]').forEach(function (it) {
       it.onclick = function (e) {
         e.stopPropagation();               // we are about to replace ctx.innerHTML
         var a = it.dataset.u;
+        if (a === 'switch') { showSwitchMenu(x, y); return; }
         closeCtx();
         if (a === 'profile') showView('profile');
         else if (a === 'account') showView('account');
         else if (a === 'logout') doLogout();
       };
     });
+  }
+
+  /**
+   * §1.1.5's sub-menu: the remembered accounts, ✅ on the live one, then ＋ 添加新账号.
+   *
+   * ⚠ The list is read ASYNCHRONOUSLY (it is behind `GMStorage`'s write chain, and the JWTs are
+   * sealed envelopes that have to be counted, not decrypted, to be drawn). So the drawer is painted
+   * twice: once with a placeholder for the frame or two the read takes, then for real. Painting
+   * nothing in between would close the drawer on the operator — `showCtx` is dismissed by an
+   * outside click, and a menu that is briefly empty looks like a menu that failed.
+   */
+  function showSwitchMenu(x, y) {
+    showCtx('<div class="it" data-a="__busy">' + T('viewer|正在读取账号…') + '</div>', x, y);
+    GMAuth.getStoredAccounts().then(function (list) {
+      drawSwitchMenu(list || [], x, y);
+    }, function () {
+      drawSwitchMenu([], x, y);
+    });
+  }
+
+  /** The last list the switch menu drew. Kept only so `doSwitchAccount` can prefill the e-mail of
+   *  the account whose switch failed — a second read of the store there would be a second answer to
+   *  「which accounts are remembered」, and the answer on screen is the one the operator chose from. */
+  var _switchCache = [];
+
+  function drawSwitchMenu(list, x, y) {
+    _switchCache = list;
+    // The live mark comes from the SESSION, not from the stored pointer: the two agree normally, but
+    // after a 401 the session is gone while `activeAccountId` may still name a row, and the question
+    // this menu answers is 「我现在是谁」 — which only the session can say.
+    var me = (GMAuth.status().user || {}).id || '';
+    var rows = list.map(function (a) {
+      var on = a.userId === me;
+      return '<div class="it' + (on ? ' on' : '') + '" data-a="' + esc(a.userId) + '">' +
+        (on ? '✅ ' : '') + esc(a.username || a.email || a.userId) + '</div>';
+    });
+    var html = (rows.length
+      ? rows.join('')
+      : '<div class="hint" style="padding:6px 10px">' + esc(T('viewer|还没有记住其它账号')) + '</div>') +
+      '<div class="sep"></div>' +
+      '<div class="it" data-a="__add">' + T('viewer|＋ 添加新账号') + '</div>';
+    showCtx(html, x, y);
+    ctx.querySelectorAll('[data-a]').forEach(function (it) {
+      it.onclick = function (e) {
+        e.stopPropagation();
+        var a = it.dataset.a;
+        closeCtx();
+        if (a === '__add') { openLoginFlow(); return; }
+        doSwitchAccount(a);
+      };
+    });
+  }
+
+  /**
+   * §1.1.5's 「点击其他账号 → 免密切换；若 refresh token 过期 → 弹出密码输入」.
+   *
+   * ⚠ `NEED_PASSWORD` is not an error to report, it is the next step of the same flow — so it opens
+   * the login modal with the account's e-mail already in it (the operator just chose that account)
+   * instead of writing a red line somewhere they are not looking. Every other code IS a report: the
+   * operator asked for something that failed and the drawer is already closed, so the status line is
+   * the only place left that they will see.
+   */
+  async function doSwitchAccount(userId) {
+    if ($('status')) $('status').textContent = T('viewer|正在切换账号…');
+    var r = await GMAuth.switchAccount(userId);
+    if (r.ok) {
+      if ($('status')) $('status').textContent = T('viewer|已切换账号');
+      afterAuthChange();
+      return;
+    }
+    if (r.error === 'NEED_PASSWORD') {
+      var who = '';
+      for (var i = 0; i < _switchCache.length; i++) {
+        if (_switchCache[i].userId === userId) who = _switchCache[i].email || '';
+      }
+      openLoginFlow(T('viewer|该账号需要重新输入密码才能切换'));
+      var box = document.querySelector('#lgEmail');
+      if (box && who) box.value = who;
+      return;
+    }
+    if ($('status')) $('status').textContent = cloudErrText(r.error);
   }
 
 
@@ -6355,6 +6538,12 @@
     if (err === 'PASSWORD_MISMATCH') return T('reg|两次输入的密码不一致');
     if (err === 'BAD_EMAIL_CODE') return T('reg|验证码为 6 位数字');
     if (err === 'INVALID_EMAIL_CODE') return T('reg|验证码错误或已过期');
+    // ⚠ 1.0.5 审计 P1 — 「码错了」 与 「这个码已经被试废了」 是两个不同的下一步。前者是「再输一遍」，
+    // 后者是「回上一步重新发送」。借 `RATE_LIMITED` 会说「请 60 秒后再试」，那是**发送**的冷却，指的
+    // 是同一个流程里另一件事 —— 1.0.5 的头像缺陷（选 GIF 被告知激活码格式）就是两个意思共用一个码的
+    // 代价。三个验证入口（注册 / 重置密码 / 改邮箱）都从 `_shared/email.ts` 的 `claimEmailCode` 出来，
+    // 所以这一句是它们唯一的一句话。
+    if (err === 'TOO_MANY_ATTEMPTS') return T('reg|验证码错误次数过多，请重新发送');
     if (err === 'EMAIL_TAKEN') return T('reg|该邮箱已被注册');
     if (err === 'USERNAME_TAKEN') return T('reg|该用户名已被占用');
     if (err === 'RATE_LIMITED') return T('reg|发送过于频繁，请 60 秒后再试');
@@ -6431,6 +6620,9 @@
     if (!body || !GMCloud) return;
     var st = GMAuth.status();
     if ($('clTitle')) $('clTitle').textContent = T('viewer|云账户与同步');
+    // §一.2 — this panel's title is written HERE rather than in `renderSettings`, asynchronously, so
+    // the nav has to be re-labelled once it lands. Idempotent: same rows ⇒ labels patched in place.
+    buildSettingsNav();
     if ($('clHint')) $('clHint').textContent = T('viewer|激活码解锁云功能，核心检测仍然免费');
 
     var h = '';
@@ -6584,6 +6776,26 @@
     var u = st.user || {};
     var name = u.username || u.email || '—';
     if ($('pfName')) $('pfName').textContent = name;
+    // §3.2.1's 「@用户名」. See the markup comment: `users` has one name column, so this is the same
+    // string with the `@` gomoku.com puts in front of it. Empty when there is nothing to put it on.
+    if ($('pfAt')) {
+      var handle = u.username || String(u.email || '').split('@')[0];
+      $('pfAt').textContent = handle ? '@' + handle : '';
+    }
+    // §3.2.1's 🇨🇳 国籍. The flag comes from the SHARED block's one implementation, and it is applied
+    // to the stored code — §3.1.5 「存储仍保留真实 code，仅在显示时映射」 means HK/MO/TW render as the
+    // five-star flag without the column ever being rewritten. `hide_country` is the owner's own
+    // choice, shown to the owner as 「已隐藏」 rather than blank: this page is the one place where
+    // 「why is my flag gone」 has to be answerable.
+    if ($('pfCountry')) {
+      var S = GMCommunity.shared() || {};
+      var cc = u.country_code || '';
+      var flag = (cc && S.countryFlagChinaUnified) ? S.countryFlagChinaUnified(cc) : '';
+      var txt = flag ? (flag + ' ' + cc) : '';
+      if (u.hide_country) txt = (txt ? txt + ' · ' : '') + T('viewer|已隐藏');
+      $('pfCountry').textContent = txt;
+    }
+    if ($('pfBio')) $('pfBio').textContent = u.bio || '';
     // §4.4 stores a URL, but the shipped state has none, so the letter is the fallback that keeps
     // the header from collapsing to a hole. `renderNavUser` uses the same fallback for the same
     // reason — there is no `default-avatar.svg` asset to point at.
@@ -6597,17 +6809,58 @@
       if (u.created_at || u.activated_at) {
         bits.push(T('viewer|加入时间') + ' ' + fmtDateTime(Date.parse(u.activated_at || u.created_at)));
       }
-      bits.push(T('viewer|样本库 {n} 个', { n: PFC.sampleCount }));
       $('pfMeta').textContent = bits.join(' · ');
     }
     if ($('pfState')) $('pfState').textContent = cloudStateText(st);
 
-    // §5.1's 「─── 预留接口 ───」 block, drawn from §5.2's four accessors. They resolve to empty
-    // today and the panel says so, which is the whole point: 「未来实现时只需替换数据源」.
-    if ($('pfResvTitle')) $('pfResvTitle').textContent = T('viewer|即将推出');
+    // ---- §3.2.2 游戏统计 ----------------------------------------------------------------------
+    // Numbers only, and NOTHING clickable: §3.3's 「主页：只读」 is asserted as a count of pressable
+    // elements in `behave-062`, and a stat that links to another page is still a control.
+    if ($('pfStatsTitle')) $('pfStatsTitle').textContent = T('viewer|游戏统计');
+    if ($('pfStats')) {
+      var cells = [
+        { n: PFC.stats.samples, l: T('viewer|样本库'), d: PFC.stats.unsynced },
+        { n: PFC.stats.archives, l: T('viewer|回放存档'), d: 0 },
+        { n: PFC.stats.played, l: T('viewer|检测对局'), d: 0 },
+        { n: PFC.stats.friends, l: T('viewer|好友'), d: 0 },
+      ];
+      $('pfStats').innerHTML = cells.map(function (c) {
+        return '<div class="pf-stat"><div class="n">' + esc(String(c.n)) +
+          (c.d ? '<span class="d"> +' + esc(String(c.d)) + '</span>' : '') +
+          '</div><div class="l">' + esc(c.l) + '</div></div>';
+      }).join('');
+    }
+
+    // ---- §3.2.4 徽章 --------------------------------------------------------------------------
+    // The five types §3.2.4 names, plus the honest fallback for anything else: the column is free
+    // text (`001_init.sql` left it without a CHECK) and `admin-grant-badge` will write whatever an
+    // administrator types, so an unknown type gets a chip with its raw name rather than disappearing.
+    if ($('pfBadgeTitle')) $('pfBadgeTitle').textContent = T('viewer|徽章');
+    if ($('pfBadges')) {
+      var KNOWN = {
+        early_user: { g: '🏅', t: T('viewer|早期用户') },
+        standard_sample: { g: '⭐', t: T('viewer|标准样本贡献') },
+        high_risk_hunter: { g: '🎯', t: T('viewer|高风险猎手') },
+        community_contributor: { g: '💬', t: T('viewer|社区贡献者') },
+        feedback_master: { g: '🐛', t: T('viewer|反馈达人') },
+      };
+      var list = PFC.stats.badges;
+      $('pfBadges').innerHTML = list.length
+        ? list.map(function (b) {
+          var k = KNOWN[b && b.type];
+          return '<span class="pf-badge"><span class="g">' + (k ? k.g : '🏅') + '</span>' +
+            esc(k ? k.t : String((b && b.type) || '')) + '</span>';
+        }).join('')
+        : '<span class="hint">' + esc(T('viewer|还没有获得徽章')) + '</span>';
+    }
+
+    // §3.2.5's 成就, 「即将推出」. Same `.resv` furniture the 1.0.0 reserved block used, so the
+    // grey-and-dashed look that says 「预留」 is unchanged — only the four items are now §3.2.5's
+    // list rather than §5.2's accessor names.
+    if ($('pfResvTitle')) $('pfResvTitle').textContent = T('viewer|成就（即将推出）');
     var resv = $('pfResv');
     if (resv) {
-      var items = [T('viewer|徽章'), T('viewer|成就'), T('viewer|判断正确率'), T('viewer|好友')];
+      var items = [T('viewer|连胜记录'), T('viewer|快速胜利'), T('viewer|完美检测'), T('viewer|社区贡献者')];
       resv.innerHTML = items.map(function (t) {
         return '<span class="resv-item">' + esc(t) + '</span>';
       }).join('');
@@ -6615,15 +6868,24 @@
   }
 
   // The 我的 page's async half. `§5.3`: 「全部通过 Edge Function `profile-get` 一次拉取」.
-  var PFC = { sampleCount: 0, devices: [{ current: true, label: '' }], loaded: false };
+  // `stats` is the whole §3.2.2 row, so the page can be repainted (language switch, a ban landing,
+  // a sync finishing) without asking the network anything — the 0.5.1 rule every repaint follows.
+  var PFC = {
+    stats: { samples: 0, archives: 0, played: 0, friends: 0, unsynced: 0, badges: [] },
+    devices: [{ current: true, label: '' }],
+    loaded: false,
+  };
 
   async function profileLoad() {
     var st = GMAuth.status();
     PFC.devices = [{ current: true, label: T('viewer|本机') }];
     if (!st.user) { renderProfile(); return; }
-    var res = await GMProfile.getProfile();
+    var res = await GMProfile.getProfileStats();
     if (res.ok) {
-      PFC.sampleCount = res.sampleCount;
+      PFC.stats = {
+        samples: res.samples, archives: res.archives, played: res.played,
+        friends: res.friends, unsynced: res.unsynced, badges: res.badges || [],
+      };
       PFC.loaded = true;
     }
     renderProfile();
@@ -6996,6 +7258,24 @@
     adSay('adBadgeLab', T('viewer|徽章'));
     adSay('adBadgeGo', T('viewer|授予'));
     adSay('adJwtGo', T('viewer|重新签发会话'));
+    // ---- 1.0.5 §二.2 -------------------------------------------------------------------------
+    adSay('adSuperTitle', T('viewer|超级管理'));
+    adSay('adSuperLab', T('viewer|管理员 ID'));
+    adSay('adSuperPromote', T('viewer|任命管理员'));
+    adSay('adSuperDemote', T('viewer|罢免管理员'));
+    // ---- 1.0.5 §二.3.2 -----------------------------------------------------------------------
+    adSay('adExpandAll', T('viewer|展开全部'));
+    adSay('adCollapseAll', T('viewer|折叠全部'));
+    // ⚠ VISIBILITY, and only that. §2.2.5 wants the panel to exist for a super admin and for the
+    // page to say nothing about why — so the reveal is a plain `hidden` toggle off the SESSION's own
+    // role, and `admin-set-role` re-decides server-side on every press. A client patched to unhide
+    // this reaches the same 403 as any other impostor; nothing here is a check.
+    if ($('adSuperPanel')) {
+      $('adSuperPanel').classList.toggle('hidden', !(GMAuth.status().isSuperAdmin === true));
+    }
+    // §2.3.1 — LAST, and it must be: `sectionNav` reads each panel's `<h2>`, and it SKIPS `hidden`
+    // panels, so the 超级管理 row can only be right once the toggle above has run.
+    buildAdminNav();
     buildAdminSelects();
     wireAdmin();
   }
@@ -7058,6 +7338,42 @@
     };
     if ($('adBadgeGo') && !$('adBadgeGo').onclick) $('adBadgeGo').onclick = adminGrantBadge;
     if ($('adJwtGo') && !$('adJwtGo').onclick) $('adJwtGo').onclick = adminReissue;
+    // ---- 1.0.5 §二.2 -----------------------------------------------------------------------
+    if ($('adSuperPromote') && !$('adSuperPromote').onclick) $('adSuperPromote').onclick = function () {
+      adminSetRole('admin');
+    };
+    if ($('adSuperDemote') && !$('adSuperDemote').onclick) $('adSuperDemote').onclick = function () {
+      adminSetRole('user');
+    };
+    // ---- 1.0.5 §二.3.2 -----------------------------------------------------------------------
+    if ($('adExpandAll') && !$('adExpandAll').onclick) $('adExpandAll').onclick = function () { setAllUserRows(true); };
+    if ($('adCollapseAll') && !$('adCollapseAll').onclick) $('adCollapseAll').onclick = function () { setAllUserRows(false); };
+  }
+
+  /**
+   * §二.2 — 任命 (`admin`) and 罢免 (`user`). ONE function for both because §2.2.3's two rows are the
+   * same write with a different argument: two functions would be two places to forget the guard, and
+   * this project has paid for 「同一答案只准有一份」 five times.
+   *
+   * The id is read from the §用户详情 field rather than from the user list, for the reason the panel
+   * comment gives: the list is paginated and rebuilt on every page change.
+   *
+   * ⚠ The refusal cases (自己 / 另一个超级管理员 / 不认识的角色) are NOT re-implemented here. They are
+   * the server's, and `admin-set-role` answers them with a CODE, so the only thing this end does is
+   * print the sentence `cloudErrText` picks. A local copy could only disagree — and the direction it
+   * would disagree in is 「the button lit up and then 403'd」.
+   */
+  async function adminSetRole(role) {
+    var id = String(($('adSuperId') || {}).value || ($('adUserId') || {}).value || '').trim();
+    if (!id) { adState('adSuperState', cloudErrText('BAD_REQUEST'), true); return; }
+    var res = await GMAdmin.setRole(id, role);
+    if (!res.ok) { adState('adSuperState', cloudErrText(res.error), true); return; }
+    adState('adSuperState',
+      role === 'admin' ? T('viewer|已任命为管理员') : T('viewer|已罢免管理员'), false);
+    // The list shows `role` per row (flattened), so a promotion the operator cannot see would look
+    // like a failure. Reload rather than patch the row in place: the server is the only authority on
+    // what the row now says.
+    adminLoadUsers(ADC.page);
   }
 
   /**
@@ -7416,19 +7732,65 @@
     var h = '';
     res.users.forEach(function (u) {
       var banned = !!u.is_banned;
-      h += '<div class="rowline">' +
-        '<span class="em">' + esc(u.email || u.id) + '</span>' +
-        '<span class="hint">' + esc(u.username || '—') + '</span>' +
-        '<span class="hint">' + esc(banned ? T('viewer|已封禁') : T('viewer|正常')) + '</span>' +
-        // 1.0.4 §P0 — 用户详情. A per-row button rather than a global search box, because the
-        // operator arrives here from the list: 「点这一行的人」 is the intent, and the id is right
-        // there. The panel below can still be driven by a pasted uuid.
-        '<button class="sec" data-ad-pick="' + esc(u.id) + '">' + esc(T('viewer|详情')) + '</button>' +
-        '<button class="sec" data-ad-ban="' + esc(u.id) + '" data-ad-to="' + (banned ? '0' : '1') + '">' +
-        esc(banned ? T('viewer|解封') : T('viewer|封禁')) + '</button>' +
+      var muted = Number(u.muted_until) > Date.now();
+      // 1.0.5 §2.3.2 — 「▶ 开发者 (dev@example.com)  [管理]」 with a detail block that the row's
+      // caret opens. The summary line carries exactly what the sketch's collapsed rows show; the
+      // detail block carries the five facts it shows expanded.
+      // ⚠ `data-user` on the OUTER element and `.uexp` inside it: `toggleUserRow` flips ONE class on
+      // ONE element, and the CSS decides what that hides. Doing it the other way round (JS setting
+      // `style.display` on the detail block) would put the same decision in two places and break the
+      // moment anyone restyled the row.
+      h += '<div class="urow" data-user="' + esc(u.id) + '">' +
+        '<div class="uhead">' +
+          '<span class="ucare">▶</span>' +
+          '<span class="em">' + esc(u.username || u.id) + '</span>' +
+          '<span class="hint">' + esc(u.email || '') + '</span>' +
+          '<span class="sp"></span>' +
+          '<span class="hint">' + esc(banned ? T('viewer|已封禁') : (muted ? T('viewer|已禁言') : T('viewer|正常'))) + '</span>' +
+          // 1.0.4 §P0 — 用户详情. A per-row button rather than a global search box, because the
+          // operator arrives here from the list: 「点这一行的人」 is the intent, and the id is right
+          // there. The panel below can still be driven by a pasted uuid.
+          '<button class="sec" data-ad-pick="' + esc(u.id) + '">' + esc(T('viewer|详情')) + '</button>' +
+          '<button class="sec" data-ad-ban="' + esc(u.id) + '" data-ad-to="' + (banned ? '0' : '1') + '">' +
+          esc(banned ? T('viewer|解封') : T('viewer|封禁')) + '</button>' +
+        '</div>' +
+        '<div class="uexp">' +
+          uDetailRow(T('viewer|注册时间'), adWhen(u.created_at)) +
+          uDetailRow(T('viewer|最后登录'), u.last_seen_at ? adWhen(u.last_seen_at) : '') +
+          uDetailRow(T('viewer|状态'), banned
+            ? T('viewer|已封禁')
+            : (muted ? T('viewer|已禁言') : T('viewer|正常'))) +
+          // §2.3.2's 「IP 国籍」. It is the operator's own view of the column, so it is shown raw
+          // (a flag would be the community view's job) — `hide_country` is a promise about OTHER
+          // users, and an administrator looking at a report needs the value itself.
+          uDetailRow(T('viewer|IP 国籍'), u.country_code || '') +
+          uDetailRow(T('viewer|简介'), u.bio || '') +
+          // ⚠ §2.3.2's sketch also draws 「样本库：42 个 / 回放：128 局」 on this row, and they are
+          // NOT here. `admin-list-users` does not return them and cannot cheaply: PostgREST cannot
+          // GROUP BY, so a per-row count is either one `count=head` query per row (fifty per page)
+          // or one query fetching every sample and archive row of every user on the page. Both are
+          // worse than the sketch's convenience is worth, and the audit's own P3 note on this
+          // endpoint is about it returning TOO MUCH. The two numbers live one panel down, where
+          // 「先选中一个人，再对他做事」 already loads that person's card.
+        '</div>' +
         '</div>';
     });
     rows.innerHTML = h;
+  }
+
+  /** One 「名称：值」 line of §2.3.2's expanded block. `—` for a missing value rather than an empty
+   *  line: an expanded row that has silently lost a field looks like a server that did not send it,
+   *  while a dash says 「we asked and there is nothing」. */
+  function uDetailRow(label, value) {
+    var v = (value == null || value === '') ? '—' : String(value);
+    return '<div class="udet"><span class="hint">' + esc(label) + '：</span>' + esc(v) + '</div>';
+  }
+
+  /** §2.3.2's `toggleUserRow`, verbatim in spirit: flip one class on the row, let the CSS show or
+   *  hide `.uexp`. Exported to `window` isn't needed — the delegated listener below reaches it. */
+  function toggleUserRow(userId) {
+    var row = document.querySelector('#adRows [data-user="' + userId + '"]');
+    if (row) row.classList.toggle('expanded');
   }
 
   // Delegated, for the same reason the io panel's grid is: `adminLoadUsers` replaces the whole
@@ -7438,12 +7800,27 @@
       var pick = ev.target && ev.target.closest ? ev.target.closest('[data-ad-pick]') : null;
       if (pick) { adminPickUser(pick.getAttribute('data-ad-pick')); return; }
       var b = ev.target && ev.target.closest ? ev.target.closest('[data-ad-ban]') : null;
-      if (!b) return;
-      var id = b.getAttribute('data-ad-ban');
-      var want = b.getAttribute('data-ad-to') === '1';
-      var res = want ? await GMAdmin.banUser(id, '') : await GMAdmin.unbanUser(id);
-      if (res.ok) adminLoadUsers(ADC.page);
+      if (b) {
+        var id = b.getAttribute('data-ad-ban');
+        var want = b.getAttribute('data-ad-to') === '1';
+        var res = want ? await GMAdmin.banUser(id, '') : await GMAdmin.unbanUser(id);
+        if (res.ok) adminLoadUsers(ADC.page);
+        return;
+      }
+      // 1.0.5 §2.3.2 — the row's caret. Measured on the ROW, not on the caret: the sketch draws
+      // 「▶ 开发者 (dev@example.com)」 as one pressable line, and hitting the name has to work too.
+      // The two buttons above are handled first for exactly that reason — they are INSIDE the row.
+      var row = ev.target && ev.target.closest ? ev.target.closest('[data-user]') : null;
+      if (row) toggleUserRow(row.getAttribute('data-user'));
     });
+  }
+
+  // §2.3.2's 「[展开全部] [折叠全部]」. One class per row, and `toggle` with a forced state rather
+  // than `add`/`remove`: the two buttons are the same operation with a different argument, which is
+  // the shape that gets copied into two functions and then drifts.
+  function setAllUserRows(open) {
+    var rows = document.querySelectorAll('#adRows [data-user]');
+    for (var i = 0; i < rows.length; i++) rows[i].classList.toggle('expanded', !!open);
   }
 
   // The three delegated lists of §P0. Same reason as above, and one listener each rather than a
@@ -10251,12 +10628,14 @@
         'zh-CN': [
           '用途：记住你不再想遇到的玩家，下次匹配到时浮层会红闪提醒。',
           '怎么添加：点浮层头部的 🚫，或在查看器的「黑名单」页手动添加。',
-          '键是用户名（playerId），不是会变的显示名；只存在这台机器上，从不上传。',
+          '键是用户名（playerId），不是会变的显示名；默认只存在这台机器上。',
+          '云同步**默认不含这一类**：只有你在「云账户与同步」里主动勾选黑名单，它才会随 `user_kv` 上传。',
         ],
         en: [
           'What for: remember players you would rather not meet again. The overlay flashes red when you do.',
           'How to add: press 🚫 in the panel header, or add one by hand on the viewer\'s 黑名单 page.',
-          'The key is the username (playerId), not the display name, which can change. It lives on this machine only and is never uploaded.',
+          'The key is the username (playerId), not the display name, which can change. It lives on this machine by default.',
+          'Cloud sync EXCLUDES this category by default: it only leaves this machine if you tick 黑名单 in 云账户与同步.',
         ],
       },
     },

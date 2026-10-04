@@ -154,6 +154,28 @@
     return invoke('admin-grant-badge', { user_id: String(userId), badge_type: String(badgeType) }, gu.jwt);
   }
 
+  /**
+   * 1.0.5 §二.2.3 — 任命 / 罢免普通管理员, the two rows only a super admin may press.
+   *
+   * ⚠ THIS IS A PASS-THROUGH AND THE CLIENT DOES NOT DECIDE WHO MAY CALL IT. §2.2.3's table is
+   * enforced in `admin-set-role` (`requireSuperAdmin`), and the button that reaches this function is
+   * rendered only when `GMAuth.status().role === 'super_admin'` — which is a VISIBILITY rule, the
+   * same kind `isAdmin()` above is. A client patched to draw the button gets a 403 and nothing else.
+   *
+   * `role` is passed through unvalidated for the same reason `handleReport` passes `action`: the
+   * Function owns the set (`'admin' | 'user'`) and a second copy here could only ever be wrong.
+   * §2.2.5's 「视觉上完全相同」 is what keeps `super_admin` off the client's list of things it may
+   * ask for — see `toRole`'s note in `_shared/client.ts`.
+   */
+  async function setRole(userId, role) {
+    var gu = guard();
+    if (!gu.ok) return gu;
+    if (!userId || !role) return { ok: false, error: 'BAD_REQUEST' };
+    var res = await invoke('admin-set-role', { user_id: String(userId), role: String(role) }, gu.jwt);
+    if (!res.ok) return res;
+    return { ok: true, user: (res.data && res.data.user) || null };
+  }
+
   // ---------------------------------------------------------------------------------------------
   // 1.0.4 §P0 — the operations panel's six new doors, and the reads behind its three lists
   // ---------------------------------------------------------------------------------------------
@@ -305,6 +327,7 @@
     unbanUser: unbanUser,
     revokeCodes: revokeCodes,
     grantBadge: grantBadge,
+    setRole: setRole,        // 1.0.5 §二.2.3 — super-admin only, enforced server-side
     reissueJwt: reissueJwt,
     // 1.0.4 §P0 — the operations panel.
     handleReport: handleReport,

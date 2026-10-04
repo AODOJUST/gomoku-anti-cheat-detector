@@ -650,9 +650,23 @@
 
   /** The public projection 011 §3 grants the client. Spelled out rather than `select=*` — the same
    *  reason `CHAT_COLS` is: a column added to `users` later must not start travelling by default,
-   *  and `email` is exactly the column that would. */
+   *  and `email` is exactly the column that would.
+   *
+   *  ⚠ 1.0.5 审计 P0-2/P0-3 — THIS LIST IS READ OFF `user_directory`, NOT OFF `users`. `018` revokes
+   *  the `country_code` / `last_seen_at` COLUMN grants from `authenticated`, so the identical select
+   *  against `users` now answers 401 — and this file kept reading the table for one release's worth
+   *  of editing, which is the 「两半从没被放在一起读过」 shape this version is about: revoking a grant
+   *  is half a change, and the reader is the other half. Every column below is still in the view, so
+   *  the list did not have to move; what moved is that the two columns now arrive with the READER'S
+   *  rules applied inside the database (§1.3.1's 隐藏国籍 / §3.2.3's 隐身) instead of arriving raw.
+   *  `verify-067` pins the tuple 「the revoke migrated」 + 「the reader uses the view」 together, because
+   *  either half alone is a broken product. */
   var USER_PUBLIC_COLS =
     'id,username,avatar_url,bio,created_at,country_code,hide_country,manual_status,last_seen_at';
+
+  /** §1.2.1's `users` reader, 1.0.5 — one name for 「where the public projection comes from」 so a
+   *  second reader cannot reach past it to the table. */
+  var USER_DIRECTORY = 'user_directory';
 
   /** §1.2.1's row shape, by name for the same reason. */
   var FRIEND_COLS =
@@ -775,7 +789,7 @@
       if (ids.length === 0) {
         return { ok: true, status: r.status, friends: [], incoming: [], outgoing: [], rows: rows };
       }
-      return restRead('users',
+      return restRead(USER_DIRECTORY,
         'select=' + USER_PUBLIC_COLS + '&id=in.(' + ids.join(',') + ')&limit=300').then(function (u) {
         // ⚠ A FAILED PROFILE READ DOES NOT FAIL THE LIST. The friendships are the answer; the names
         // are decoration on it, and refusing the whole screen because one profile could not be
@@ -1220,6 +1234,13 @@
    * ⚠ `country_code` / `country_updated_at` / `last_seen_at` are NOT writable this way — 011 §4
    * explains why (a client that could write its own country would make §3.1 a claim rather than an
    * observation) and `geo-update` is the route.
+   *
+   * ⚠ 1.0.5 — THE WRITE STAYS ON `users` WHILE THE READ MOVED TO `user_directory`. `018` makes the
+   * view a projection with two computed columns, so it is not auto-updatable and must not be; the
+   * two columns this writes are exactly the two 011 §4 grants update on. And the narrowed SELECT
+   * grant is why the `return=representation` row below no longer carries `country_code` /
+   * `last_seen_at` — `GMAuth.patchUser` merges field by field, so an absent column is simply not
+   * merged rather than merged as `undefined`.
    */
   function settingsPatch(patch) {
     var me = uid();

@@ -45,8 +45,7 @@ import {
   serviceClient,
   toForeignUser,
   toPublicUser,
-} from "../_shared/client.ts";
-// The one implementation of §3.2.1's three states, so a profile's dot is spelled the same way the
+} from "../_shared/client.ts";// The one implementation of §3.2.1's three states, so a profile's dot is spelled the same way the
 // friend list's and the room's are.
 import { presenceState } from "../_shared/community.ts";
 
@@ -106,10 +105,19 @@ serve(async (req: Request): Promise<Response> => {
         .is("deleted_at", null);
       if (countError) throw countError;
 
+      // 1.0.5 安全审计 P0-2/P0-3 — the two per-reader rules, asked ONCE and answered by the one
+      // definition of 「是不是好友」 (018's `are_friends`, a `security definer` SQL function, so
+      // `_shared/client.ts` and the `user_directory` view cannot disagree about the pair test).
+      // ⚠ `.rpc` needs the service role here: 018 revokes EXECUTE from `authenticated` on purpose —
+      // 「谁是某人的好友」 must not become a question any client can ask about any pair.
+      const { data: isFriend, error: friendError } = await sb
+        .rpc("are_friends", { a: caller.id, b: targetId });
+      if (friendError) throw friendError;
+
       const row = target as Parameters<typeof toForeignUser>[0];
       const now = Date.now();
       return json({
-        user: toForeignUser(row),
+        user: toForeignUser(row, { self: false, friend: isFriend === true }),
         sampleCount: count ?? 0,
         // §1.3.1's 「[当前状态] 🟢 在线」, computed on the server so that §3.2.1's arithmetic is the
         // shared block's one function rather than a second copy in the view. ⚠ It is a
@@ -122,6 +130,11 @@ serve(async (req: Request): Promise<Response> => {
     // ---------------------------------------------------------------------------------------
     // the caller's own profile
     // ---------------------------------------------------------------------------------------
+    // 1.0.5 §三.1 — §3.2.2's 游戏统计 needs three more numbers than 1.0.3 returned: 回放存档
+    // (archives), 检测对局 (the same count — §3.2.2's own table says 「同上」) and 好友
+    // (accepted friendships). They are counted HERE rather than read off a view for the same reason
+    // `sampleCount` already was: these are the OWNER's rows, and `samples_select_self` /
+    // `archives_select_self` are exactly the policies a client-side count would have to fight.
     const { count, error: countError } = await sb
       .from("samples")
       .select("id", { count: "exact", head: true })
@@ -129,23 +142,53 @@ serve(async (req: Request): Promise<Response> => {
       .is("deleted_at", null);
     if (countError) throw countError;
 
-    // §5.2 of the product spec reserves badges / achievements / accuracy / friends for a
-    // later release. They are returned as empty placeholders -- NOT omitted -- because the
-    // client renders each one greyed out with a "coming soon" label and distinguishes
-    // "reserved, empty" from "field missing". Keep them as [] / null until the features
-    // actually ship; the badges table already exists for the admin grant path.
+    const { count: archiveCount, error: archiveError } = await sb
+      .from("archives")
+      .select("id", { count: "exact", head: true })
+      .eq("user_id", caller.id)
+      .is("deleted_at", null);
+    if (archiveError) throw archiveError;
+
+    // §1.2.1 stores the pair un-ordered, so an accepted friendship is a row with EITHER column
+    // equal to the caller. `or` is PostgREST's own filter and is written here once.
+    const { count: friendCount, error: friendError } = await sb
+      .from("friendships")
+      .select("id", { count: "exact", head: true })
+      .eq("status", "accepted")
+      .or(`user_a.eq.${caller.id},user_b.eq.${caller.id}`);
+    if (friendError) throw friendError;
+
+    // §3.2.4's 徽章 — the `badges` table has existed since 001 and `admin-grant-badge` has been able
+    // to write it since 1.0.0; 1.0.5 is the release that DRAWS it. Returned as rows so the view can
+    // map each `badge_type` to its own label/glyph; an unknown type still reaches the client, which
+    // renders it as a plain chip rather than dropping it (the table has no CHECK on the column —
+    // 001 left `badge_type` free text, so 「未知类型」 is a real possibility and not a bug).
+    const { data: badgeRows, error: badgeError } = await sb
+      .from("badges")
+      .select("badge_type,granted_at")
+      .eq("user_id", caller.id)
+      .order("granted_at", { ascending: true });
+    if (badgeError) throw badgeError;
+
+    // §5.2 of the product spec reserves achievements / accuracy for a later release. They are
+    // returned as empty placeholders -- NOT omitted -- because the client renders each one greyed
+    // out with a "coming soon" label and distinguishes "reserved, empty" from "field missing".
     //
-    // ⚠ 1.0.3 SHIPS FRIENDS, AND THIS PLACEHOLDER IS STILL EMPTY ON PURPOSE. The friend LIST is read
-    // by the 好友列表 view straight off `friendships` + `users` under RLS (011 §6), because that
-    // screen needs the other party's name, avatar, remark and status dot — i.e. it needs the rows,
-    // and it joins two tables to get them. Filling this field too would be a SECOND answer to 「我的
-    // 好友是谁」, which is the defect this repo has paid for six times; `profile.js` reads it into a
-    // field `viewer.js` never renders. See `_shared/community.ts`'s note on `recentCount` for the
-    // same 「one query, one caller」 rule applied to a different table.
+    // ⚠ 1.0.3 SHIPS FRIENDS, AND THE `friends` PLACEHOLDER IS STILL EMPTY ON PURPOSE. The friend LIST
+    // is read by the 好友列表 view straight off `friendships` + `users` under RLS (011 §6), because
+    // that screen needs the other party's name, avatar, remark and status dot — i.e. it needs the
+    // rows, and it joins two tables to get them. Filling this field too would be a SECOND answer to
+    // 「我的好友是谁」, which is the defect this repo has paid for six times. `friendCount` above is a
+    // NUMBER, which is what §3.2.2's 游戏统计 row asks for and is not a second list.
     return json({
       user: toPublicUser(caller.row),
       sampleCount: count ?? 0,
-      badges: [],
+      archiveCount: archiveCount ?? 0,
+      friendCount: friendCount ?? 0,
+      badges: (badgeRows ?? []).map((b) => ({
+        type: String((b as { badge_type?: unknown }).badge_type ?? ""),
+        grantedAt: (b as { granted_at?: unknown }).granted_at ?? null,
+      })),
       achievements: [],
       accuracy: null,
       friends: [],

@@ -17,10 +17,7 @@
 import { serve } from "https://deno.land/std/http/server.ts";
 import { handlePreflight } from "../_shared/cors.ts";
 import { internal, json, methodNotAllowed } from "../_shared/errors.ts";
-import { requireUser, serviceClient } from "../_shared/client.ts";
-
-/** How long a soft-deleted account is retained before the cron purge removes it. */
-const PURGE_AFTER_DAYS = 30;
+import { PURGE_AFTER_DAYS, requireUser, serviceClient } from "../_shared/client.ts";
 
 serve(async (req: Request): Promise<Response> => {
   const preflight = handlePreflight(req);
@@ -53,20 +50,19 @@ serve(async (req: Request): Promise<Response> => {
       Date.parse(deletedAtIso) + PURGE_AFTER_DAYS * 24 * 60 * 60 * 1000,
     ).toISOString();
 
-    // PURGE JOB (not executed here): a Supabase Cron / pg_cron job must hard-delete
-    // rows 30 days after deletion. The SQL the scheduled job should run is:
+    // ⚠ 1.0.5 审计 P2 — THE PURGE IS NO LONGER A JOB SOMEBODY ELSE WAS SUPPOSED TO WRITE. Until
+    // 1.0.5 this comment printed a `pg_cron` snippet for the operator to paste, and nothing in the
+    // repository ever ran it: the audit's words were 「如果 cron 没有部署，被删除账户的数据**无限期
+    // 保留**，与 PRIVACY.md §5 矛盾」. The job now EXISTS — it is section 4 of `friend-share-purge`,
+    // the one maintenance Function the operator already has to schedule, and it reads the same
+    // `PURGE_AFTER_DAYS` this endpoint just used to compute `purgeAt`. What is left for the operator
+    // is documented in `supabase/README.md` §9 (one cron line + `PURGE_SECRET`), and `verify-067 §10`
+    // fails if the two halves ever stop agreeing.
     //
-    //   select cron.schedule(
-    //     'purge-deleted-users',
-    //     '0 3 * * *',
-    //     $$ delete from public.users
-    //        where deleted_at is not null
-    //          and deleted_at < now() - interval '30 days' $$
-    //   );
-    //
-    // The users -> devices / samples / archives / badges foreign keys all use
-    // ON DELETE CASCADE, so removing the users row cleans the rest up atomically.
-    // See supabase/README.md for how to enable it.
+    // The users -> devices / samples / archives / badges / friendships / chat_messages foreign keys
+    // are all `on delete cascade`, so removing the `users` row cleans the local schema up atomically
+    // — but it does NOT remove the GoTrue identity in `auth.users`, which is why the job goes through
+    // the admin API first. See friend-share-purge's section 4.
 
     return json({ ok: true, purgeAt });
   } catch (err) {

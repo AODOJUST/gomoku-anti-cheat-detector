@@ -87,27 +87,31 @@ cp supabase/config.example.toml supabase/config.toml
 supabase db push
 ```
 
-会依次执行 `migrations/` 下的五个脚本。五份都写成幂等的（`if not exists` / `create or replace` / `drop ... if exists`），重复执行安全。执行完可在 **Table Editor** 里看到 `users / activation_codes / devices / samples / archives / badges / user_kv / email_codes / chat_messages / news / feedback` 十一张表，且每张表的 row count 旁都标着 `RLS enabled`。
+会依次执行 `migrations/` 下的**全部**脚本（001 ～ 020）。每一份都写成幂等的（`if not exists` / `create or replace` / `drop ... if exists`），重复执行安全。执行完可在 **Table Editor** 里看到 `users / activation_codes / devices / samples / archives / badges / user_kv / email_codes / chat_messages / news / feedback / friendships / friend_shares / daily_quotas / votes / vote_ballots / cloud_shares / reports / global_settings / notifications` 二十张表，且每张表的 row count 旁都标着 `RLS enabled`。
+
+> ⚠ **必须先 `db push` 再部署函数**（见第 6 步）。1.0.5 的 `019` / `020` 建了新列（`email_codes.attempts`、`activation_codes.redeemed`），而 1.0.5 的函数**会读到它们**；反过来的顺序会让这几个函数在生产上以 `42703 column does not exist` 静默失败。1.0.1 曾因为漏了这一步而全站挂掉一次，顺序不是风格问题。
+
+> ⚠ **`018` 会撤掉 `users` 上 `country_code` / `last_seen_at` 的列授权**（审计 P0-2/P0-3：隐藏国籍与最后活跃过去只是显示层）。1.0.5 的客户端改从视图 `user_directory` 读那一份投影，所以这个顺序对**新客户端**是正确的；但**尚未重新加载的旧客户端**（1.0.4 及更早）仍然直接 `select=…country_code…&…users`，它的好友列表会在这一步之后读到 401。这是升级窗口本身的性质，不是缺陷：`db push` 之后请**尽快**到 `edge://extensions` 把扩展重新加载一遍。
 
 > ⚠ `004_email_codes.sql` 里的用户名唯一索引（`idx_users_username_lower`）**在已有重名用户时会创建失败**，这是刻意的：静默挑一个赢家等于偷偷改掉别人的账号名。1.0.0 从不分配用户名（它是编辑资料里的可选装饰），所以全新库不会有冲突；确实有的话先手工理清重名再跑。
 
 ## 6. 部署 Edge Functions
 
-逐个部署，并**统一加 `--no-verify-jwt`**：
+**全量部署，并且统一加 `--no-verify-jwt`：**
 
 ```bash
-for fn in \
-  auth-activate auth-renew auth-delete-account \
-  auth-validate-code auth-send-code auth-check-available auth-register \
-  auth-login auth-reset-password auth-change-password auth-change-email \
-  profile-get profile-update \
-  admin-generate-code admin-list-users admin-ban-user \
-  admin-unban-user admin-revoke-codes admin-grant-badge admin-reissue-jwt \
-  chat-send feedback-submit admin-publish-news admin-reply-feedback
-do
+for d in supabase/functions/*/; do
+  fn=$(basename "$d")
+  [ "$fn" = "_shared" ] && continue
   supabase functions deploy "$fn" --no-verify-jwt
 done
 ```
+
+> ⚠⚠ **「只部署改动过的那个」是错的，这个项目已经因此静默失效过一次。** `_shared/` 不是独立函数，它被**打包进每一个函数的产物**里——改了 `_shared/client.ts` 却不重新部署**全部**函数，就等于让绝大部分函数继续用旧的那一份 `_shared`（比如旧的 `requireUser` 不认识新列、旧的角色判断不认识 `super_admin`）。表现是「功能静默失效」，而不是报错。
+>
+> 上面这个循环从**磁盘**取函数名，所以它不会像手写清单那样过期——1.0.5 之前的那份手写清单就漏掉了 1.0.2 之后的十来个函数。
+
+**为什么必须 `--no-verify-jwt`**：这个开关只是关掉平台网关那一层 JWT 校验，并**不代表**函数不校验身份。每个函数内部都会自己做验证：
 
 **为什么必须 `--no-verify-jwt`**：这个开关只是关掉平台网关那一层 JWT 校验，并**不代表**函数不校验身份。每个函数内部都会自己做验证：
 
@@ -126,10 +130,13 @@ supabase secrets set \
   SUPABASE_JWT_SECRET="<第2步的 JWT Secret>" \
   PUBLIC_AVATAR_PREFIX="https://<project-ref>.supabase.co/storage/v1/object/public/avatars/" \
   RESEND_API_KEY="re_xxxxxxxxxxxxxxxx" \
-  MAIL_FROM="白身 <noreply@yourdomain.com>"
+  MAIL_FROM="白身 <noreply@yourdomain.com>" \
+  PURGE_SECRET="<自己生成的一长串随机字符>"
 ```
 
 说明：
+
+- `PURGE_SECRET`（1.0.3 起）：**清理任务的唯一凭据**。`friend-share-purge` 没有用户会话可校验（调用者是定时器），所以它的整个授权就是这个共享密钥。用 `openssl rand -hex 32` 生成，**不要**用 service_role key（那个值由平台注入，可能被日志带出去）。**不设置它的后果是清理任务返回 401 并且什么都不删** —— 这是刻意的 fail-closed：宁可清理停摆，也不能变成一个谁都能调的开放端点。**没有它，PRIVACY.md §5 的「注销账户 30 天后云端数据彻底删除」不会发生。**
 
 - `SUPABASE_URL` 与 `SUPABASE_SERVICE_ROLE_KEY` 由 Supabase 平台**自动注入**到每个 Edge Function，通常无需手动设置。自托管或将函数跑在本机时需要显式设置，命令同样是：
   ```bash
@@ -180,42 +187,73 @@ where email = 'you@example.com';
 
 > 这一步必须在 Dashboard 手工执行，且**永远不会**被包装成 HTTP 接口。`admin-*` 系列函数只负责「校验调用者是不是 admin」，不负责「把谁变成 admin」。
 
-## 9. 开启 30 天清理（软删除账号的真正删除）
+## 9. 开启定时清理（**所有**有期限的数据都靠这一个任务）
 
-`auth-delete-account` 只是软删除（写 `deleted_at`、删设备行）；真正的物理删除交给定时任务。
+`auth-delete-account` 只是软删除（写 `deleted_at`、删设备行）；真正的物理删除、过期的分享、超出保留期的聊天记录，都由**同一个**维护函数 `friend-share-purge` 完成。它没有用户会话，所以用第 7 步设置的 `PURGE_SECRET` 当凭据。
 
-**方式 A：SQL Editor**（推荐）
+**一次任务覆盖四件事：**
 
-先在 Dashboard → **Database → Extensions** 里启用 `pg_cron`，然后执行：
+| 目标 | 期限 | 来源 |
+|---|---|---|
+| `friend_shares` 及其 Storage 对象 | 15 分钟（§1.2.3） | 1.0.3 §1.2.4 |
+| `cloud_shares` 及其 Storage 对象 | 7 天 | 1.0.4 §4.3 |
+| `chat_messages` | 7 天（`CHAT_RETENTION_DAYS`） | 1.0.2 §2.3.5 |
+| **注销账户**（GoTrue 身份 + `users` 行 + 头像对象） | **30 天**（`PURGE_AFTER_DAYS`） | 1.0.5 审计 P2 |
+
+### 9.1 用 `pg_cron` + `pg_net` 调用它（推荐）
+
+Dashboard → **Database → Extensions** 里启用 `pg_cron` 与 `pg_net`，然后：
 
 ```sql
 create extension if not exists pg_cron;
+create extension if not exists pg_net;
 
 select cron.schedule(
-  'purge-deleted-users',
-  '0 3 * * *',                                   -- 每天 03:00
-  $$ delete from public.users
-     where deleted_at is not null
-       and deleted_at < now() - interval '30 days' $$
+  'baishen-purge',
+  '* * * * *',                                  -- 每分钟（§1.2.4 要求 1 分钟内消失）
+  $$
+  select net.http_post(
+    url     := 'https://<project-ref>.supabase.co/functions/v1/friend-share-purge',
+    headers := jsonb_build_object(
+                 'Content-Type', 'application/json',
+                 'x-purge-secret', '<第7步的 PURGE_SECRET>'),
+    body    := '{}'::jsonb
+  )
+  $$
 );
 ```
 
-`devices / samples / archives / badges` 的外键都是 `on delete cascade`，所以删掉 `users` 那一行会原子地清掉所有附属数据。
+> ⚠ **为什么不是一条 `delete from …` 的纯 SQL 任务。** 两件事 SQL 做不到，而且都**不会报错**：
+> 1. **GoTrue 的身份行在 `auth.users` 里，不在 `public` 里。** 只删 `public.users` 会留下一行身份，于是那个邮箱从此永远 `admin.createUser` 失败——注销反而让人**再也注册不回来**；
+> 2. **Storage 的字节不在数据库里。** `delete from storage.objects` 只删元数据行，对象本身还在桶的后备存储里，谁有路径谁还能取到；而路径正是当初发出去的东西。
+>
+> 1.0.5 之前的 README 印的就是那条纯 SQL，所以「30 天后彻底删除」实际上从未发生。
+
+### 9.2 不用 `pg_cron` 时
+
+任何能发起 HTTPS POST 的调度器（外部 cron、GitHub Actions、你自己的机器）都可以，只要带对头：
+
+```bash
+curl -sS -X POST \
+  -H 'x-purge-secret: <PURGE_SECRET>' \
+  -H 'Content-Type: application/json' \
+  -d '{}' \
+  https://<project-ref>.supabase.co/functions/v1/friend-share-purge
+# -> {"ok":true,"shares":0,"objects":0,"cloud":0,"cloud_objects":0,"chat":0,"accounts":0,"avatars":0,"more":false}
+```
+
+`accounts` 与 `avatars` 是 1.0.5 新增的两个计数：它们为 0 就是「这个周期没有到达 30 天的注销账户」，非 0 就是删掉了几个。`more: true` 表示这一批打满了（每类最多 500 条），下一分钟接着处理。
 
 查看 / 撤销任务：
 
 ```sql
 select jobid, jobname, schedule, active from cron.job;
-
-select cron.unschedule('purge-deleted-users');
+select cron.unschedule('baishen-purge');
 ```
 
-**方式 B：Dashboard → Integrations → Cron**，新建 job 填同样的 SQL 与 `0 3 * * *`，效果一致。
+### 9.3 清理过期的邮箱验证码（可选）
 
-### 9.1 清理过期邮箱验证码（§2.4，可选）
-
-`004_email_codes.sql` 末尾把这条语句**注释着**发布了（是否启用 pg_cron 是部署者的决定，不是迁移脚本
-的）。启用了 pg_cron 之后执行：
+`019_email_code_attempts.sql` 之后，`email_codes` 的每一行还带一个失败计数（`attempts`）。启用了 `pg_cron` 之后：
 
 ```sql
 select cron.schedule(
@@ -225,7 +263,7 @@ select cron.schedule(
 );
 ```
 
-不清理也不影响正确性：每一处读取都带 `expires_at` / `used` 条件，过期行永远匹配不到任何人，
+不清理也不影响正确性：每一处读取都带 `expires_at` / `used` / `attempts` 条件，过期行永远匹配不到任何人，
 表又只有每次发码一行。清理只是保持整洁。
 
 ---
@@ -296,19 +334,22 @@ curl -X POST "https://<project-ref>.supabase.co/functions/v1/auth-register" \
 
 - [ ] 项目区域为 Singapore，状态 Active。
 - [ ] `supabase link` 成功，`config.toml` 已从示例复制并改好 `project_id`。
-- [ ] `supabase db push` 成功；**十一张表**存在且都显示 **RLS enabled**。
+- [ ] `supabase db push` 成功；**二十张表**存在且都显示 **RLS enabled**（001～020）。
 - [ ] `activation_codes` 表 **没有任何** policy（Dashboard → Authentication → Policies 里应为空）。
-- [ ] **24 个函数**全部部署成功：`supabase functions list`。
-- [ ] 每个函数都带 `verify_jwt = false`，且代码内部有 `requireUser` / `requireAdmin` 或明确的匿名理由。
-- [ ] secrets 已设置：`SUPABASE_JWT_SECRET`（必需）、`RESEND_API_KEY`（1.0.1 必需）、`MAIL_FROM`（建议）、`PUBLIC_AVATAR_PREFIX`（可选）；改完已重新部署。
+- [ ] **36 个函数**全部部署成功：`supabase functions list`（`_shared` 不是函数，不计）。
+- [ ] ⚠ 每次改动 `_shared/` 之后**全部**重新部署过（见第 6 步的警告）。
+- [ ] 每个函数都带 `verify_jwt = false`，且代码内部有 `requireUser` / `requireAdmin` / `requireSuperAdmin`，或属于第 6 步列出的匿名入口 / `PURGE_SECRET` 那道门。
+- [ ] secrets 已设置：`SUPABASE_JWT_SECRET`（必需）、`RESEND_API_KEY`（1.0.1 必需）、`MAIL_FROM`（建议）、`PUBLIC_AVATAR_PREFIX`（可选）、**`PURGE_SECRET`（定时清理必需）**；改完已重新部署。
 - [ ] Storage 里存在 **public 的 `avatars` 桶**（第 7.1 步）。
 - [ ] 已用激活码跑通一次 `auth-activate`，拿到 `jwt` 与 `expiresAt`。
-- [ ] 已在 SQL Editor 手动把自己标记为 `is_admin = true`。
-- [ ] 用管理员账号调一次 `admin-list-users` 返回 200；用普通账号调返回 403 `FORBIDDEN`。
-- [ ] `pg_cron` 已启用且 `purge-deleted-users` 任务 active。
+- [ ] 已在 SQL Editor 手动把自己标记为 `is_admin = true`；需要超级管理员时再手动把 `role` 设为 `'super_admin'`（`sync_is_admin_from_role` 触发器会同步 `is_admin`；没有 HTTP 接口能设它，这是刻意的）。
+- [ ] 用管理员账号调一次 `admin-list-users` 返回 200；用普通账号调返回 403 `FORBIDDEN`；用普通管理员调 `admin-set-role` 返回 403（只有超级管理员能改角色）。
+- [ ] `pg_cron` 已启用且 `baishen-purge` 任务 active；手工 `curl` 一次带 `x-purge-secret` 的调用返回 `"ok":true`；**不带**该头返回 401。
+- [ ] ⚠ 匿名可用 anon key 直接打一次 `PATCH /rest/v1/global_settings`，应返回空数组（不是 200）。这是 1.0.3 的 P0 回归检查，静态套件证明不了「策略真的生效」。
 - [ ] 扩展 `cloud.js` 里只填了 `SUPABASE_URL` + anon key，没有任何 secret。
 - [ ] 冒烟测试错误码：假码 → `INVALID_CODE`；撤销码 → `CODE_REVOKED`；已用码 → `CODE_ALREADY_USED`；第 4 台设备 → `DEVICE_LIMIT`；封禁账号 → `BANNED`。
 - [ ] **两步注册冒烟**（1.0.1）：`auth-validate-code` → `{valid:true}`；`auth-send-code` 收到邮件；60 秒内再发 → `RATE_LIMITED`；`auth-check-available` 对已占用的用户名 → `{available:false}`；`auth-register` → `{jwt,user}`。
+- [ ] **验证码上限冒烟**（1.0.5 审计 P1）：对同一个邮箱连错 5 次 → 第 5 次起 `TOO_MANY_ATTEMPTS`（429），且**此后即使输对**也仍然被拒（`takeEmailCode` 带 `attempts < 5` 条件）；重新 `auth-send-code` 之后恢复。
 - [ ] **账号设置冒烟**（1.0.1）：`auth-change-password` 用错当前密码 → `BAD_CREDENTIALS`；成功后同一 token 再调 `profile-get` → `UNAUTHORIZED`（`token_epoch` 已自增）；`profile-update` 传 `avatarData` → 桶里出现 `avatars/<user_id>.jpg`。
 
 ---

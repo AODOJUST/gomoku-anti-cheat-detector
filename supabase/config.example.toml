@@ -145,3 +145,6 @@ verify_jwt = false
 
 [functions.cloud-share]
 verify_jwt = false
+
+[functions.admin-set-role]
+verify_jwt = false

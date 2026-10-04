@@ -38,6 +38,15 @@ export type ErrorCode =
   | "BAD_CREDENTIALS"
   | "INVALID_EMAIL_CODE"
   | "RATE_LIMITED"
+  // --- 1.0.5 审计 P1 ---------------------------------------------------------------------------
+  // 「6 位数字 = 1,000,000 种可能……没有验证尝试次数的限制。如果服务端不做，攻击者可以在 10 分钟
+  // 有效期内以任意速率暴力尝试。」 The fix counts the guesses (019_email_code_attempts.sql), and this
+  // is its own code for the same reason `BAD_EMAIL_CODE` and `INVALID_EMAIL_CODE` are two: 「这个码错了」
+  // and 「这个码已经废了，重新发一个」 are different next actions. Borrowing `RATE_LIMITED` would tell
+  // the operator to wait 60 seconds, which is exactly the wrong button — `RATE_LIMITED` is about
+  // SENDING, and this is about VERIFYING. 1.0.5's own avatar defect (a GIF picker told about
+  // activation codes) is what happens when two meanings share one spelling.
+  | "TOO_MANY_ATTEMPTS"
   // The mail provider refused or is not configured. Distinct from INTERNAL because it is a
   // DEPLOYMENT problem the operator (not the end user) has to fix, and generic 500s get lost.
   | "EMAIL_FAILED"

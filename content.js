@@ -270,13 +270,22 @@
     epoch: 'sessionGameEpoch',
   };
 
+  // 1.0.5 (audit P3) — THE FALLBACK TO `local` IS GONE. It used to be here, and it meant that on a
+  // browser where the session area is unavailable these four transient values were written to DISK:
+  // on reload they came back as if the tab had never closed, which contradicts what they are for.
+  // They are already mirrored in memory (`archivedEpoch`, `liveStopped`, `gameEpoch`) and every
+  // reader copes with the pre-hydration value, so the honest behaviour is to keep them in memory
+  // and persist nothing.
+  //
+  // ⚠ WHY `chrome.storage.session` IS REACHABLE FROM A CONTENT SCRIPT AT ALL: by default it is NOT
+  // — the session area is exposed to trusted contexts only. `background.js` calls
+  // `setAccessLevel('TRUSTED_AND_UNTRUSTED_CONTEXTS')` at startup for exactly this reason. If that
+  // has not happened yet (the SW starts lazily), this returns null and the state stays in memory,
+  // which is a smaller loss than writing it to disk.
   function sessionArea() {
     try {
       if (chrome && chrome.storage && chrome.storage.session) return chrome.storage.session;
-    } catch (e) { /* no extension storage (a stripped harness) — fall through */ }
-    try {
-      if (chrome && chrome.storage) return chrome.storage.local;
-    } catch (e) { /* ditto */ }
+    } catch (e) { /* no extension storage (a stripped harness) — memory only, by design */ }
     return null;
   }
 
@@ -1256,12 +1265,15 @@
 
   // 0.4.11 §一.8 — shape validation for the MAIN world -> isolated world channel.
   //
-  // This is NOT a security boundary. A MAIN-world script can read and write anything on the
-  // page; the real attack surface is between the page and the extension, and this wire is
-  // inside the page. What it stops is an ACCIDENT: a statistics script, an ad frame or a CDN
-  // shim that happens to dispatch a same-named CustomEvent would otherwise have its payload
-  // parsed and merged into the captured record as if the socket had sent it. "It cannot be
-  // forged on purpose" is not required; "it cannot collide by accident" is.
+  // 1.0.5 rewrote what this gate is FOR. A shape whitelist is not a provenance check, and until
+  // 1.0.5 the extension had only the former: any script on the page could dispatch a well-formed
+  // `__gm_event` and have it merged into the record as if the socket had sent it — so the record
+  // that feeds the risk score could be written by the page being audited. What the shape gate
+  // still does well is the ACCIDENT (a statistics script, an ad frame, a CDN shim that happens to
+  // use these names), and it stays as the second half of the filter. The first half is
+  // `gmChanAdmit()` below: proof that the frame was assembled by hook.js. gm-nonce.js argues the
+  // design; the short version is that the key is handed over at document_start — before a single
+  // line of the page has run — and every frame afterwards proves possession of it.
   var GM_EVENT_KINDS = ['move', 'reset', 'seed', 'players', 'end', 'attached', 'error'];
   var lastAcceptedCount = null;
   var lastAcceptedDropped = 0;
@@ -1292,9 +1304,149 @@
     return true;
   }
 
+  // ===================== 1.0.5 (audit P1) — frame PROVENANCE =====================
+  // The envelope hook.js sends is `{ n, m, d }`: a sequence number, a HMAC-SHA256 tag, and the
+  // frame body — the SAME body (`{kind, data}` / `{kind, chat}`) this file has always consumed, so
+  // every fixture written before 1.0.5 still parses. The three cases below are the whole state
+  // machine, and the middle one is the interesting one.
+  //
+  // `GM_CHAN_SLOT` and `GM_CHAN_TAG` are mirrored literals in gm-nonce.js / hook.js. No module can
+  // be shared across the world boundary (one realm cannot read the other's globals), so verify-067
+  // pins the pairs equal instead — the alternative, a second copy that silently drifts, is the
+  // exact failure this repo has six scars from.
+  var GM_CHAN_SLOT = '__gmChanKey';
+  var GM_CHAN_TAG = 'gm1';
+  var GM_CHAN_KEY_RE = /^[0-9a-f]{64}$/;
+  var gmChanKey = null;
+  var gmChanKeyObj = null;
+  var gmChanLatch = false;   // set by the first frame that carries a VALID MAC
+  var gmChanSeq = 0;
+  var gmChanTried = false;
+  var gmChanWarned = {};
+
+  // One console line per REASON, not per frame: a rejected frame is indistinguishable from a
+  // detector that stopped recording unless the reason is printed, and 40 identical lines would be
+  // worth less than one. The note is per-call because not every reason is a drop.
+  function gmChanWarn(reason, note) {
+    if (gmChanWarned[reason]) return;
+    gmChanWarned[reason] = true;
+    console.warn('[detector] ' + EV_EVENT + ' 校验未通过（' + reason + '）—— ' +
+      (note || '该帧已丢弃'));
+  }
+
+  // Fire-and-forget, like hydrateSession(): a late arrival can only ADD information, and every
+  // reader copes with the pre-load value (here: "no key yet, so verify nothing").
+  function loadChanKey() {
+    if (gmChanTried) return;
+    gmChanTried = true;
+    var area = null;
+    try { if (chrome && chrome.storage && chrome.storage.local) area = chrome.storage.local; } catch (e) {}
+    if (!area || !area.get) return;
+    try {
+      area.get(GM_CHAN_SLOT, function (o) {
+        var k = o && typeof o[GM_CHAN_SLOT] === 'string' ? o[GM_CHAN_SLOT] : '';
+        if (GM_CHAN_KEY_RE.test(k)) gmChanKey = k;
+      });
+    } catch (e) { /* no key: shape-only from here on, and each frame says so once */ }
+  }
+  loadChanKey();
+
+  function gmChanHex(buf) {
+    var b = new Uint8Array(buf);
+    var s = '';
+    for (var i = 0; i < b.length; i++) s += (b[i] < 16 ? '0' : '') + b[i].toString(16);
+    return s;
+  }
+
+  // Length-independent (constant-time-ish) comparison. This is not a side-channel-sensitive
+  // context, but a short-circuit compare on a MAC is the kind of thing that gets copy-pasted into
+  // one, and the loop costs nothing here.
+  function gmChanSame(a, b) {
+    if (a.length !== b.length) return false;
+    var d = 0;
+    for (var i = 0; i < a.length; i++) d |= a.charCodeAt(i) ^ b.charCodeAt(i);
+    return d === 0;
+  }
+
+  // The keyed half of the handshake. Why the page cannot compute this: this file runs in the
+  // extension's ISOLATED world, whose `crypto` lives in a separate realm — patching
+  // `Crypto.prototype.sign` on the page does not reach it. hook.js has no such luxury, which is
+  // why it binds its two WebCrypto methods at document_start (see the note there).
+  // `Promise.resolve().then(...)` on purpose: a synchronous throw (no WebCrypto at all) has to
+  // arrive as a rejection, or it would escape the chain that is supposed to contain it.
+  function gmChanMac(n, name, payload) {
+    return Promise.resolve().then(function () {
+      var enc = new TextEncoder();
+      var p = gmChanKeyObj
+        ? Promise.resolve(gmChanKeyObj)
+        : crypto.subtle.importKey('raw', enc.encode(gmChanKey), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign'])
+            .then(function (ko) { gmChanKeyObj = ko; return ko; });
+      return p.then(function (ko) {
+        return crypto.subtle.sign({ name: 'HMAC' }, ko,
+          enc.encode(GM_CHAN_TAG + ':' + n + ':' + name + ':' + payload));
+      });
+    }).then(gmChanHex);
+  }
+
+  // Resolves to the frame BODY that the rest of this file has always consumed, or null to drop.
+  function gmChanAdmit(env) {
+    if (!env || typeof env !== 'object') return Promise.resolve(null);
+    var signed = typeof env.m === 'string' && typeof env.d === 'string' && Number(env.n) > 0;
+    var body = null;
+    if (signed) { try { body = JSON.parse(env.d); } catch (e) { return Promise.resolve(null); } }
+
+    // No key on OUR side: gm-nonce.js did not run (a harness that loads part of the extension) or
+    // storage is unavailable. Verify nothing, drop nothing, and announce it — a detector that
+    // silently stops recording would be a worse failure than a forgeable one, and this repo has
+    // eaten that trade before.
+    if (!gmChanKey) {
+      if (signed) gmChanWarn('无密钥，未验签');
+      return Promise.resolve(signed ? body : env);
+    }
+    if (!signed) {
+      // The pre-1.0.5 wire. Accepted only until the channel has PROVEN itself once (the first
+      // valid MAC). After that an unsigned frame is exactly the thing this section exists to stop.
+      // Note the asymmetry this closes: hook.js may briefly be unable to sign (its key arrives one
+      // storage round-trip after document_start), and a verifier that hard-rejected those frames
+      // would silently truncate the record — the worst outcome available here.
+      if (gmChanLatch) { gmChanWarn('未签名'); return Promise.resolve(null); }
+      // ⚠ NOT a drop — say so, or the console claims to have discarded a frame it kept.
+      gmChanWarn('首个已验签帧之前的未签名帧', '此帧已收下，此后的未签名帧一律丢弃');
+      return Promise.resolve(env);
+    }
+    var n = Number(env.n), m = env.m;
+    // Monotonic, so a frame a page script merely OBSERVED on the wire cannot be replayed: it can
+    // copy the tag, but not the sequence number that has not happened yet.
+    if (n <= gmChanSeq) { gmChanWarn('序号回退', 'n=' + n); return Promise.resolve(null); }
+    return gmChanMac(n, EV_EVENT, env.d).then(function (want) {
+      if (!gmChanSame(want, m)) { gmChanWarn('签名不符'); return null; }
+      gmChanLatch = true;
+      gmChanSeq = n;
+      return body;
+    }).catch(function () {
+      // Fail CLOSED once the key is known: we got here because OUR WebCrypto broke, not because
+      // the frame looks wrong, but accepting frames we cannot verify is the one thing this section
+      // exists to prevent. The warning is what keeps that visible instead of silent.
+      gmChanWarn('本机无法计算签名');
+      return null;
+    });
+  }
+
+  // Frames are admitted through ONE serialised chain. Order is load-bearing: a `reset` overtaking
+  // the `move` it follows makes the shape gate below refuse that move (its count went backwards),
+  // and a dropped move is a silently wrong record rather than a visible error. Signing is async,
+  // so the order has to be imposed rather than assumed.
+  var gmChanChain = Promise.resolve();
   window.addEventListener(EV_EVENT, function (e) {
-    var p;
-    try { p = JSON.parse(e.detail); } catch (err) { return; }
+    var env;
+    try { env = JSON.parse(e.detail); } catch (err) { return; }
+    gmChanChain = gmChanChain
+      .then(function () { return gmChanAdmit(env); })
+      .then(function (body) { if (body) onGmFrame(body); })
+      .catch(function () { /* an unadmitted frame is a dropped frame, never a dead listener */ });
+  });
+
+  function onGmFrame(p) {
     // 0.4.4 §八 — chat rides on its own kind and carries no snapshot (see hook.js:emitChat).
     // It is checked BEFORE the shape gate: a chat frame has no `data` at all by design.
     if (p && p.kind === 'chat' && p.chat) {
@@ -1378,7 +1530,7 @@
       endGame(label + (socketRec.draw ? '（和棋）' : ''));
     }
     paintStatus();
-  });
+  }
 
   // The board's intersections. 0.4.5 §一: the selector list now comes from sites.js, because
   // papergames.io's board is a <table> of td.cell-<row>-<col> and shares no class with

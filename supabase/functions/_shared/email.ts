@@ -34,11 +34,27 @@ export const EMAIL_CODE_TTL_MINUTES = 10;
 export const EMAIL_CODE_RESEND_MS = 60 * 1000;
 /** §2.3 「6 位数字」 — the same shape `extension/auth.js`'s EMAIL_CODE_RE carries. */
 export const EMAIL_CODE_RE = /^\d{6}$/;
+/**
+ * 1.0.5 审计 P1/P2 — how many WRONG codes one address may try against one issued code.
+ *
+ * 6 digits is 1,000,000 values, and until 1.0.5 nothing counted the guesses: `auth-send-code` had a
+ * 60-second resend cooldown, but the verifying side (`auth-register` / `auth-reset-password` /
+ * `auth-change-email`) simply answered 「验证码错误或已过期」 and let the caller try again, as fast as
+ * it liked, for the whole 10-minute TTL. Five is the number because the operator who mistyped a
+ * digit needs a few, while five guesses per issued code — one code per 60 seconds by `auth-send-code`'s
+ * own limit — is ~50 guesses across a TTL against 1,000,000 values.
+ *
+ * ⚠ It is enforced by `takeEmailCode`'s own query (`attempts < this`), so a row that reached the
+ * limit can never match ANY code afterwards. `bump_email_code_attempt` deliberately does not set
+ * `used = true`; see 019_email_code_attempts.sql for why burning the row would make the verdict
+ * silently revert to 「验证码错误」.
+ */
+export const EMAIL_CODE_MAX_ATTEMPTS = 5;
 
 const RESEND_ENDPOINT = "https://api.resend.com/emails";
 const MAIL_SUBJECT = "Your Baishen verification code";
 
-/** A row of public.email_codes (004_email_codes.sql). */
+/** A row of public.email_codes (004_email_codes.sql, plus 019's counter). */
 export interface EmailCodeRow {
   id: string;
   email: string;
@@ -46,6 +62,8 @@ export interface EmailCodeRow {
   expires_at: string;
   used: boolean;
   created_at: string;
+  /** 1.0.5 审计 P1 — failed verification attempts against this row. */
+  attempts: number;
 }
 
 /** The smallest and largest code §2.3 allows: 100000–999999, i.e. 900 000 values. */
@@ -302,6 +320,14 @@ export async function issueEmailCode(sb: SupabaseClient, email: string): Promise
  * Returns the row rather than a boolean because every caller needs its `id` to spend it, and
  * returning it here is what keeps 「查一次」 and 「用掉它」 from being two different queries that
  * disagree about which row they mean.
+ *
+ * ⚠ 1.0.5 审计 P1 — `attempts < EMAIL_CODE_MAX_ATTEMPTS` IS PART OF THE MATCH. Without it, the
+ * counter would only ever be able to shout after the fact: a row at the limit would still accept the
+ * one-code-in-a-million guess it exists to make hopeless. With it, 「到达上限」 means 「这一行再也匹配
+ * 不上任何码」, and the operator's only route is to request a new code.
+ *
+ * `attempts` is not in the `select` list of the callers' own reads, so `.select("*")` is what keeps
+ * this filter honest — a narrower projection would silently drop `attempts` back to 0.
  */
 export async function takeEmailCode(
   sb: SupabaseClient,
@@ -314,12 +340,52 @@ export async function takeEmailCode(
     .eq("email", email)
     .eq("code", code)
     .eq("used", false)
+    .lt("attempts", EMAIL_CODE_MAX_ATTEMPTS)
     .gte("expires_at", new Date().toISOString())
     .order("created_at", { ascending: false })
     .limit(1)
     .maybeSingle();
   if (error) throw error;
   return (data as EmailCodeRow | null) ?? null;
+}
+
+/** Why a code was refused. `attempts: 0` means there was no live row to count against. */
+export type EmailCodeClaim =
+  | { ok: true; row: EmailCodeRow }
+  | { ok: false; reason: "NO_CODE" | "TOO_MANY_ATTEMPTS"; attempts: number };
+
+/**
+ * 1.0.5 审计 P1 — the ONE place a verification code is accepted, including its failure counting.
+ *
+ * ⚠ IT IS A FUNNEL, NOT A HELPER, and that is the point. Three functions verify a code
+ * (`auth-register`, `auth-reset-password`, `auth-change-email`) and the audit's finding was that
+ * nobody could tell from the code whether ANY of them limited guessing. A limit implemented at three
+ * call sites would be three answers to 「试了几次了」, and this project has already paid five times for
+ * a second copy of one answer. Adding a fourth caller here inherits the limit; forgetting to is not
+ * possible, because `takeEmailCode` is no longer exported to the functions.
+ *
+ * The counting is a DATABASE increment through `bump_email_code_attempt` (019): a read-then-write
+ * pair would lose a count when two wrong codes arrive together, and an in-process counter would be
+ * back at zero on the next cold start — which, for a brute-force door, is the same as no counter.
+ */
+export async function claimEmailCode(
+  sb: SupabaseClient,
+  email: string,
+  code: string,
+): Promise<EmailCodeClaim> {
+  const row = await takeEmailCode(sb, email, code);
+  if (row) return { ok: true, row };
+  // A miss. Count it against whatever live code this address currently has — and if there is none
+  // (never sent, already spent, expired) say SO, because 「尝试次数过多」 about a row that does not
+  // exist would send the operator looking for a limit instead of a 发送 button.
+  const { data, error } = await sb.rpc("bump_email_code_attempt", { p_email: email });
+  if (error) throw error;
+  const attempts = Number(data) || 0;
+  return {
+    ok: false,
+    reason: attempts >= EMAIL_CODE_MAX_ATTEMPTS ? "TOO_MANY_ATTEMPTS" : "NO_CODE",
+    attempts,
+  };
 }
 
 /** §2.5 step 6 — a code is single-use, exactly like an activation code. */

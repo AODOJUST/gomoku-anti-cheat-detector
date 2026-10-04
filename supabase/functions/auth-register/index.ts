@@ -53,7 +53,7 @@ import {
   type UserRow,
 } from "../_shared/client.ts";
 import { isValidCodeShape, normalizeCode } from "../_shared/codes.ts";
-import { markEmailCodeUsed, takeEmailCode } from "../_shared/email.ts";
+import { claimEmailCode, markEmailCodeUsed } from "../_shared/email.ts";
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 /**
@@ -115,15 +115,18 @@ serve(async (req: Request): Promise<Response> => {
     const sb = serviceClient();
 
     // --- 2. the activation code (§2.5 step 1) ------------------------------------------------
+    // ⚠ 1.0.5 审计 P2 — 「用掉了没有」 读的是 `redeemed`，不是 `redeemed_by`。两者曾是一列（`redeemed_by
+    // is not null` 既是「有人用了」也是「谁用的」），而账户注销会把 `redeemed_by` 置空以让 user 行能被删掉，
+    // 那样这个码就会看起来从没被用过、可以再被别人的新账号激活一次。见 020_activation_code_redeemed.sql。
     const { data: codeRow, error: codeError } = await sb
       .from("activation_codes")
-      .select("code, revoked, redeemed_by")
+      .select("code, revoked, redeemed")
       .eq("code", code)
       .maybeSingle();
     if (codeError) throw codeError;
     if (!codeRow) return fail("INVALID_CODE", 404, "Activation code not found");
     if (codeRow.revoked === true) return fail("CODE_REVOKED", 403, "Activation code has been revoked");
-    if (codeRow.redeemed_by) {
+    if (codeRow.redeemed === true) {
       return fail("CODE_ALREADY_USED", 409, "Activation code has already been used");
     }
 
@@ -131,10 +134,19 @@ serve(async (req: Request): Promise<Response> => {
     // Checked BEFORE anything is written. A wrong code must not cost the operator their address:
     // §2.4's rate limit means a retry has to wait, and having to wait while also being told the
     // account exists would be the worst version of this failure.
-    const emailCodeRow = await takeEmailCode(sb, email, emailCode);
-    if (!emailCodeRow) {
+    //
+    // ⚠ 1.0.5 审计 P1 — `claimEmailCode` is also where the guess is COUNTED. The two refusals are
+    // kept apart on the wire because they have different fixes: `INVALID_EMAIL_CODE` means 「你再输一遍」
+    // and `TOO_MANY_ATTEMPTS` means 「这个码已经废了，回上一步重新发送」. Answering the second as the
+    // first would send the operator round a loop that cannot succeed.
+    const claim = await claimEmailCode(sb, email, emailCode);
+    if (!claim.ok) {
+      if (claim.reason === "TOO_MANY_ATTEMPTS") {
+        return fail("TOO_MANY_ATTEMPTS", 429, "Too many wrong verification codes for the current code");
+      }
       return fail("INVALID_EMAIL_CODE", 400, "The verification code is wrong or has expired");
     }
+    const emailCodeRow = claim.row;
 
     // --- 4. uniqueness, so the failure is legible (§2.3 「唯一约束」) --------------------------
     // These probes are courtesies, not the guarantee: the constraints are (they are what makes the
@@ -196,13 +208,19 @@ serve(async (req: Request): Promise<Response> => {
       }
       userRow = inserted as UserRow;
 
-      // §2.5 step 5 — the optimistic lock, verbatim: only the caller who finds `redeemed_by` null
-      // gets the row, so two simultaneous registrations cannot both claim one code.
+      // §2.5 step 5 — the optimistic lock, verbatim in shape and 1.0.5's in predicate: the lock is on
+      // 「这个码还没被用」 (`redeemed = false`), NOT on `redeemed_by is null`. The old predicate would
+      // have reopened the moment a redeemer's account was purged (`redeemed_by` → null), letting one
+      // code be spent twice. `redeemed_by` is written here purely as the record of WHO — see 020.
       const { data: bound, error: bindError } = await sb
         .from("activation_codes")
-        .update({ redeemed_by: authUserId, redeemed_at: new Date().toISOString() })
+        .update({
+          redeemed: true,
+          redeemed_by: authUserId,
+          redeemed_at: new Date().toISOString(),
+        })
         .eq("code", code)
-        .is("redeemed_by", null)
+        .eq("redeemed", false)
         .select("code");
       if (bindError) throw bindError;
       if (!bound || bound.length !== 1) {

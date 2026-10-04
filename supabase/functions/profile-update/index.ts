@@ -25,7 +25,7 @@
 import { serve } from "https://deno.land/std/http/server.ts";
 import { handlePreflight } from "../_shared/cors.ts";
 import { badRequest, fail, internal, json, methodNotAllowed, unauthorized } from "../_shared/errors.ts";
-import { requireUser, serviceClient, toPublicUser, type UserRow } from "../_shared/client.ts";
+import { AVATAR_BUCKET, requireUser, serviceClient, toPublicUser, type UserRow } from "../_shared/client.ts";
 
 const USERNAME_MIN = 1;
 const USERNAME_MAX = 32;
@@ -43,8 +43,9 @@ const AVATAR_URL_MAX = 1024;
 const AVATAR_MAX_BYTES = 2 * 1024 * 1024;
 /** §3.6 「格式：jpg / png / webp」. Encoded as the data URL's media type. */
 const AVATAR_TYPES = ["image/jpeg", "image/png", "image/webp"];
-/** §3.6 「存 Supabase Storage `avatars` 桶；路径：`avatars/{user_id}.jpg`」. */
-const AVATAR_BUCKET = "avatars";
+// ⚠ `AVATAR_BUCKET` IS IMPORTED, NOT DECLARED HERE — see its note in `_shared/client.ts`. 1.0.5's
+// account purge removes the same object, and two copies of a bucket name is how one of them ends up
+// wrong (which fails as 「图片没被删掉」, not as an error).
 
 /**
  * The prefix every `avatarUrl` must live under. Configured with `PUBLIC_AVATAR_PREFIX`
@@ -55,7 +56,9 @@ function avatarPrefix(): string {
   const configured = Deno.env.get("PUBLIC_AVATAR_PREFIX");
   if (configured && configured.trim() !== "") return configured.trim();
   const url = Deno.env.get("SUPABASE_URL") ?? "";
-  return `${url}/storage/v1/object/public/avatars/`;
+  // Built from the constant rather than retyped: this string used to be a second spelling of the
+  // bucket name sitting three lines below the first one.
+  return `${url}/storage/v1/object/public/${AVATAR_BUCKET}/`;
 }
 
 type ParsedAvatar = { ok: true; value: { bytes: Uint8Array; contentType: string } };

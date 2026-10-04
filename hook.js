@@ -34,6 +34,143 @@
   var EV_REQ = '__gm_req';       // content script -> hook (ask for current record)
   var EV_RESP = '__gm_resp';     // hook -> content script (record reply)
 
+  // =====================================================================================
+  // 1.0.5 (audit P1) — channel authentication: this file AUTHENTICATES every frame it sends.
+  // =====================================================================================
+  // `CustomEvent` on `window` is a channel the whole page shares, and until 1.0.5 anybody could
+  // write to it: any script could dispatch a well-shaped `__gm_event` and content.js would merge
+  // it into the record. The counterpart to this block is `gm-nonce.js` (isolated world,
+  // document_start) — read that file's header first, it is where the design is argued. In one
+  // breath: the page cannot overhear what the extension says at document_start, so the key is
+  // delivered then and never again, and its possession is proven per frame by a MAC.
+  //
+  // Two rules this block must not break:
+  //   · **Order.** Frames are dispatched from one serialised chain. A `reset` overtaking the
+  //     `move` it follows would make content.js drop that move (its shape gate refuses a COUNT
+  //     that went backwards), i.e. a wrong record — the exact class of bug the MAC exists to
+  //     prevent. Signing is async (`crypto.subtle` has no synchronous form), so ordering has to
+  //     be imposed rather than assumed.
+  //   · **The frame bodies are built at CALL time**, not when the chain gets to them. `snapshot()`
+  //     reads live state, and a delayed snapshot would report a board several moves ahead.
+  var CHAN_ATTR = 'data-gm-c';   // mirrors gm-nonce.js ATTR (verify-067 pins the literals equal)
+  var CHAN_TAG = 'gm1';          // mirrors gm-nonce.js TAG — MAC preimage version tag
+  var CHAN_KEY_RE = /^[0-9a-f]{64}$/;
+  var CHAN_WAIT_MS = 30;         // poll interval while waiting for gm-nonce.js to publish
+  var CHAN_WAIT_TRIES = 50;      // ~1.5s, then send unsigned (content.js then degrades, loudly)
+
+  var chanKey = null;
+  var chanSeq = 0;
+  var chanChain = Promise.resolve();
+  var chanKeyObj = null;
+  var chanKeyObjFor = null;
+
+  // WebCrypto is a PAGE API and page scripts may replace its methods. Bind the two we use NOW,
+  // while the page has not run a line, so a later monkey-patch lands on a prototype we no longer
+  // look at. A page can therefore break our signing (a denial of service it could equally achieve
+  // by never rendering the board) but it cannot make us sign something it chose.
+  var chanImportKey = null, chanSign = null, chanEncode = null;
+  try {
+    var _st = window.crypto && window.crypto.subtle;
+    var _TE = window.TextEncoder;
+    if (_st && typeof _st.importKey === 'function' && typeof _st.sign === 'function' && _TE) {
+      chanImportKey = _st.importKey.bind(_st);
+      chanSign = _st.sign.bind(_st);
+      chanEncode = _TE.prototype.encode.bind(new _TE());
+    }
+  } catch (e) { chanImportKey = null; }
+
+  function chanHex(buf) {
+    var b = new Uint8Array(buf);
+    var s = '';
+    for (var i = 0; i < b.length; i++) s += (b[i] < 16 ? '0' : '') + b[i].toString(16);
+    return s;
+  }
+
+  // One-shot read of the delivery attribute. Reading and erasing are the same step on purpose:
+  // a value that stays in the DOM is a value the page can read as soon as its parser runs.
+  function chanRead() {
+    if (chanKey) return chanKey;
+    try {
+      var el = document.documentElement;
+      var v = el && el.getAttribute(CHAN_ATTR);
+      if (typeof v === 'string' && CHAN_KEY_RE.test(v)) {
+        chanKey = v;
+        el.removeAttribute(CHAN_ATTR);
+      }
+    } catch (e) { /* detached document */ }
+    return chanKey;
+  }
+
+  // Wait for gm-nonce.js, but not forever: an extension that refuses to record at all because a
+  // storage round-trip was slow is worse than one whose first frames are unauthenticated (which
+  // is what every version before 1.0.5 shipped).
+  function chanKeySoon(tries) {
+    return new Promise(function (res) {
+      (function step(n) {
+        if (chanRead()) return res(true);
+        if (n <= 0) return res(false);
+        setTimeout(function () { step(n - 1); }, CHAN_WAIT_MS);
+      })(tries);
+    });
+  }
+
+  function chanSeal(material) {
+    var key = chanKey;
+    if (chanKeyObjFor !== key) {
+      chanKeyObj = null;
+      chanKeyObjFor = key;
+    }
+    var p = chanKeyObj
+      ? Promise.resolve(chanKeyObj)
+      : chanImportKey('raw', chanEncode(key), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign'])
+          .then(function (ko) { chanKeyObj = ko; return ko; });
+    return p.then(function (ko) { return chanSign({ name: 'HMAC' }, ko, chanEncode(material)); });
+  }
+
+  function chanDispatch(name, payload) {
+    try {
+      window.dispatchEvent(new CustomEvent(name, { detail: payload }));
+    } catch (e) { /* the page tore down the document */ }
+  }
+
+  // `body` is built by the caller, synchronously, out of live state. `name` is inside the MAC
+  // preimage so a frame cannot be replayed under a different event name.
+  function send(name, body) {
+    var payload;
+    try { payload = JSON.stringify(body); } catch (e) { return; }
+
+    if (!chanImportKey) {
+      // No WebCrypto. content.js will not verify either (same key, same absence), so this degrades
+      // consistently rather than dropping every frame.
+      chanDispatch(name, JSON.stringify({ d: payload }));
+      return;
+    }
+
+    chanChain = chanChain
+      .then(function () {
+        return chanKeySoon(chanRead() ? 0 : CHAN_WAIT_TRIES).then(function (haveKey) {
+          if (!haveKey) { chanDispatch(name, JSON.stringify({ d: payload })); return null; }
+          var n = ++chanSeq;
+          var material = CHAN_TAG + ':' + n + ':' + name + ':' + payload;
+          return chanSeal(material).then(function (sig) {
+            chanDispatch(name, JSON.stringify({ n: n, m: chanHex(sig), d: payload }));
+          });
+        });
+      })
+      .catch(function (err) {
+        // Signing failed (the page patched the prototype after all, or the realm reset). The frame
+        // is DROPPED rather than sent unsigned: content.js knows the key by now, and an unsigned
+        // frame would be rejected there with a warning anyway. Dropping here keeps the two ends'
+        // accounts of the record identical. ⚠ The reason is printed with the frame: a silent drop
+        // of every frame is indistinguishable from a detector that simply stopped working, and
+        // this console line is the only place the difference is visible.
+        try {
+          console.warn('[detector] hook 通道签名失败，已丢弃一帧：' + name +
+            '（' + (err && (err.message || err.name) || err) + '）');
+        } catch (e) {}
+      });
+  }
+
   var BOARD_SIZE = 15;
   var BLACK = 1, WHITE = 2;
   var POLL_MS = 400;
@@ -287,24 +424,23 @@
   }
 
   function emit(kind) {
-    try {
-      window.dispatchEvent(new CustomEvent(EV_EVENT, { detail: JSON.stringify({ kind: kind, data: snapshot() }) }));
-    } catch (e) {}
+    // `snapshot()` runs HERE, not inside the signing chain: see the ordering note above.
+    send(EV_EVENT, { kind: kind, data: snapshot() });
   }
 
   // 0.4.4 §八 — chat rides on its own kind instead of inside `snapshot()`. It is not part of the
   // game record, it arrives far more often than a move, and folding it in would make every
   // listener re-parse the whole move list once per message.
   function emitChat(chat) {
-    try {
-      window.dispatchEvent(new CustomEvent(EV_EVENT, { detail: JSON.stringify({ kind: 'chat', chat: chat }) }));
-    } catch (e) {}
+    send(EV_EVENT, { kind: 'chat', chat: chat });
   }
 
+  // NOTE (1.0.5): nothing in the extension dispatches EV_REQ any more — content.js ingests the
+  // socket through the push frames alone, and this responder has had no caller since 0.5.x. It is
+  // kept because the record it returns is the only way to ask for a snapshot out of band, and it
+  // now authenticates like every other frame so a page cannot use it as an oracle for the key.
   window.addEventListener(EV_REQ, function (e) {
-    try {
-      window.dispatchEvent(new CustomEvent(EV_RESP, { detail: JSON.stringify({ rid: e.detail, data: snapshot() }) }));
-    } catch (err) {}
+    send(EV_RESP, { rid: e.detail, data: snapshot() });
   });
 
   // ---------- socket ----------

@@ -81,6 +81,23 @@
   var SESSION_KEY = 'cloudSession';
   var DEVICE_KEY = 'deviceId';
   var SYNC_QUEUE_KEY = 'syncQueue';
+  // 1.0.5 §一.1.2 — the 已登录账号凭据列表 for 「切换账号」, and the id of the one in use.
+  // TWO keys, as §1.1.2 writes them, but ALWAYS written together in one `enqueue` task: the list
+  // and the pointer are one fact ("which accounts, and which of them is live"), and two separate
+  // writes would let a crash land the pointer on an account that is not in the list.
+  // ⚠ The per-account `jwt` is NOT plaintext — §1.1.4 seals it with AES-256-GCM (crypto.js) and this
+  // layer stores the `{iv, data}` envelope. The field is named `jwt` rather than `sealedJwt` because
+  // §1.1.2 names it `jwt`; the encryption is visible in `auth.js`, which is the only writer.
+  var ACCOUNTS_KEY = 'authAccounts';
+  var ACTIVE_ACCOUNT_KEY = 'activeAccountId';
+  // §1.1.2's 「最多保留 5 个，超出时淘汰最旧的」. One constant, read by the trim, the UI and the suite.
+  var MAX_ACCOUNTS = 5;
+  // §一.1.4's device key. 32 characters, not 32 bytes — see crypto.js's header for why a longer
+  // string makes `subtle.importKey(…, 'AES-GCM', …)` throw rather than merely weaken the key.
+  var DEVICE_KEY_LEN = 32;
+  var DEVICE_KEY_ALPHABET =
+    'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
+  var DEVICE_KEY_STORE = '__gmDeviceKey';
   // §7.4: the queue is bounded. A queue that grows without limit turns a long offline spell into
   // a storage-quota problem, and `chrome.storage.local` is already shared with archives+samples.
   var MAX_SYNC_QUEUE = 500;
@@ -245,7 +262,15 @@
     cloud: {
       syncEnabled: false,
       syncCats: {
-        samples: true, archives: false, blacklist: true, settings: false,
+        // ⚠ 1.0.5 (audit P2) — `blacklist` DEFAULTED TO TRUE AND WAS THE ONE FLAG THAT CONTRADICTED
+        // WHAT THE PRODUCT SAYS ABOUT IT. §7.2's column ticks it, but the blacklist is the one
+        // category whose rows are ABOUT OTHER PEOPLE: a `playerId`, a display name and the
+        // operator's own note — 「这个人在作弊」 — about somebody who never agreed to anything. The
+        // viewer's own help text and PRIVACY.md both said it stays on this machine, and a default
+        // that ships it to a server the first time sync is switched on is not a preference the
+        // operator made. So the default becomes FALSE: syncing the blacklist is an explicit tick,
+        // which is also what 「不会上传黑名单」 means once it is read literally.
+        samples: true, archives: false, blacklist: false, settings: false,
         customQuestions: true, learnedParams: true, customEngines: false, backgrounds: false,
       },
       // §7.3: 'auto' takes the newer `updated_at`; 'ask' prompts when both sides moved within a
@@ -798,6 +823,123 @@
     // opaque handle rather than a credential — it is never accepted as proof of anything on its
     // own; the JWT is.
     return 'dev-' + Math.random().toString(36).slice(2) + Date.now().toString(36);
+  }
+
+  // ---- 1.0.5 §一.1.2 已登录账号凭据列表 --------------------------------------------------------
+
+  var _deviceKeyPromise = null;
+  /**
+   * §一.1.4's `deviceKey`. Lives here, not in crypto.js, because this module is the only legal door
+   * to `chrome.storage` — crypto.js is pure and takes the key as an argument (see its header).
+   *
+   * Memoised exactly like `getDeviceId()` above and for the same reason: two `enqueue`d
+   * read-modify-writes racing to CREATE it would mint two different keys, and the account sealed
+   * under the loser's key would become undecryptable the moment the winner's landed.
+   *
+   * ⚠ It is NOT re-derived from the extension id or the install time (§1.1.4 offers that as an
+   * alternative). A derived key is the same on every machine that installs the extension, so a
+   * leaked profile + a known extension id would be enough to decrypt any other stolen profile —
+   * which is precisely the 「提高门槛」 §1.1.4 is buying. Random-per-install costs one extra key in
+   * the store and buys the property the feature is for.
+   */
+  function getDeviceKey() {
+    if (_deviceKeyPromise) return _deviceKeyPromise;
+    _deviceKeyPromise = enqueue(async function () {
+      var got = null;
+      try { got = await api().get(DEVICE_KEY_STORE); } catch (e) {}
+      var k = got && got[DEVICE_KEY_STORE];
+      if (typeof k === 'string' && k.length === DEVICE_KEY_LEN) return k;
+      // An existing but WRONG-LENGTH key is replaced rather than used: it can only have come from a
+      // hand-edited store, and keeping it would make every seal fail at `importKey` with the
+      // DataError crypto.js's header describes — a failure at the far end, with the cause here.
+      var made = newDeviceKey();
+      var put = {}; put[DEVICE_KEY_STORE] = made;
+      try { await api().set(put); } catch (e) {}
+      return made;
+    });
+    return _deviceKeyPromise;
+  }
+
+  function newDeviceKey() {
+    var n = DEVICE_KEY_LEN;
+    var out = '';
+    var c = (g.crypto && g.crypto.getRandomValues) ? g.crypto : null;
+    if (c) {
+      // ⚠ The alphabet is 64 characters and a byte is 256 values, so `b % 64` is EXACT — no modulo
+      // bias. That is the whole reason for a 64-character alphabet instead of a 62-character one
+      // (0-9A-Za-z): 256 is not a multiple of 62, so the first eight symbols would come up ~1.4%
+      // more often than the rest and the key would be measurably weaker than its length suggests.
+      var b = new Uint8Array(n);
+      c.getRandomValues(b);
+      for (var i = 0; i < n; i++) out += DEVICE_KEY_ALPHABET.charAt(b[i] % 64);
+      return out;
+    }
+    // Stripped harness only (WebCrypto absent). Still 32 characters, so `importKey` accepts it.
+    for (var j = 0; j < n; j++) out += DEVICE_KEY_ALPHABET.charAt(Math.floor(Math.random() * 64));
+    return out;
+  }
+
+  function isAccount(a) {
+    return !!a && typeof a === 'object' && typeof a.userId === 'string' && !!a.userId;
+  }
+
+  /** §1.1.2's 「超出时淘汰最旧的」 needs an ORDER, and the ceiling below can only cut one end — so
+   *  the order lives here, beside the cut, rather than in each caller. Newest first. */
+  function byRecency(a, b) {
+    return (Number(b.lastLoginAt) || 0) - (Number(a.lastLoginAt) || 0);
+  }
+
+  /**
+   * §一.1.2's list, plus §1.1.5's 「当前活跃」 pointer. Never null — an empty store answers
+   * `{accounts: [], activeId: ''}`, so no caller needs a second spelling of 「没有账号」.
+   *
+   * Two repairs happen on the way out, and both are the same rule: the store is an input the UI
+   * never validated. Rows that are not shaped like accounts are dropped (a hand-edited or
+   * half-written array), and a pointer that names no surviving row is reset to `''` rather than
+   * left dangling — a dangling pointer would make the drawer draw no ✅ anywhere while
+   * `activeAccountId` still claimed one account was live.
+   */
+  async function loadAccounts() {
+    var got = null;
+    try { got = await api().get([ACCOUNTS_KEY, ACTIVE_ACCOUNT_KEY]); } catch (e) { got = null; }
+    var raw = got && got[ACCOUNTS_KEY];
+    var list = (Array.isArray(raw) ? raw.filter(isAccount) : []).sort(byRecency).slice(0, MAX_ACCOUNTS);
+    var active = String((got && got[ACTIVE_ACCOUNT_KEY]) || '');
+    if (active && !list.some(function (a) { return a.userId === active; })) active = '';
+    return { accounts: list, activeId: active };
+  }
+
+  /**
+   * The ONE writer. Takes and returns the trimmed list + the repaired pointer, so the caller can
+   * `await` a value instead of re-reading what it just wrote — the second read is the shape a drift
+   * starts in.
+   *
+   * ⚠ §1.1.2's 「最多保留 5 个，超出时淘汰最旧的」 is enforced HERE, in `slice(0, MAX_ACCOUNTS)`, and
+   * not only in the caller: the rule is about the store's shape, and a caller that forgot to trim
+   * would produce a sixth row that every reader then has to cope with. Oldest-first ordering is the
+   * CALLER's job (it is the one that knows `lastLoginAt`); this layer only enforces the ceiling.
+   */
+  function saveAccounts(accounts, activeId) {
+    var list = (Array.isArray(accounts) ? accounts.filter(isAccount) : [])
+      .sort(byRecency).slice(0, MAX_ACCOUNTS);
+    var active = String(activeId || '');
+    if (active && !list.some(function (a) { return a.userId === active; })) active = '';
+    var put = {};
+    put[ACCOUNTS_KEY] = list;
+    put[ACTIVE_ACCOUNT_KEY] = active;
+    return enqueue(async function () {
+      try { await api().set(put); } catch (e) {}
+      return { accounts: list, activeId: active };
+    });
+  }
+
+  /** Forget every remembered account. Used by 「删除账号」 — NOT by 退出登录, which must keep them:
+   *  persisting them is what 「免密切换」 means (§1.1.1). */
+  function clearAccounts() {
+    return enqueue(async function () {
+      try { await api().remove([ACCOUNTS_KEY, ACTIVE_ACCOUNT_KEY]); } catch (e) {}
+      return true;
+    });
   }
 
   /** §7.4's offline queue: `{id, type, table, data, retries}` entries, oldest first. */
@@ -3629,6 +3771,17 @@
     // backup cannot leak a token by construction), and a second literal is how those two drift.
     SESSION_KEY: SESSION_KEY,
     getDeviceId: getDeviceId,
+    // ---- 1.0.5 §一.1 切换账号 ----
+    // `getDeviceKey` is the AES-256-GCM key material crypto.js is handed; the three account calls
+    // are the whole of the credential store. Exported here rather than read directly by auth.js for
+    // the same reason `SESSION_KEY` above is: `enqueue()` is the only legal door, and the account
+    // LIST and the 「which one is live」 POINTER must move together or a crash leaves the drawer
+    // pointing at a row that is not in the list.
+    getDeviceKey: getDeviceKey,
+    loadAccounts: loadAccounts,
+    saveAccounts: saveAccounts,
+    clearAccounts: clearAccounts,
+    MAX_ACCOUNTS: MAX_ACCOUNTS,
     loadSyncQueue: loadSyncQueue,
     saveSyncQueue: saveSyncQueue,
     normalizeCloud: normalizeCloud,

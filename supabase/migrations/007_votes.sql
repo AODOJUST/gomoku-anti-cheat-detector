@@ -127,3 +127,15 @@ comment on view public.vote_tally is
 -- exist, who created them, when they close) is governed by a policy in 011_rls_community.sql, so
 -- that the entire read surface can be reviewed in one file.
 grant select on public.vote_tally to authenticated;
+
+-- ⚠⚠ 1.0.5（审计 P0-1 的视图版）— `grant select … to authenticated` 是**追加**，不是**唯一**的门。
+-- Supabase 的 `ALTER DEFAULT PRIVILEGES` 把 `public` 里**新建对象**的全部权限授予
+-- `anon` / `authenticated` / `service_role`，而这个 `create or replace view` 正是以 `postgres`
+-- 身份执行的 ⇒ 上面那一句 `grant` 之前，`anon` 已经拿着这张视图的 `arwdDxtm` 了。表靠 RLS 兜底
+-- （这就是「每个 create table 都必须开 RLS」那条规则的工作方式），**视图没有 RLS**，所以少一句
+-- `revoke` 就等于把整张视图公开给未登录调用者。
+--
+-- 这张视图里没有身份信息，所以后果比 `user_directory` 轻；但规则是同一个，而且这里曾经就是漏的
+-- —— 实测 `has_table_privilege('anon','public.vote_tally','select')` 在本迁移之后为 `true`。
+-- 1.0.5 把它补上：**读票数仍然只对已登录账户开放**。
+revoke all on public.vote_tally from anon;

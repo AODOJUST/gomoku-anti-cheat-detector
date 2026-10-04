@@ -94,9 +94,14 @@ serve(async (req: Request): Promise<Response> => {
       userRow = (found as UserRow | null) ?? null;
     }
 
-    if (codeRow.redeemed_by) {
-      // Re-activating the very same code with the very same account is idempotent;
-      // anything else means the code is spent.
+    if (codeRow.redeemed === true) {
+      // ⚠ 1.0.5 审计 P2 — 「用掉了没有」 是 `redeemed`；「谁用的」 才是 `redeemed_by`。这两个意思曾经叠
+      // 在一列上，而账户注销会把 `redeemed_by` 置空（020 把它的外键改成 `on delete set null`，否则
+      // `delete from public.users` 会被 RESTRICT 挡住、注销账户永远删不掉）。若这里还判
+      // `redeemed_by`，注销者用过的码会看起来从没被用过。
+      //
+      // Re-activating the very same code with the very same account is idempotent; anything else
+      // means the code is spent.
       if (!userRow || userRow.id !== codeRow.redeemed_by) {
         return fail("CODE_ALREADY_USED", 409, "Activation code has already been used");
       }
@@ -145,13 +150,21 @@ serve(async (req: Request): Promise<Response> => {
     if (limitHit) return limitHit;
 
     // --- 7. bind the code with an optimistic lock --------------------------------------------
-    const alreadyBoundToSelf = codeRow.redeemed_by === userRow.id;
+    // ⚠ 1.0.5 审计 P2 — the lock is on `redeemed = false` (this code is unspent), not on
+    // `redeemed_by is null` (this code has no owner). The two coincide until an account is purged;
+    // after that only the first is still true, and locking on the second would let one code be
+    // redeemed twice. See 020_activation_code_redeemed.sql.
+    const alreadyBoundToSelf = codeRow.redeemed === true && codeRow.redeemed_by === userRow.id;
     if (!alreadyBoundToSelf) {
       const { data: bound, error: bindError } = await sb
         .from("activation_codes")
-        .update({ redeemed_by: userRow.id, redeemed_at: new Date().toISOString() })
+        .update({
+          redeemed: true,
+          redeemed_by: userRow.id,
+          redeemed_at: new Date().toISOString(),
+        })
         .eq("code", code)
-        .is("redeemed_by", null) // optimistic lock: only succeeds if still unredeemed
+        .eq("redeemed", false) // optimistic lock: only succeeds if still unredeemed
         .select("code");
       if (bindError) throw bindError;
       if (!bound || bound.length !== 1) {

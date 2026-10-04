@@ -32,7 +32,7 @@ import {
   serviceClient,
   type UserRow,
 } from "../_shared/client.ts";
-import { markEmailCodeUsed, takeEmailCode } from "../_shared/email.ts";
+import { claimEmailCode, markEmailCodeUsed } from "../_shared/email.ts";
 
 serve(async (req: Request): Promise<Response> => {
   const preflight = handlePreflight(req);
@@ -75,11 +75,17 @@ serve(async (req: Request): Promise<Response> => {
     if (refusal) return refusal;
 
     // The code is checked before the password is touched, so a wrong code cannot leave an account
-    // in a half-reset state.
-    const emailCodeRow = await takeEmailCode(sb, email, emailCode);
-    if (!emailCodeRow) {
+    // in a half-reset state. 1.0.5 审计 P1 — `claimEmailCode` is the one funnel that also COUNTED the
+    // guess (019_email_code_attempts.sql); 「码错了」 and 「码废了，重新发」 are two codes because they
+    // are two next actions.
+    const claim = await claimEmailCode(sb, email, emailCode);
+    if (!claim.ok) {
+      if (claim.reason === "TOO_MANY_ATTEMPTS") {
+        return fail("TOO_MANY_ATTEMPTS", 429, "Too many wrong verification codes for the current code");
+      }
       return fail("INVALID_EMAIL_CODE", 400, "The verification code is wrong or has expired");
     }
+    const emailCodeRow = claim.row;
 
     // -------------------------------------------------------------------------------------------
     // WHY `userRow.id` IS THE RIGHT GoTrue ID — AND WHAT A 404 MEANS

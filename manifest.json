@@ -21,8 +21,8 @@
     "https://www.gomoku.com/*",
     "https://papergames.io/*",
     "https://www.papergames.io/*",
-    "https://raw.githubusercontent.com/*",
-    "https://*.supabase.co/*"
+    "https://raw.githubusercontent.com/AODOJUST/gomoku-anti-cheat-detector/*",
+    "https://truajeswcpofgqqtbmkm.supabase.co/*"
   ],
   "optional_host_permissions": [
     "https://*/*",
@@ -43,6 +43,18 @@
     }
   },
   "content_scripts": [
+    {
+      "matches": [
+        "https://gomoku.com/*",
+        "https://www.gomoku.com/*",
+        "https://papergames.io/*",
+        "https://www.papergames.io/*"
+      ],
+      "js": [
+        "gm-nonce.js"
+      ],
+      "run_at": "document_start"
+    },
     {
       "matches": [
         "https://gomoku.com/*",

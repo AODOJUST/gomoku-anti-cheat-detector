@@ -41,7 +41,7 @@ import {
   toPublicUser,
   type UserRow,
 } from "../_shared/client.ts";
-import { markEmailCodeUsed, takeEmailCode } from "../_shared/email.ts";
+import { claimEmailCode, markEmailCodeUsed } from "../_shared/email.ts";
 
 serve(async (req: Request): Promise<Response> => {
   const preflight = handlePreflight(req);
@@ -94,10 +94,17 @@ serve(async (req: Request): Promise<Response> => {
     }
 
     // --- 2. is that address yours? ----------------------------------------------------------
-    const emailCodeRow = await takeEmailCode(sb, newEmail, emailCode);
-    if (!emailCodeRow) {
+    // ⚠ 1.0.5 审计 P1 — this is the THIRD verification door, and it is the one that makes the limit a
+    // funnel rather than three copies: it goes through the same `claimEmailCode` as §2.5's
+    // registration and §2.6's reset, so 「改邮箱」 cannot be used as a cheaper place to guess.
+    const claim = await claimEmailCode(sb, newEmail, emailCode);
+    if (!claim.ok) {
+      if (claim.reason === "TOO_MANY_ATTEMPTS") {
+        return fail("TOO_MANY_ATTEMPTS", 429, "Too many wrong verification codes for the current code");
+      }
       return fail("INVALID_EMAIL_CODE", 400, "The verification code is wrong or has expired");
     }
+    const emailCodeRow = claim.row;
 
     // --- 3. can it be used? (now that control of it has been proven) -------------------------
     if (await emailTaken(sb, newEmail)) {
