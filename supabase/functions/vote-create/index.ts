@@ -41,11 +41,23 @@ import {
   communityRefusal,
   isShareLive,
   refusalMessage,
+  VOTE_TARGET_KINDS,
   type VoteRow,
 } from "../_shared/community.ts";
 
-/** §1.4.3's `target_kind`, in one place. Mirrors `cloud_shares_kind_known` (008). */
-const TARGET_KINDS = ["archive", "sample"];
+/**
+ * §1.4.3's `target_kind` — and it is DELIBERATELY NARROWER than `SHARE_KINDS`.
+ *
+ * ⚠ 1.0.2's comment here said 「Mirrors `cloud_shares_kind_known` (008)」, which stopped being true
+ * the moment 015 let that constraint take 配置. A poll asks the community to judge a REPLAY or a
+ * SAMPLE; a 配置包 is a settings bundle with nothing to vote on, and the client disables the 投票
+ * checkbox for it.
+ *
+ * ⚠ 1.0.4 — THE LIST MOVED INTO THE SHARED BLOCK (`VOTE_TARGET_KINDS`, with `isVotableKind()`), so
+ * the picker, the room's per-card vote slot and this Function answer 「这个附件能投票吗」 the same
+ * way. It is not a copy of the share vocabulary, and it is not a second opinion either.
+ */
+const TARGET_KINDS = VOTE_TARGET_KINDS;
 
 serve(async (req: Request): Promise<Response> => {
   const preflight = handlePreflight(req);

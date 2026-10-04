@@ -218,6 +218,21 @@ function newsText(row, lang) {
 var SHARE_TTL_MS = 15 * 60 * 1000;
 /** §1.2.3's three kinds verbatim: 「'archive' | 'sample' | 'config'」. */
 var SHARE_KINDS = ['archive', 'sample', 'config'];
+/**
+ * §1.4.3's `target_kind` — the kinds a POLL may attach to.
+ *
+ * ⚠ DELIBERATELY NARROWER THAN `SHARE_KINDS`, AND IT LIVES HERE SO IT CANNOT DRIFT. A poll asks the
+ * community to judge a REPLAY or a SAMPLE; a 配置包 is a settings bundle with nothing to vote on.
+ * 1.0.2 kept this list inside `vote-create` with a comment claiming it mirrored
+ * `cloud_shares_kind_known` — which stopped being true as soon as 015 let that constraint take the
+ * third kind, and 1.0.4 also wants the same answer on the client (the 投票 checkbox is disabled
+ * for 配置, and `cmPaintVotesForRows` must not spend three queries per config card).
+ */
+var VOTE_TARGET_KINDS = ['archive', 'sample'];
+/** One spelling of 「这个附件能投票吗」 for the picker, the room and the Function. */
+function isVotableKind(kind) {
+  return VOTE_TARGET_KINDS.indexOf(kind) >= 0;
+}
 /** §1.2.3 「payload（< 500KB 时）；超出则用 storage_url」. The client needs this to decide whether to
  *  hand `friend-share` a body or an upload; the Function re-measures what it receives. */
 var SHARE_INLINE_MAX_BYTES = 500 * 1024;
@@ -456,12 +471,19 @@ function presenceState(lastSeenAt, manualStatus, nowMs) {
  * stored — 008_community_ext.sql has the reasoning — and this is the single derivation both realms
  * use, so `undefined` / `null` / a malformed attachment all read as a plain message rather than as
  * a card with an empty title.
+ *
+ * ⚠ 1.0.4 — `config` IS A CARD TOO, AND IT USED TO FALL THROUGH TO `'text'`. 1.0.2 drew only two
+ * of `SHARE_KINDS`'s three, so a 配置包 sent to the room arrived as a message with an attachment
+ * and NO card: the reader saw a name and a timestamp and nothing to press. The derivation is over
+ * `SHARE_KINDS` — the same three the picker offers, the same three `friend_shares` accepts, the
+ * same three `cloud_shares` accepts since 015 — rather than a second list that can drift from it.
  */
 function messageType(row) {
   var a = row && row.attachment;
   if (!a || typeof a !== 'object') return 'text';
-  if (a.kind === 'archive') return 'archive-share';
-  if (a.kind === 'sample') return 'sample-share';
+  for (var i = 0; i < SHARE_KINDS.length; i++) {
+    if (a.kind === SHARE_KINDS[i]) return SHARE_KINDS[i] + '-share';
+  }
   return 'text';
 }
 
@@ -543,6 +565,61 @@ function serverDate(nowMs) {
   return new Date(now).toISOString().slice(0, 10);
 }
 
+/**
+ * 1.0.4 §P1 — every table the community subscribes to, and the events it wants from each.
+ *
+ * ONE AUTHORITY, THREE CONSUMERS, and they are the reason this is in the block rather than inline in
+ * `community.js`:
+ *
+ *   1. `joinFrame` builds the `postgres_changes` array from `realtimeChanges()` below — so the
+ *      subscription cannot list a table the client does not also dispatch on.
+ *   2. `rtFrame` dispatches by `table`, so the same list decides who hears what.
+ *   3. `013_realtime.sql` publishes exactly these tables, in SQL, where it cannot import this file.
+ *      ⚠ THAT THIRD ONE IS A SECOND SPELLING and it is pinned: `verify-066` parses the migration's
+ *      array and asserts it equals this list. The failure mode without that test is the one this
+ *      whole release opens with — a client that subscribes to a table the publication does not
+ *      carry receives nothing, silently, forever, and the join still answers `ok`.
+ *
+ * ⚠ `vote_ballots` IS ABSENT AND MUST STAY ABSENT. §七.3 makes the poll anonymous and
+ * 011_rls_community.sql gives ballots a self-only SELECT policy; Realtime applies the same policies
+ * to what it delivers, so publishing them would deliver to each subscriber exactly the ballots they
+ * could already read — their own. Counts are refreshed by a bounded poll while a poll is on screen
+ * (`VOTE_TALLY_POLL_MS` in community.js). A trigger that BROADCAST each ballot's choice would be
+ * real-time and is deliberately not done: it would publish 「有人刚投了 B」 to the room, which is
+ * more than §七.3's 「仅显示票数」 promises.
+ *
+ * ⚠ `event` IS `'*'` FOR EVERYTHING EXCEPT THE ROOM, and that is not laziness. §1.2.1's 接受好友 is
+ * an UPDATE on `friendships`, §1.2.3's 「已接收」 an UPDATE on `friend_shares`, §1.5.3's 「已读」 an
+ * UPDATE on `notifications`, §1.4.2's 「已结束」 an UPDATE on `votes` — an INSERT-only subscription
+ * would deliver the *arrival* of every one of those features and none of their outcomes. The room is
+ * INSERT-only because a message is never edited: subscribing to updates there would ship the whole
+ * old row over the wire for nothing, and `chat_messages` is the one table here that grows large.
+ */
+var REALTIME_TABLES = [
+  { table: 'chat_messages', event: 'INSERT' },
+  { table: 'friendships', event: '*' },
+  { table: 'friend_shares', event: '*' },
+  { table: 'notifications', event: '*' },
+  { table: 'votes', event: '*' },
+  { table: 'news', event: '*' },
+  { table: 'feedback', event: '*' }
+];
+
+/**
+ * `REALTIME_TABLES` shaped as Phoenix's `postgres_changes` config.
+ *
+ * A function rather than a constant so the frame builder cannot hold a reference the caller might
+ * mutate — the join payload is assembled once per connect and a shared array edited by one caller
+ * would be edited for every later one.
+ */
+function realtimeChanges() {
+  var out = [];
+  for (var i = 0; i < REALTIME_TABLES.length; i++) {
+    out.push({ event: REALTIME_TABLES[i].event, schema: 'public', table: REALTIME_TABLES[i].table });
+  }
+  return out;
+}
+
   g.GMCommunityShared = {
     ADMIN_ACTIONS: ADMIN_ACTIONS,
     CENSOR_WORDS: CENSOR_WORDS,
@@ -581,6 +658,7 @@ function serverDate(nowMs) {
     REPORT_RATE_MAX: REPORT_RATE_MAX,
     REPORT_RATE_WINDOW_MS: REPORT_RATE_WINDOW_MS,
     REPORT_STATUSES: REPORT_STATUSES,
+    REALTIME_TABLES: REALTIME_TABLES,
     SHARE_DAILY_ARCHIVE_MAX: SHARE_DAILY_ARCHIVE_MAX,
     SHARE_DAILY_CONFIG_MAX: SHARE_DAILY_CONFIG_MAX,
     SHARE_INLINE_MAX_BYTES: SHARE_INLINE_MAX_BYTES,
@@ -588,6 +666,7 @@ function serverDate(nowMs) {
     SHARE_NAME_MAX: SHARE_NAME_MAX,
     SHARE_TTL_MS: SHARE_TTL_MS,
     VOTE_CHOICES: VOTE_CHOICES,
+    VOTE_TARGET_KINDS: VOTE_TARGET_KINDS,
     VOTE_TTL_MS: VOTE_TTL_MS,
     censorHit: censorHit,
     censorNormalize: censorNormalize,
@@ -597,6 +676,7 @@ function serverDate(nowMs) {
     countryFlagChinaUnified: countryFlagChinaUnified,
     isMuted: isMuted,
     isShareLive: isShareLive,
+    isVotableKind: isVotableKind,
     isVoteOpen: isVoteOpen,
     mentionToken: mentionToken,
     messageType: messageType,
@@ -606,6 +686,7 @@ function serverDate(nowMs) {
     previewLine: previewLine,
     quotaColumnFor: quotaColumnFor,
     quotaMaxFor: quotaMaxFor,
+    realtimeChanges: realtimeChanges,
     serverDate: serverDate,
     shareExpiresAt: shareExpiresAt,
     voteTally: voteTally,

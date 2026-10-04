@@ -142,3 +142,6 @@ verify_jwt = false
 
 [functions.geo-update]
 verify_jwt = false
+
+[functions.cloud-share]
+verify_jwt = false

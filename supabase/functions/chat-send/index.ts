@@ -69,6 +69,7 @@ import {
   refusalMessage,
   REPLY_PREVIEW_MAX,
   SHARE_INLINE_MAX_BYTES,
+  SHARE_KINDS,
   SHARE_NAME_MAX,
 } from "../_shared/community.ts";
 
@@ -76,8 +77,16 @@ const BUCKET = "temp-shares";
 /** §1.1.2 「保留时间与普通消息一致（7 天）」 — the same window as `CHAT_RETENTION_DAYS`. */
 const SHARE_LIFETIME_DAYS = 7;
 
-/** The two kinds §1.1.2's picker offers. Mirrors `cloud_shares_kind_known` (008). */
-const ATTACHMENT_KINDS = ["archive", "sample"];
+/**
+ * The kinds a room 附件 may be. ⚠ 1.0.4 — THIS IS `SHARE_KINDS`, NOT A COPY OF IT.
+ *
+ * 1.0.2 had `["archive", "sample"]` here, mirroring 008's `cloud_shares_kind_known`, while the
+ * picker in `viewer.js` has always drawn `SHARE_KINDS` — three buttons, including 配置. So 配置 +
+ * 聊天室 reached this file and came back 400 for choosing something the UI offered. 015 relaxes the
+ * table's constraint to the same three, and this import removes the second list entirely: the
+ * picker, `friend_shares`, `cloud_shares`, `messageType()` and this check are one vocabulary.
+ */
+const ATTACHMENT_KINDS = SHARE_KINDS;
 
 function byteLength(value: unknown): number {
   return new TextEncoder().encode(JSON.stringify(value ?? null)).length;

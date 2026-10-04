@@ -36,15 +36,18 @@
 // policy is about the table and these are about the Storage object, which RLS cannot reach.
 //
 // ---------------------------------------------------------------------------------------------
-// §1.2.5'S COUNTER, AND THE RACE THAT IS DELIBERATELY NOT FIXED
+// §1.2.5'S COUNTER — 1.0.4 §P2 MOVED IT INTO THE DATABASE
 // ---------------------------------------------------------------------------------------------
-// `daily_quotas` is a read-then-write (read the row, refuse if over, increment). Two sends in the
-// same instant can both read 19 and both write 20, so the 21st gets through. That is accepted: the
-// quota is a courtesy against a stuck retry loop and a spammer, not a billing system, and the cost
-// of the lost update is one extra share. The alternative — counting from `friend_shares` itself —
-// is exact and needs no counter, but §1.2.5 asks for this table and the client reads it to show
-// 「今日还可发送 7 个」; two sources of one number is the shape this project has paid six times for.
-// ⇒ one source, documented race, and `daily_quotas` is the only thing that decides.
+// This Function used to read `daily_quotas`, compare, and write `used + 1` back, and its own header
+// said so: 「Two sends in the same instant can both read 19 and both write 20, so the 21st gets
+// through」. 1.0.4  keeps the courtesy reading of the quota and removes the lost update, by making
+// the increment ONE statement the database can serialise — `claim_share_quota` /
+// `release_share_quota` in 014_share_quota.sql. Read that file for why it lives there and not here:
+// PostgREST sends one statement per request, so 「read」 and 「write it back」 cannot be made to share
+// a transaction from this side at any level of care.
+//
+// `daily_quotas` is still the only thing that decides, and the client still reads it (through
+// `daily_quotas_read_self`) to print 「今日还可发送 7 个「 — one source, one number.
 
 import { serve } from "https://deno.land/std/http/server.ts";
 import { handlePreflight } from "../_shared/cors.ts";
@@ -65,7 +68,6 @@ import {
   quotaColumnFor,
   quotaMaxFor,
   refusalMessage,
-  serverDate,
   SHARE_INLINE_MAX_BYTES,
   SHARE_KINDS,
   type FriendshipRow,
@@ -254,80 +256,75 @@ serve(async (req: Request): Promise<Response> => {
     }
 
     // ---- §1.2.5 每日上限 ---------------------------------------------------------------------
+    // ⚠ 1.0.4 §P2 — the ceiling is CLAIMED, not read-then-written. `claim_share_quota` is ONE
+    // statement (`insert … on conflict do update … where <under the cap>`) and therefore runs under
+    // the row lock for (user_id, date): a second sender re-evaluates the predicate against the
+    // first one's committed value, which is what the old read-then-write could not do (both read
+    // 19, both wrote 20). It returns the new count, or NULL when the day is spent. See
+    // 014_share_quota.sql — including why the function is `service_role`-only.
     const column = quotaColumnFor(kind);
     const max = quotaMaxFor(kind);
-    const today = serverDate();
 
-    const { data: quotaRow, error: quotaError } = await sb
-      .from("daily_quotas")
-      .select("*")
-      .eq("user_id", caller.id)
-      .eq("date", today)
-      .maybeSingle();
-    if (quotaError) throw quotaError;
+    // The BODY is validated BEFORE the claim, so a malformed request cannot consume a reservation.
+    const payload = body.payload === undefined ? null : body.payload;
+    if (payload === null) return badRequest("Missing payload");
 
-    const used = quotaRow ? Number((quotaRow as Record<string, unknown>)[column] ?? 0) : 0;
-    if (used >= max) {
+    const claim = await sb.rpc("claim_share_quota", {
+      p_user: caller.id,
+      p_column: column,
+      p_max: max,
+    });
+    if (claim.error) throw claim.error;
+    if (claim.data === null || claim.data === undefined) {
       return fail("QUOTA_EXCEEDED", HttpStatus.CONFLICT,
         `At most ${max} of this kind per day`);
     }
 
-    // ---- the body: inline or Storage (§1.2.3 「< 500KB 时；超出则用 storage_url」) -----------
-    const payload = body.payload === undefined ? null : body.payload;
-    if (payload === null) return badRequest("Missing payload");
-
     const size = byteLength(payload);
-    let storagePath: string | null = null;
 
-    if (size > SHARE_INLINE_MAX_BYTES) {
-      // The path is namespaced by recipient first: a bucket listing is then 「某人的收件箱」, which
-      // is what the purge job and any future support question are about. The uuid keeps two sends of
-      // the same file from colliding.
-      const path = `${toUser}/${crypto.randomUUID()}.json`;
-      const upload = await sb.storage.from(BUCKET).upload(
-        path,
-        new Blob([JSON.stringify(payload)], { type: "application/json" }),
-        { contentType: "application/json", upsert: false },
-      );
-      if (upload.error) throw upload.error;
-      storagePath = path;
+    // Everything that can still fail happens inside this `try`, because the reservation is already
+    // spent: a Storage rejection or an insert failure must hand it back, or a bad minute costs the
+    // sender one of their twenty shares. `release_share_quota` is best-effort by design (see the
+    // asymmetry note in 014) — the failure being reported is the real one, not the bookkeeping.
+    try {
+      let storagePath: string | null = null;
+
+      if (size > SHARE_INLINE_MAX_BYTES) {
+        // The path is namespaced by recipient first: a bucket listing is then 「某人的收件箱」, which
+        // is what the purge job and any future support question are about. The uuid keeps two sends
+        // of the same file from colliding.
+        const path = `${toUser}/${crypto.randomUUID()}.json`;
+        const upload = await sb.storage.from(BUCKET).upload(
+          path,
+          new Blob([JSON.stringify(payload)], { type: "application/json" }),
+          { contentType: "application/json", upsert: false },
+        );
+        if (upload.error) throw upload.error;
+        storagePath = path;
+      }
+
+      const { data: inserted, error: insertError } = await sb
+        .from("friend_shares")
+        .insert({
+          from_user: caller.id,
+          to_user: toUser,
+          kind,
+          // Exactly one of the two is set — `friend_shares_has_body` in 006 enforces it, so a bug
+          // here is a loud 23514 rather than a share that opens to nothing.
+          payload: storagePath === null ? payload : null,
+          storage_url: storagePath,
+          size_bytes: size,
+        })
+        .select("*")
+        .single();
+      if (insertError) throw insertError;
+
+      return json({ ok: true, share: publicShare(inserted as FriendShareRow) });
+    } catch (err) {
+      const undo = await sb.rpc("release_share_quota", { p_user: caller.id, p_column: column });
+      if (undo.error) console.error("friend-share quota release failed:", undo.error);
+      throw err;
     }
-
-    const { data: inserted, error: insertError } = await sb
-      .from("friend_shares")
-      .insert({
-        from_user: caller.id,
-        to_user: toUser,
-        kind,
-        // Exactly one of the two is set — `friend_shares_has_body` in 006 enforces it, so a bug
-        // here is a loud 23514 rather than a share that opens to nothing.
-        payload: storagePath === null ? payload : null,
-        storage_url: storagePath,
-        size_bytes: size,
-      })
-      .select("*")
-      .single();
-    if (insertError) throw insertError;
-
-    // The counter, after the row exists: a quota that was spent on a failed insert would lock a
-    // user out of a day's allowance for nothing.
-    const { error: bumpError } = await sb
-      .from("daily_quotas")
-      .upsert(
-        {
-          user_id: caller.id,
-          date: today,
-          shares_archive: column === "shares_archive" ? used + 1 : Number(quotaRow?.shares_archive ?? 0),
-          shares_config: column === "shares_config" ? used + 1 : Number(quotaRow?.shares_config ?? 0),
-        },
-        { onConflict: "user_id,date" },
-      );
-    // ⚠ A failed counter write does NOT fail the share. The bytes are already stored and the row is
-    // already committed; tearing that down to keep a courtesy counter accurate would turn a
-    // bookkeeping problem into a data-loss problem. It is logged instead.
-    if (bumpError) console.error("friend-share quota bump failed:", bumpError);
-
-    return json({ ok: true, share: publicShare(inserted as FriendShareRow) });
   } catch (err) {
     console.error("friend-share failed:", err);
     return internal("Could not share the file");

@@ -339,6 +339,35 @@
   /** `status()` plus the expiry, for the account row's 「有效期至 …」 line. */
   function expiresAt() { return _session ? (Number(_session.expiresAt) || 0) : 0; }
 
+  /**
+   * 1.0.4 §P1 — merge fields into the cached `user` projection and persist.
+   *
+   * §3.1.6's 隐藏国籍 and §3.2.3's 在线状态 are written straight to `users` through PostgREST (011
+   * grants update on exactly those two columns), so the write's effect on the SESSION is the
+   * caller's problem. Without this the operator changes 在线状态 to 隐身, the row is updated, and
+   * the presence channel — which reads `myManualStatus()` off this projection — keeps announcing
+   * 在线 until the page is reloaded. Two answers to 「我的状态是什么」, one of them stale.
+   *
+   * ⚠ It merges rather than replaces, and it does not accept `is_admin` / `is_banned` / `id`: those
+   * are the fields the server decides on every call, and a local write to them would be this
+   * project's recurring 「客户端复述服务端判据」 defect in the one place where it would also be a
+   * privilege escalation. The caller passes the row PostgREST returned; the merge is field-by-field
+   * so a column the policy did not let through simply is not there.
+   */
+  async function patchUser(fields) {
+    await load();
+    if (!_session || !_session.user || !fields) return null;
+    var allowed = ['username', 'bio', 'avatar_url', 'hide_country', 'manual_status',
+                   'country_code', 'last_seen_at', 'muted_until', 'activated_at'];
+    for (var i = 0; i < allowed.length; i++) {
+      var k = allowed[i];
+      if (Object.prototype.hasOwnProperty.call(fields, k)) _session.user[k] = fields[k];
+    }
+    await store().saveCloudSession(_session);
+    emit();
+    return _session.user;
+  }
+
   // =============================================================================================
   // 1.0.1 §二 两步注册、登录、找回密码
   // =============================================================================================
@@ -540,6 +569,7 @@
     status: status,
     stateOf: stateOf,          // pure — the suite drives §3.4's table through this
     expiresAt: expiresAt,
+    patchUser: patchUser,      // 1.0.4 §P1 — merge into the cached user projection
     renewAfterMs: renewAfterMs,
     isActivated: isActivated,
     isAdmin: isAdmin,

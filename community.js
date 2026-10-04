@@ -76,8 +76,24 @@
    *
    * Spelled out rather than `select=*` so a column added to the table later cannot start travelling
    * to clients by default — the same reason `publicChatMessage` projects explicitly on the server.
+   *
+   * ⚠⚠ 1.0.4 — THE FOUR 1.0.3 COLUMNS WERE MISSING FROM THIS LIST, AND IT COST THEM EVERYTHING.
+   * 1.0.3 added `attachment` (§1.1.3's card), `mentioned_users` (§1.6.3's highlight), `reply_to`
+   * (§1.7.3's click target) and `reply_preview` (§1.7.4's quoted line) — to the TABLE, to
+   * `publicChatMessage` on the server, and to `cmMsgHtml` in the view. It did not add them here, so
+   * every row that reached the client through this query arrived without them. The only rows that
+   * ever carried them were the SENDER's own, because `chatSend` returns the inserted row and
+   * `cmPush` draws it locally. ⇒ 附件 / 提及 / 引用 worked exactly once each, for the person who
+   * wrote them, and vanished on reload or for everybody else.
+   *
+   * ⚠ WHY NOTHING CAUGHT IT: the harness stubs `GMCloud.rest` with fixture rows that DO carry the
+   * columns, so the view rendered correctly in every suite while the query asked for less. A stub
+   * cannot notice a missing `select=` term — the fixture is the second thing under test, and this
+   * one disagreed with production for the whole 1.0.3 cycle. `verify-066` reads this list against
+   * `publicChatMessage`'s keys instead, which is the comparison a stub cannot make.
    */
-  var CHAT_COLS = 'id,user_id,username,avatar_url,content,created_at';
+  var CHAT_COLS = 'id,user_id,username,avatar_url,content,created_at,' +
+    'attachment,mentioned_users,reply_to,reply_preview';
 
   /**
    * The room's scrollback: §2.3.5's 「历史保留 最近 7 天」 as a read window, newest page first.
@@ -86,15 +102,22 @@
    * same query with the retention floor replaced by 「everything after the last row I have」, so
    * live and polled messages arrive through one code path and one shape.
    *
-   * The two are alternatives, never combined. PostgREST reads a repeated `created_at` parameter as
-   * two conjuncts on one column and `gt` would then quietly win or lose depending on the server's
-   * parameter folding — an ordering nobody should have to know. One bound per request.
+   * ⚠ 1.0.4 §P1 — `opts.before` IS THE THIRD BOUND, AND THE SAME QUERY. §1.1.2 keeps seven days and
+   * `CHAT_PAGE_SIZE` is 50, so a busy room's older messages were simply unreachable: `chatLoad`
+   * could only ever ask for 「the last N」. `before` is the OLDEST row in hand, and the request
+   * becomes 「the 50 before that」 — identical shape (`desc` + `limit` + reverse), so 「加载更多」 is
+   * not a second reader with its own ordering rules.
+   *
+   * The three are alternatives, never combined. PostgREST reads a repeated `created_at` parameter as
+   * two conjuncts on one column and `gt`/`lt` would then quietly win or lose depending on the
+   * server's parameter folding — an ordering nobody should have to know. One bound per request.
    */
   function chatLoad(opts) {
     var o = opts || {};
     var S = shared() || {};
     if (!jwt()) return Promise.resolve(noSession());
-    var bound = o.since ? ('gt.' + o.since) : ('gte.' + S.chatRetentionCutoff());
+    var bound = o.since ? ('gt.' + o.since)
+              : (o.before ? ('lt.' + o.before) : ('gte.' + S.chatRetentionCutoff()));
     var query = 'select=' + CHAT_COLS +
       '&created_at=' + encodeURIComponent(bound) +
       '&order=created_at.' + (o.since ? 'asc' : 'desc') +
@@ -152,6 +175,22 @@
   var RT_MAX_ATTEMPTS = 2;
   var RT_POLL_MS = 6000;
 
+  /**
+   * 1.0.4 §P1 — how often an OPEN poll re-reads its tallies, while it is on screen.
+   *
+   * A count CANNOT be pushed. `public.vote_tally` is a view, and a publication carries tables;
+   * `vote_ballots` is the table underneath it, and its SELECT policy is self-only
+   * (011_rls_community.sql) so Realtime — which applies the same policies — would deliver to each
+   * subscriber exactly the ballots they may already read, i.e. their own. Publishing anything
+   * finer-grained would mean broadcasting 「有人投了 B」, which is more than §七.3's 「仅显示票数」.
+   *
+   * Slower than `RT_POLL_MS` on purpose: the room's poller is standing in for a message push and
+   * wants to feel instant, while this one is a tally behind a button the operator is not watching
+   * keystroke-by-keystroke. Ten seconds closes 「其他人投票后不会自动更新」 without turning a page
+   * with four open polls into forty requests a minute.
+   */
+  var VOTE_TALLY_POLL_MS = 10000;
+
   // =====================================================================
   // protocol frames — pure, and the only part of the socket that can be tested without one
   // =====================================================================
@@ -167,8 +206,21 @@
    * ⚠ `event: 'INSERT'` and the table name are the values §2.3.4's snippet uses. They are also
    * constrained by 005_community.sql: the table has a SELECT policy and no INSERT policy, and a
    * subscription only delivers rows the token may read.
+   *
+   * ⚠⚠ 1.0.4 §P1 — THE TABLE LIST IS NO LONGER WRITTEN HERE. It is `S.realtimeChanges()`, from
+   * `REALTIME_TABLES` in the shared block, and that is not a style preference: the same list has to
+   * be dispatched on by `rtFrame` and PUBLISHED by `013_realtime.sql`, and the 1.0.2/1.0.3 shape —
+   * one hard-coded chat entry here, a publication with no members at all — is a client asking for
+   * changes nobody ever sent. It read as working because the join is answered `ok` either way.
+   * `S` is read lazily (per connect), so a suite that installs the shared block after load works.
    */
   function joinFrame(ref, token) {
+    var S = (g.GMCommunityShared) || {};
+    // The fallback is `chat_messages` alone rather than `[]`: a build where the shared block failed
+    // to load should still get the room it had before, not a subscription to nothing.
+    var changes = typeof S.realtimeChanges === 'function'
+      ? S.realtimeChanges()
+      : [{ event: 'INSERT', schema: 'public', table: 'chat_messages' }];
     return {
       topic: CHAT_TOPIC,
       event: 'phx_join',
@@ -180,9 +232,7 @@
           // presence, and §2.3.6's 「[在线 12]」 is a sketch of a header, so no online count is
           // rendered — a number built from a payload nothing validates is worse than no number.
           presence: { key: '' },
-          postgres_changes: [
-            { event: 'INSERT', schema: 'public', table: 'chat_messages' },
-          ],
+          postgres_changes: changes,
         },
         access_token: token,
       },
@@ -212,6 +262,83 @@
     if (!d || d.type !== 'INSERT' || !d.record) return null;
     var r = d.record;
     return (r && typeof r.id === 'string') ? r : null;
+  }
+
+  /**
+   * 1.0.4 §P1 — the same frame, read as `{ table, event, row, old }` for ANY subscribed table.
+   *
+   * Kept separate from `rowFromChange` rather than widening it, and the separation is load-bearing:
+   * the room's own path is INSERT-only by definition (§2.3 — a message is never edited), while the
+   * six tables 1.0.4 adds are subscribed with `'*'` precisely because their OUTCOMES are updates
+   * («接受好友», «已接收», «已读», «已结束»). One function serving both would have to answer
+   * 「is this frame a chat row」 and 「is this frame any row」 at once, and the first caller's
+   * `!== 'INSERT' ⇒ null` is exactly the answer the second must not give.
+   *
+   * `row` is null on a DELETE (there is nothing left to draw) and `old` is whatever the server sent
+   * — the primary key alone unless the table has `replica identity full`, which 013_realtime.sql
+   * sets on every table subscribed with `'*'`. Nothing here depends on `old`: the listeners re-read
+   * the list they own rather than patching it from a partial row, which is the only way a DELETE and
+   * an UPDATE can share one handler.
+   */
+  function changeFromFrame(frame) {
+    var d = frame && frame.payload && frame.payload.data;
+    if (!d || typeof d.table !== 'string' || typeof d.type !== 'string') return null;
+    return {
+      table: d.table,
+      event: d.type,
+      row: (d.record && typeof d.record === 'object') ? d.record : null,
+      old: (d.old_record && typeof d.old_record === 'object') ? d.old_record : null,
+    };
+  }
+
+  // ---- 1.0.4 §P1: the multi-table fan-out ----------------------------------------------------
+  /**
+   * Listeners registered through `watch()`. Every one of them is called for every change on the
+   * tables it asked for, and a listener that throws is dropped for that change rather than for the
+   * connection — a broken repaint must not take the socket down with it (the same rule `rtEmit`
+   * states for `RT.onRow`).
+   *
+   * ⚠ A plain array rather than an object keyed by table: `REALTIME_TABLES` is the authority on
+   * which tables exist, and a map would be a second list that could hold a key nobody subscribes to.
+   */
+  var RT_LISTENERS = [];
+
+  /**
+   * Watch the tables the community can change behind the operator's back.
+   *
+   * `tables` is a table name, an array of them, or `'*'` for everything except the room (which has
+   * its own `chat.subscribe` channel and its own `onRow` contract). Returns the unsubscribe.
+   *
+   * ⚠ THE CALLER MUST OWN A RELOAD PATH, NOT A PATCH PATH. The handler is told `(table, event)`;
+   * it is deliberately NOT handed the row to splice in. Every list in this product has one builder
+   * (`cmPaintMsgs`, `cmLoadFriends`, …) and a second, incremental one is the shape this project has
+   * paid six times for — and it is the shape that silently loses a DELETE, since a delete has no row
+   * to splice. `event` is passed anyway, because 「好友请求来了」 and 「好友请求被撤销」 are worth
+   * different words even when they reload the same list.
+   */
+  function watch(tables, fn) {
+    if (typeof fn !== 'function') return function () { };
+    var want = tables === '*' || tables == null
+      ? null
+      : (Object.prototype.toString.call(tables) === '[object Array]' ? tables : [tables]);
+    var entry = { want: want, fn: fn };
+    RT_LISTENERS.push(entry);
+    return function () {
+      var i = RT_LISTENERS.indexOf(entry);
+      if (i >= 0) RT_LISTENERS.splice(i, 1);
+    };
+  }
+
+  /** Drop every listener. Called with the room's teardown so leaving 社区 does not leave handlers
+   *  pointing at a view that is gone. */
+  function unwatchAll() { RT_LISTENERS.length = 0; }
+
+  function realtimeEmit(table, event, row, old) {
+    for (var i = 0; i < RT_LISTENERS.length; i++) {
+      var L = RT_LISTENERS[i];
+      if (L.want && L.want.indexOf(table) < 0) continue;
+      try { L.fn(table, event, row, old); } catch (e) { /* a repaint must not kill the socket */ }
+    }
   }
 
   // ---- the socket lifecycle ------------------------------------------------------------------
@@ -303,7 +430,19 @@
       if (f.payload && f.payload.status === 'ok') rtLive(); else rtFail();
       return;
     }
-    if (f.event === 'postgres_changes') { rtEmit(rowFromChange(f)); return; }
+    // ⚠ 1.0.4 §P1 — the frame is routed by TABLE. The room has its own listener contract
+    // (`RT.onRow`, one row, INSERT only) and `changeFromFrame` is what tells the two apart; a
+    // `chat_messages` frame still reaches `rtEmit` so `RT.since` advances and the poller's `gt`
+    // bound stays right, while everything else fans out to `watch()` listeners. Routing the room
+    // through the fan-out as well would give it two delivery paths that a `*`-listener could
+    // double-count.
+    if (f.event === 'postgres_changes') {
+      var c = changeFromFrame(f);
+      if (!c) return;
+      if (c.table === 'chat_messages') { rtEmit(c.row); return; }
+      realtimeEmit(c.table, c.event, c.row, c.old);
+      return;
+    }
     // A refused join, a revoked token, a banned account, or the server recycling the socket.
     if (f.event === 'phx_error' || f.event === 'phx_close') rtFail();
   }
@@ -404,6 +543,10 @@
     RT.since = null;
     RT.pollBusy = false;
     RT.status = 'off';
+    // The §P1 listeners go with the room. They repaint a view that is being left, and one that
+    // outlived it would call `cmLoadMsgs()` into a hidden pane on every change the socket delivers
+    // — a leak the operator cannot see, because the work happens where nobody is looking.
+    unwatchAll();
   }
 
   /** The connection state as a name, for the room's header. */
@@ -750,6 +893,27 @@
   }
 
   /**
+   * The 「payload 在哪」 branch, ONCE. Shared by `shareFetch` (a friend's share) and
+   * `cloudShareFetch` (a room 附件) since 1.0.4 — both Functions answer in this shape, and the
+   * client must not learn which storage route was used.
+   *
+   * `d` is the Function's JSON body: either `{ payload, kind }` or `{ url, expires_in, kind }`.
+   * The returned object keeps `stored`/`url` as evidence for the suite and for a future 「另存为」.
+   */
+  function resolveSharePayload(d, status) {
+    if (d.payload !== undefined && d.payload !== null) {
+      return Promise.resolve({ ok: true, status: status, payload: d.payload, kind: d.kind || null,
+                               stored: false, url: null });
+    }
+    if (!d.url) return Promise.resolve({ ok: false, error: 'NOT_FOUND', status: status });
+    return cloud().getJson(d.url).then(function (g) {
+      if (!g.ok) return g;
+      return { ok: true, status: status, payload: g.data, kind: d.kind || null,
+               stored: true, url: d.url };
+    });
+  }
+
+  /**
    * §1.2.4 「客户端拉取 payload（或下载 storage_url）」 → 「展示预览」.
    *
    * ⚠ RESOLVES TO A PAYLOAD EITHER WAY. A share under 500 KB carries its body in the row; a larger
@@ -767,17 +931,29 @@
     if (!id) return Promise.resolve({ ok: false, error: 'BAD_REQUEST' });
     return fnCall('friend-share', { action: 'fetch', share_id: id }).then(function (r) {
       if (!r.ok) return r;
-      var d = r.data || {};
-      if (d.payload !== undefined && d.payload !== null) {
-        return { ok: true, status: r.status, payload: d.payload, kind: d.kind || null,
-                 stored: false, url: null };
-      }
-      if (!d.url) return { ok: false, error: 'NOT_FOUND', status: r.status };
-      return cloud().getJson(d.url).then(function (g) {
-        if (!g.ok) return g;
-        return { ok: true, status: r.status, payload: g.data, kind: d.kind || null,
-                 stored: true, url: d.url };
-      });
+      return resolveSharePayload(r.data || {}, r.status);
+    });
+  }
+
+  /**
+   * 1.0.4 §P1 — the same answer for a ROOM 附件 (`cloud_shares`), through `cloud-share`.
+   *
+   * ⚠ THE ROW AND THE BYTES ARE TWO DIFFERENT QUESTIONS, AND THIS FUNCTION IS THE SECOND ONE. The
+   * card draws itself from the message's own snapshot of `name` / `summary` / `expires_at`, so
+   * 「打开」 is not what makes a share visible — it is what makes it READABLE. That is why there is a
+   * Function at all: a body over 500 KB is an object in the private `temp-shares` bucket, and only
+   * the service role may sign it (`cloud.js` documents that the client has no signing API).
+   *
+   * ⚠ RESOLVED THROUGH `resolveSharePayload`, THE SAME BRANCH `shareFetch` USES. Two tables, one
+   * shape: 「payload 在行里就直接用，在 Storage 就先下」 is decided in one place, so a reader cannot
+   * work for a friend's replay and fail for the room's.
+   */
+  function cloudShareFetch(cloudId) {
+    var id = String(cloudId == null ? '' : cloudId);
+    if (!id) return Promise.resolve({ ok: false, error: 'BAD_REQUEST' });
+    return fnCall('cloud-share', { cloud_id: id }).then(function (r) {
+      if (!r.ok) return r;
+      return resolveSharePayload(r.data || {}, r.status);
     });
   }
 
@@ -1405,6 +1581,21 @@
     chat: { load: chatLoad, send: chatSend, subscribe: chatSubscribe,
             unsubscribe: chatUnsubscribe, state: chatState,
             TOPIC: CHAT_TOPIC, POLL_MS: RT_POLL_MS },
+
+    // 1.0.4 §P1 — the fan-out half of the SAME socket. `chat` keeps its 1.0.2 shape on purpose
+    // (one room, one row at a time, INSERT only), because `verify-064` pins that surface and
+    // because the room's contract genuinely differs: a message is a row, everything else here is an
+    // event about a list. `changes()` reads the shared block rather than copying it — a local copy
+    // would be a second answer to 「订阅哪些表」, and the first answer is already the one
+    // 013_realtime.sql is checked against.
+    realtime: {
+      watch: watch,
+      changes: function () {
+        var S = shared() || {};
+        return typeof S.realtimeChanges === 'function' ? S.realtimeChanges() : [];
+      },
+      state: chatState,
+    },
     news: { load: newsLoad },
     feedback: { submit: feedbackSubmit, mine: feedbackMine },
 
@@ -1422,11 +1613,12 @@
     },
     shares: {
       send: shareSend, fetch: shareFetch, consume: shareConsume,
+      fetchCloud: cloudShareFetch,
       inbox: shareInbox, sent: shareSent,
       isLive: shareIsLive,
     },
     votes: { forTarget: voteForTarget, create: voteCreate, cast: voteCast,
-             close: voteClose, isOpen: voteIsOpen },
+             close: voteClose, isOpen: voteIsOpen, POLL_MS: VOTE_TALLY_POLL_MS },
     reports: { submit: reportSubmit, mine: reportMine },
     notices: { list: noticesList, unread: noticesUnread, markRead: noticeMarkRead,
                markAllRead: noticesMarkAllRead },
@@ -1446,6 +1638,7 @@
       heartbeat: heartbeatFrame,
       parse: parseFrame,
       rowFromChange: rowFromChange,
+      changeFromFrame: changeFromFrame,
       presenceTopic: PRESENCE_TOPIC,
       presenceJoin: presenceJoinFrame,
       presenceTrack: presenceTrackFrame,

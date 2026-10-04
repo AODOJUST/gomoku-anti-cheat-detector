@@ -369,4 +369,22 @@ GMI18n.register('zh-CN', {
   'cm.presence.busy': '忙碌中',
   'cm.presence.offline': '离线',
 
+  // ---- 1.0.4 §P0 — 举报状态（`REPORT_STATUSES`）与管理员动作（`ADMIN_ACTIONS`）----
+  //
+  // Registered in `_tools/i18n-extra.js` TOO, for the same reason: that file supplies the text to
+  // translate FROM, this one is what makes zh-CN itself resolve the key instead of printing
+  // `cm.act.mute-24h` on the admin panel's buttons.
+  //
+  // ⚠ `cm.rst.*` is NOT a second spelling of `cm.st.*` — feedback's four statuses share only two
+  // of these four words. ⚠ `cm.act.none`（不处理）is a recorded decision, not a blank.
+  'cm.rst.open': '待处理',
+  'cm.rst.reviewing': '处理中',
+  'cm.rst.resolved': '已解决',
+  'cm.rst.dismissed': '已驳回',
+  'cm.act.none': '不处理',
+  'cm.act.warn': '警告',
+  'cm.act.mute-24h': '禁言 24 小时',
+  'cm.act.mute-7d': '禁言 7 天',
+  'cm.act.ban': '封禁',
+
 });
