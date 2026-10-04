@@ -33,7 +33,7 @@ Presence uses Supabase Realtime Presence — a second hand-written Phoenix chann
 
 **Acceptance.** New `verify-065` (pinning 1.0.3 exactly) and the behavioural harness `behave-065-community-103`, which replaces the cloud transport, the WebSocket and the session and then actually clicks through the whole thing. `verify-064`'s three drift-prone counts become invariants.
 
-**Deployment.** `supabase db push` first (006–012), then deploy **all 34 functions** — topping up only the ten new ones leaves the older bundles' `_shared` unable to see the new tables, columns and codes. `config.toml` and `config.example.toml` each gained **10 more `verify_jwt = false` blocks** (1.0.3's ten new slugs): without them the **platform gateway** rejects those calls before any of our code runs — notably `friend-share-purge` (cron, shared secret, *no user session at all*) and `geo-update` (database webhook). Two secrets are needed: `IPINFO_TOKEN` for `geo-update` and `PURGE_SECRET` for the `friend-share-purge` cron.
+**Deployment.** `supabase db push` first (006–012), then deploy **all 34 functions** — topping up only the ten new ones leaves the older bundles' `_shared` unable to see the new tables, columns and codes. `config.toml` and `config.example.toml` each gained **10 more `verify_jwt = false` blocks** (1.0.3's ten new slugs): without them the **platform gateway** rejects those calls before any of our code runs — notably `friend-share-purge` (cron, shared secret, *no user session at all* — a platform JWT check would reject it before any of our code runs). Two secrets are needed: `IPINFO_TOKEN` for `geo-update` and `PURGE_SECRET` for the `friend-share-purge` cron.
 
 ## 1.0.2
 
