@@ -307,10 +307,14 @@ create policy notifications_read_admin on public.notifications
   for select to authenticated
   using (public.is_admin());
 
--- §2.3.2 / §2.3.3 — the two product-wide switches are read by every client on every send (the
--- 聊天室 input is disabled when `chat_enabled` is false), so this is the one table where the gate is
--- 「已登录」 rather than 「是社区成员」: a banned or unactivated account still needs to be told WHY
--- the input is disabled. There is no private data in two booleans.
+-- §2.3.2 / §2.3.3 — the two product-wide switches. ⚠ CORRECTION (1.0.3 安全修订): the earlier wording
+-- here claimed 「read by every client on every send (the 聊天室 input is disabled when `chat_enabled`
+-- is false)」. That was never true — the client does not read this table at all; §2.3.2's
+-- 「所有人不能发消息」 is enforced by `chat-send`, which reads the switch and fails CHAT_DISABLED.
+-- The gate is 「已登录」 rather than 「是社区成员」 (`is_member()`) so that a banned or unactivated
+-- account could still be told WHY the input is closed, and because there is no private data in two
+-- booleans. (An even earlier cut of this file had the policy right and 009's `enable row level
+-- security` missing — which made this policy decorative; see 012_global_settings_rls.sql.)
 drop policy if exists global_settings_read_all on public.global_settings;
 create policy global_settings_read_all on public.global_settings
   for select to authenticated

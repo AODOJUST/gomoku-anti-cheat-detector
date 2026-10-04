@@ -80,8 +80,20 @@ create table if not exists public.global_settings (
 );
 
 comment on table public.global_settings is
-  '1.0.3 §2.3.3 — product-wide switches. Written only by admin-global-mute (service role); read by '
-  'every authenticated account through a SELECT policy in 011_rls_community.sql.';
+  '1.0.3 §2.3.3 — product-wide switches. WRITTEN only by admin-global-mute (service role) and READ '
+  'only by chat-send, which enforces §2.3.2''s 「所有人不能发消息」 by failing CHAT_DISABLED / MUTED. '
+  'The SELECT policy in 011/012 exists so that a client-side 「为什么输入框是灰的」 read would need no '
+  'further migration; the EFFECTIVE gate is the server, not the client.';
+
+-- ⚠⚠ RLS MUST BE ENABLED OR 011's POLICY IS DECORATION. This line was missing in the first cut of
+-- this migration, and the result was a real, exploitable hole: `anon` already holds INSERT/UPDATE/
+-- DELETE (Supabase's default privileges), the anon key ships inside the extension by design (§2.2),
+-- and with RLS off PostgREST enforces nothing — so ANY caller could `PATCH /rest/v1/global_settings`
+-- and turn the whole product's chat off, or mute everyone. Measured before the fix: HTTP 200 with a
+-- fresh `updated_at`. A policy written for a table whose RLS is off is not a weak guard, it is NO
+-- guard, and nothing about reading the SQL says so. (verify-065 §16 now pins 「every table created
+-- after 001 enables RLS」.)
+alter table public.global_settings enable row level security;
 
 -- §2.3.3's seed, idempotent. `'true'::jsonb` rather than the bare `'true'` the spec writes: the
 -- bare literal happens to parse as JSON boolean too, but relying on that is how a value ends up
