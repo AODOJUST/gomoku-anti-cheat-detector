@@ -568,26 +568,54 @@
      (above and below) keep working unchanged inside the left column — a `grid-template-columns` on
      `.set-cols` would have had to re-declare all four of them.
      ⚠ `align-items:flex-start` is load-bearing: the default `stretch` would make the nav as tall as
-     the panel column, and `position:sticky` does nothing inside a box that is already that tall. */
+     the panel column, and `position:sticky` does nothing inside a box that is already that tall.
+
+     ⚠ THE RAIL CARRIES A SURFACE OF ITS OWN (1.0.5 patch). As first shipped it had NO fill at all:
+     twelve lines of `--mut` text laid straight onto the page background. That reads fine against the
+     plain `--bg`, and it disappears the moment a 自定义背景 is set — `html.has-bg` makes `body`
+     transparent and puts a photograph behind everything, so the labels became grey type on bright
+     foliage (「几乎看不见」, and the report was right). The panels were never affected because they
+     have always had `--panel`. So this is not a new decoration, it is the rail joining the surfaces
+     the page already has: same fill / edge / radius as `.panel`, and — the half that matters — the
+     same entry in the 元素透明度 block at the END of this stylesheet. A nav that stayed opaque while
+     every panel went to glass would be the one solid block in a see-through page, which is a
+     different defect in place of the first one.
+
+     ⚠ THE LABELS WRAP NOW, and that is part of the same fix rather than tidiness. `sectionNav()`
+     reads each row's words off its own panel `<h2>` — 「检测设置（与页面浮层共享同一份存储）」 needs
+     ~240px at this size and the rail is capped at 200px, so `white-space:nowrap` cut it off
+     mid-character. A row you cannot read is the same failure as a row you cannot see. Wrapping also
+     removes the rail's hidden horizontal scrollbar: `overflow-y:auto` alone computes `overflow-x` to
+     `auto`, so ONE long label was enough to put a scrollbar inside the nav. */
   .set-cols{display:flex;gap:18px;align-items:flex-start}
   .set-main{flex:1 1 auto;min-width:0}
-  /* `top:80px` is §1.2.2's own number — it clears the 56px header plus the update banner's row. */
+  /* `top:80px` is §1.2.2's own number — it clears the 56px header plus the update banner's row.
+     `min-width:176px` is the old 160 plus the 2×8px the surface now adds, so the COLUMN OF TEXT is
+     the width it always was and the card is the only thing that changed. */
   .set-nav{position:sticky;top:80px;flex:0 0 auto;display:flex;flex-direction:column;gap:2px;
-           min-width:160px;max-width:200px;max-height:calc(100vh - 104px);overflow-y:auto}
+           min-width:176px;max-width:200px;max-height:calc(100vh - 104px);overflow-y:auto;
+           background:var(--panel);border:1px solid var(--line);
+           border-radius:calc(var(--ui-shell-radius) + 4px);padding:8px}
   .set-nav-item{display:block;padding:6px 10px;border-radius:var(--ui-detail-radius);cursor:pointer;
-                color:var(--mut);font-size:var(--ui-detail-small);text-decoration:none;white-space:nowrap}
+                color:var(--mut);font-size:var(--ui-detail-small);text-decoration:none;
+                white-space:normal;line-height:1.35}
   .set-nav-item:hover{background:var(--hover);color:var(--txt)}
   .set-nav-item.active{background:var(--btn);color:var(--txt);font-weight:600}
   /* §1.2.2「窗口宽度 < 900px 时，导航栏折叠为顶部的横向标签栏」. `position:sticky;top:0` under the
      header rather than beside the panels, and `overflow-x:auto` because twelve labels do not fit on
-     a phone in one line. The background is painted so that the panels scrolling underneath do not
-     show through the tab strip. */
+     a phone in one line. The strip keeps the surface from above — its fill arrives from the
+     transparency block — flattened into a bar: square corners, no side edges, one rule underneath.
+     ⚠ The opaque `background:var(--bg)` this branch used to paint is GONE, and not because the
+     panels no longer need to be kept out from under it: the shared `background-color` rule wins
+     against it (equal specificity, later in the file), so it could never take effect. A rule that
+     cannot take effect is worse than no rule, because the next reader trusts it. The strip is
+     opaque by DEFAULT for exactly the same reason the panels are — alpha 1. */
   @media (max-width:899px){
     .set-cols{display:block}
     .set-nav{position:sticky;top:0;z-index:20;flex-direction:row;max-width:none;min-width:0;
              max-height:none;overflow-x:auto;overflow-y:hidden;gap:6px;padding:6px 0;
-             background:var(--bg);border-bottom:1px solid var(--line)}
-    .set-nav-item{padding:5px 10px}
+             border:0;border-bottom:1px solid var(--line);border-radius:0}
+    .set-nav-item{padding:5px 10px;white-space:nowrap}
   }
   .set-item{display:flex;flex-direction:column;gap:5px;min-width:0}
   .set-item>label{margin:0;font-size:var(--ui-detail-small);color:var(--mut)}
@@ -1319,9 +1347,9 @@
      cannot find), and no blur at all: §2.1.2 deleted 按钮模糊度 because a frosted backdrop behind
      a 41px control is not a look, it is a control you cannot read. Hover / `.on` / `.active`
      states are deliberately absent — see reason (2) above. */
-  header, .panel{background-color:rgba(var(--panel-rgb),var(--viewer-elem-bg-alpha,1))}
+  header, .panel, .set-nav{background-color:rgba(var(--panel-rgb),var(--viewer-elem-bg-alpha,1))}
   .card, .archive-grid .acard{background-color:rgba(var(--inset-rgb),var(--viewer-elem-bg-alpha,1))}
-  header, .panel, .card, .acard, .facts, .scroll, .archive-grid, .set-group{
+  header, .panel, .card, .acard, .facts, .scroll, .archive-grid, .set-group, .set-nav{
     backdrop-filter:blur(var(--viewer-elem-blur,0px));
   }
   button{background-color:rgba(var(--blue-rgb),var(--viewer-btn-bg-alpha,1))}
