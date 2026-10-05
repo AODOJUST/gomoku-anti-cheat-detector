@@ -1,7 +1,7 @@
 {
   "name": "baishen",
   "displayName": "白身 (Baishen)",
-  "version": "1.0.0",
+  "version": "1.0.6",
   "private": true,
   "description": "White-box-only build tooling for the 白身 (Baishen) gomoku anti-cheat detector extension. The extension itself is loaded unpacked from this directory; nothing here is required to USE it.",
   "license": "UNLICENSED",

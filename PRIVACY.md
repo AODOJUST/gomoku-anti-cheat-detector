@@ -1,14 +1,15 @@
 # 白身 (Baishen) 隐私政策 · Privacy Policy
 
 > 本文件是隐私政策的**唯一权威版本**（source of truth）。面向浏览器访问的 HTML 版本在
-> [`docs/privacy.html`](docs/privacy.html)，它由本文件改写而来，托管方式见
+> [`privacy.html`](privacy.html)（**在仓库根目录**，不在 `docs/`），它由本文件改写而来，托管方式见
 > [`docs/DEPLOY.md`](docs/DEPLOY.md)。
 > 扩展内「关于」面板指向该页面。
 >
 > This file is the authoritative source of the policy. The HTML page served to browsers is
-> [`docs/privacy.html`](docs/privacy.html); see [`docs/DEPLOY.md`](docs/DEPLOY.md) for hosting.
+> [`privacy.html`](privacy.html) (**at the repository root** — not in `docs/`); see
+> [`docs/DEPLOY.md`](docs/DEPLOY.md) for hosting.
 >
-> 最后更新 / Last updated: **2026-10-04**（随 1.0.5 发布 / with the 1.0.5 release）
+> 最后更新 / Last updated: **2026-10-05**（随 1.0.6 发布 / with the 1.0.6 release）
 
 ---
 
@@ -36,6 +37,8 @@
 | 账户状态 | 激活状态、设备 ID、最后活跃时间 | 一码一账户、跨设备上限 3 台 |
 | 样本库元数据 | 样本条数、AI 比例等**统计量** | §5.3 主页数字 |
 | 徽章 / 成就 | 已授予的徽章类型 | §5.2 预留 |
+| **平台痕迹**（1.0.6） | 你用的是**扩展版还是网页版**、每次登录的**时刻**，以及 `geo-update` 已推断出的**国家代码**（**IP 本身不落库**，见 §8） | 运维统计「谁在用哪个版本」，**只有管理员看得到** |
+| **消息已读水位**（1.0.6） | 五个消息分区的**最后已读时间**（好友 / 分享 / 提及 / 系统 / 举报） | 红点：「自你上次进这个分区以来，有没有新的」 |
 
 ### 3. 不会上传什么
 
@@ -63,7 +66,11 @@ Supabase（PostgreSQL + Storage）的托管区域，**建议选择新加坡（So
 
 - **活跃账户**：数据一直保留，直到你删除；
 - **注销账户**：本地数据**保留在原位**，云端数据在 **30 天**后彻底删除（给你反悔的窗口）；
-- **激活码泄露**：管理员可批量撤销，撤销后**本地数据不受影响**。
+- **激活码泄露**：管理员可批量撤销，撤销后**本地数据不受影响**；
+- **平台登录流水**（`platform_logins`）：**目前没有单独的保留期**，随账户数据一并保留；注销账户后
+  随云端数据在 30 天内删除；
+- **聊天室消息**：对客户端可见的窗口是最近 **7 天**；撤回只移除展示，原文的服务端保留见 §13；
+- **分享到聊天室的文件**：本机副本保留 **15 分钟**。
 
 ### 6. 你的权利
 
@@ -77,8 +84,18 @@ Supabase（PostgreSQL + Storage）的托管区域，**建议选择新加坡（So
 
 ### 8. 第三方
 
-除上文列出的 Supabase 之外，扩展**不向任何第三方发送数据**。检测引擎（Rapfi / KataGomo）在本机或
-你自己配置的地址运行；「自动提问」功能若启用会使用**你自己填写的** LLM 接口与密钥。
+本服务会接触以下第三方，**除此之外不向任何第三方发送数据**：
+
+- **Supabase** —— 托管与存储（见 §4）；
+- **ipinfo.io** —— 在你登录时，**服务端**把你的 **IP 地址**发给它，用来推断国家代码（`§3.1.7`：
+  **IP 本身不落库**，只保存推断出的国家代码）。扩展本身不直接接触它，是服务端代发的；
+- **Resend**（`api.resend.com`）—— 投递注册 / 重置密码的**验证码邮件**，以及管理员回复举报时的
+  邮件；因此**你的邮箱地址与邮件正文会经过它**。不发信时不接触；
+- 检测引擎（Rapfi / KataGomo）在本机或**你自己配置的**地址运行；「自动提问」功能若启用会使用
+  **你自己填写的** LLM 接口与密钥 —— 这两者都不经由我们。
+
+⚠ 前两项是**基础设施**性质的第三方：它们能接触到你的 IP 或邮箱，但服务端刻意**不会**把你的棋谱、
+每一步判定或风险分发给它们 —— 那些从不离开你的电脑。
 
 ### 9. 联系方式
 
@@ -92,6 +109,9 @@ Supabase（PostgreSQL + Storage）的托管区域，**建议选择新加坡（So
 - **「自动提问」用的 LLM API Key**（`settings.llm.apiKey`）——**导出的备份文件里会剥离它**，本机不剥离；
 - **云账户的登录令牌（JWT）**——有效期 30 天，被读到即等同于被冒充登录。它被刻意放在 `settings`
   **之外**，所以导出/导入与云同步都不会带上它；注销、改密码或在管理员撤销后即失效。
+- **聊天室的本机缓存**（IndexedDB 库 `baishen-cache`）——你进过的公共房间最近 **7 天**的消息、分享
+  文件的一份副本（**15 分钟**）与同步元数据。撤回一条消息会把它从**这个缓存**里删掉；卸载扩展或
+  清除扩展数据会清空它。
 
 如果你不信任本机上的其他程序，请不要启用「自动提问」，也不要登录云账户——**核心检测功能两者都不需要**。
 
@@ -115,6 +135,27 @@ Supabase（PostgreSQL + Storage）的托管区域，**建议选择新加坡（So
 - 但它**不会**让你从频道的成员列表里消失。我们选择把这个事实写在这里，而不是假装它不存在。
 
 如果你认为「谁现在在线」本身也不该被其他已登录用户看到，请不要使用社区功能——核心检测功能完全不需要登录。
+
+### 12. 谁能看到什么（含管理员）
+
+- **其他用户**：只能看到你公开的资料——用户名、头像，以及**未隐藏时**的国籍与「最后活跃」（见 §11）；
+- **管理员**：能看到你的**邮箱**、**国家代码**、**平台使用痕迹与登录流水**，以及**激活码的使用者**
+  ——即「这个码是谁兑换的（用户名 + 邮箱 + 兑换时间）」。这是邮箱在服务端**唯一**会被读取的地方；
+  除此之外，邮箱只返回给**你自己**；
+- ⚠ **平台痕迹与登录流水只给管理员看**：它们不出现在你的设置页，也不出现在他人主页。承载它们的
+  `platform_logins` 表**连一条读取策略都没有**——只有服务端角色读得到；
+- **服务端看不到的**：你的 IP 地址从不出现在平台统计里（只存 `geo-update` 已推断的国家代码），
+  棋谱、每一步判定与风险分从不离开你的电脑。
+
+### 13. 聊天室的「撤回」不等于服务端删除
+
+在聊天室撤回一条消息，**只是把它从其他人（以及你自己）的界面上移除**，并标记为「该消息已被撤回」。
+**原文与附件仍然留在服务端**，用于举报复核。这是有意的：一个能让发言者随时抹掉记录的房间，等于给
+滥用者一个「说完就跑」的按钮。
+
+- 你的客户端会把它从**本机缓存**里删掉（见 §10）；
+- 服务端保留原文，供管理员处理举报时查看；客户端能读到的窗口是最近 **7 天**；
+- 如果你不希望任何发言被服务端保留，请不要使用聊天室——**核心检测功能完全不需要登录**。
 
 ---
 
@@ -144,6 +185,8 @@ These work fully offline and make **no network request at all**:
 | Account state | activation status, device ID, last-seen | one code per account, 3-device limit |
 | Sample metadata | counts and ratios — **aggregates only** | the numbers on the profile tab |
 | Badges | which badge types were granted | reserved for a future release |
+| **Platform traces** (1.0.6) | whether you use the **extension or the web build**, the **time** of each sign-in, and the **country code** `geo-update` already inferred (**the IP itself is never stored** — see §8) | the operator's 「which build is in use」 census, **visible to administrators only** |
+| **Message read watermarks** (1.0.6) | the **last-read time** of the five partitions (friends / shares / mentions / system / reports) | the red dot: 「anything new since you last opened this partition?」 |
 
 ### 3. What is NOT uploaded
 
@@ -176,7 +219,13 @@ region depends on the deployment you use; with a self-hosted deployment, the adm
 - **Deleted accounts**: your local data stays where it is, and the cloud data is permanently
   removed **30 days** after you ask (the window exists so a mistake is recoverable);
 - **Leaked activation codes**: an administrator can revoke them in bulk, and revocation **does not
-  touch your local data**.
+  touch your local data**;
+- **Platform login log** (`platform_logins`): there is **no separate retention window** yet — it is
+  kept alongside the account and deleted with the rest of the cloud data within 30 days of account
+  deletion;
+- **Chat messages**: the window a client can read is the last **7 days**; recall removes the display
+  only — the server-side retention is described in §13;
+- **Files shared into the chat**: the local copy is kept for **15 minutes**.
 
 ### 6. Your rights
 
@@ -191,9 +240,21 @@ include minors, obtain guardian consent before use.
 
 ### 8. Third parties
 
-Apart from the Supabase instance named above, the extension sends data to **no third party**. The
-detection engines (Rapfi / KataGomo) run locally or at an address *you* configure; the optional
-「自动提问」 feature uses the LLM endpoint and key that *you* provide.
+The service touches the following third parties, and **sends data to no one else**:
+
+- **Supabase** — hosting and storage (see §4);
+- **ipinfo.io** — at sign-in the *backend* sends it **your IP address** to infer a country code
+  (§3.1.7: **the IP itself is never stored**, only the inferred code). The extension never contacts
+  it directly;
+- **Resend** (`api.resend.com`) — delivers the **verification-code email** for registration and
+  password reset, and the email an administrator sends when replying to a report; **your address and
+  the message body pass through it**. It is not contacted when no mail is sent;
+- the detection engines (Rapfi / KataGomo) run locally or at an address *you* configure, and the
+  optional 「自动提问」 feature uses the LLM endpoint and key *you* provide — neither passes through us.
+
+⚠ The first two are *infrastructure* third parties: they can see your IP or your email, but the
+backend deliberately does **not** send them your game records, per-move verdicts or risk scores —
+those never leave your machine at all.
 
 ### 9. Contact
 
@@ -211,6 +272,10 @@ backups, a debugging port):
   impersonating the account. It is deliberately kept **outside** `settings`, so neither
   export/import nor cloud sync carries it; logging out, changing the password or an administrator's
   revocation invalidates it.
+- **the chat room's local cache** (IndexedDB database `baishen-cache`) — the last **7 days** of
+  messages from the public rooms you have entered, one copy of any shared file (**15 minutes**) and
+  the sync metadata. Recalling a message deletes it from **this cache**; uninstalling the extension
+  or clearing its data empties it.
 
 If you do not trust the other programs on this machine, do not enable 「自动提问」 and do not sign in
 to a cloud account — **the core detection needs neither**.
@@ -242,3 +307,31 @@ described above.
 
 If you consider 「who is online right now」 itself too much to share with other signed-in users, do
 not use the community features — the core detection needs no account at all.
+
+### 12. Who can see what (administrators included)
+
+- **Other users** see only your public profile — username, avatar, and (unless hidden) your country
+  and last-seen, as described in §11;
+- **Administrators** can see your **email**, your **country code**, your **platform traces and login
+  log**, and **who redeemed an activation code** — i.e. the redeemer's *username + email + time*.
+  That is the **only** place the backend reads an email address; everywhere else it is returned to
+  **you** alone;
+- ⚠ **Platform traces and the login log are shown to administrators only.** They are not on your own
+  settings screen and not on anyone's profile. The table that holds them, `platform_logins`, has
+  **no read policy at all** — only the service role can reach it;
+- **What the backend never sees**: your IP address never appears in the platform census (only the
+  country code `geo-update` already inferred is stored), and your game records, per-move verdicts and
+  risk scores never leave your machine.
+
+### 13. Recalling a chat message is not a server-side delete
+
+Recalling a message in the chat room **only removes it from other people's screens (and yours)** and
+marks it 「该消息已被撤回」. **The original text and any attachment stay on the server** so a report can
+be reviewed. That is deliberate: a room where a speaker can erase the record at will hands an abuser a
+「say it and run」 button.
+
+- Your client deletes it from the **local cache** (see §10);
+- the server keeps the original for an administrator reviewing a report; the window a client can read
+  is the last **7 days**;
+- if you would rather no message be retained server-side, do not use the chat — **the core detection
+  needs no account at all**.

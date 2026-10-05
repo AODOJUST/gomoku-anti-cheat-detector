@@ -19,7 +19,9 @@
 </head>
 <body>
 <h1>白身 (Baishen) 隐私政策</h1>
-<p class="last">最后更新：2026-10-04（随 v1.0.5 发布）</p>
+<p class="last">最后更新：2026-10-05（随 v1.0.6 发布）</p>
+
+<!-- ============================ 中文 ============================ -->
 
 <blockquote>
 <strong>一句话：核心检测完全在本地运行，不需要账号，不上传任何数据。</strong>
@@ -43,6 +45,8 @@
   <tr><td>账户状态</td><td>激活状态、设备 ID、最后活跃时间</td><td>一码一账户、跨设备上限 3 台</td></tr>
   <tr><td>样本统计</td><td>条数、AI 比例等聚合数字</td><td>主页数字</td></tr>
   <tr><td>徽章</td><td>已授予的徽章类型</td><td>成就系统</td></tr>
+  <tr><td><strong>平台痕迹</strong>（1.0.6）</td><td>扩展版还是网页版、每次登录时刻、已推断的国家代码（不存 IP）</td><td>运维统计，只有管理员可见</td></tr>
+  <tr><td><strong>消息已读水位</strong>（1.0.6）</td><td>五个分区的最后已读时间</td><td>红点提示</td></tr>
 </table>
 
 <h2>3. 不会上传什么</h2>
@@ -57,13 +61,15 @@
 <p>样本、回放存档与黑名单里带着对手的显示名。开启云同步并勾选对应类别后，这些名字会随之上传——它们是你自己采集的内容，不是我们从服务端读来的。</p>
 
 <h2>4. 数据存放在哪里</h2>
-<p>Supabase（PostgreSQL + Storage）托管，区域为新加坡（ap-northeast-2 邻近节点）。</p>
+<p>Supabase（PostgreSQL + Storage）托管，建议选择新加坡（Southeast Asia, Singapore）；实际区域以你使用的部署为准。</p>
 
 <h2>5. 保留期</h2>
 <ul>
   <li><strong>活跃账户</strong>：数据一直保留，直到你删除</li>
   <li><strong>注销账户</strong>：本地数据保留原位，云端数据 30 天后彻底删除</li>
   <li><strong>激活码泄露</strong>：管理员可批量撤销，撤销不影响本地数据</li>
+  <li><strong>平台登录流水</strong>：目前无单独保留期，随账户数据保留，注销后 30 天内随云端删除</li>
+  <li><strong>聊天消息</strong>：客户端可见窗口为最近 7 天；分享文件的本机副本保留 15 分钟</li>
 </ul>
 
 <h2>6. 你的权利</h2>
@@ -77,22 +83,166 @@
 <p>本扩展面向在线五子棋的成年玩家。若可能包含未成年人，请在使用前取得监护人同意。</p>
 
 <h2>8. 第三方</h2>
-<p>除 Supabase 外，扩展不向任何第三方发送数据。检测引擎（Rapfi / KataGomo）在本机或你自己配置的地址运行；「自动提问」功能使用你自己填写的 LLM 接口与密钥。</p>
+<p>本服务会接触以下第三方，除此之外不向任何第三方发送数据：</p>
+<ul>
+  <li><strong>Supabase</strong> —— 托管与存储</li>
+  <li><strong>ipinfo.io</strong> —— 登录时由服务端把你的 IP 发给它推断国家代码（IP 本身不落库，见第 10 节）</li>
+  <li><strong>Resend</strong> —— 投递验证码邮件与管理员回复邮件，你的邮箱地址与邮件正文会经过它</li>
+</ul>
+<p>检测引擎（Rapfi / KataGomo）在本机或你自己配置的地址运行；「自动提问」功能使用你自己填写的 LLM 接口与密钥——这两者都不经由我们。</p>
 
 <h2>9. 联系方式</h2>
 <p>管理员邮箱：mod0207613@qq.com</p>
 
 <h2>10. 在你自己的电脑上：哪些是明文</h2>
-<p><code>chrome.storage.local</code> 本身不加密。以下内容以明文存在浏览器配置目录：</p>
+<p><code>chrome.storage.local</code> 本身不加密。以下内容以明文存在浏览器配置目录，任何能读到该目录的程序都能拿到：</p>
 <ul>
-  <li>「自动提问」用的 LLM API Key（导出备份会剥离）</li>
-  <li>云账户登录令牌（JWT，30 天有效）——它被放在 settings 之外，导出/同步都不会带上</li>
+  <li>「自动提问」用的 LLM API Key（导出备份会剥离，本机不剥离）</li>
+  <li>云账户登录令牌（JWT，30 天有效）——它被放在 settings 之外，导出/同步都不会带上；注销、改密码或管理员撤销后即失效</li>
+  <li>聊天室本机缓存（IndexedDB 库 <code>baishen-cache</code>）——最近 7 天的公共房间消息、分享文件副本（15 分钟）与同步元数据；撤回会从该缓存删除</li>
 </ul>
 <p>如果你不信任本机上的其他程序，请不要启用「自动提问」，也不要登录云账户——<strong>核心检测功能两者都不需要</strong>。</p>
 
 <h2>11. 在线状态与国籍的可见范围</h2>
-<p>「最后活跃时间」对其他账户一律返回空值（显示离线），这是数据层约束。国籍同理，勾选「隐藏国籍」后其他用户读到空值。</p>
-<p>⚠ 例外：Realtime presence 频道让好友列表即时更新，任何已登录账户订阅它都能看到"现在谁在线"，但看不到历史时间戳。「隐身」让别人看到你离线，但不会把你从频道成员列表移除。</p>
+<p>「最后活跃时间」对其他账户一律返回空值（显示离线），这是数据层约束，不是渲染约定。国籍同理：勾选「隐藏国籍」后其他用户读到空值，原始 <code>country_code</code> 对非好友根本不返回。</p>
+<p>⚠ <strong>一处例外，需要说明：Realtime 的在线状态频道。</strong>客户端之间还有一个 <code>presence</code>
+频道，用于让好友列表在对方上线时立刻更新。它是<strong>全产品共用的一个</strong>频道，不按好友关系分片，
+因此<strong>任何已登录账户</strong>订阅它都能看到「现在有哪些账户在线、状态是「在线 / 忙碌」」。能看到的只有
+「当前是否在场」这一个事实，<strong>看不到</strong>历史活跃时间——那个时间戳仍然只对你自己和你的好友可见。</p>
+<p>把状态设为「隐身」会让其他人看到你<strong>离线</strong>，但<strong>不会</strong>让你从频道的成员列表里消失。我们选择把这个事实写在这里，而不是假装它不存在。</p>
+<p>如果你认为「谁现在在线」本身也不该被其他已登录用户看到，请不要使用社区功能——核心检测功能完全不需要登录。</p>
+
+<h2>12. 谁能看到什么（含管理员）</h2>
+<ul>
+  <li><strong>其他用户</strong>：只能看到你公开的资料——用户名、头像，以及未隐藏时的国籍与「最后活跃」</li>
+  <li><strong>管理员</strong>：能看到你的邮箱、国家代码、平台使用痕迹与登录流水，以及<strong>激活码的使用者</strong>（用户名 + 邮箱 + 兑换时间）——这是邮箱在服务端唯一会被读取的地方</li>
+</ul>
+<p>⚠ 平台痕迹与登录流水<strong>只给管理员看</strong>：不出现在你的设置页，也不出现在他人主页。承载它们的 <code>platform_logins</code> 表连一条读取策略都没有，只有服务端角色读得到。</p>
+
+<h2>13. 聊天室的「撤回」不等于服务端删除</h2>
+<p>撤回一条消息<strong>只是把它从其他人（以及你自己）的界面上移除</strong>，并标记为「该消息已被撤回」。<strong>原文与附件仍留在服务端</strong>，用于举报复核——一个能让发言者随时抹掉记录的房间，等于给滥用者一个「说完就跑」的按钮。</p>
+<ul>
+  <li>你的客户端会把它从本机缓存里删掉</li>
+  <li>服务端保留原文供管理员复核；客户端能读到的窗口是最近 7 天</li>
+</ul>
+<p>如果你不希望任何发言被服务端保留，请不要使用聊天室——<strong>核心检测功能完全不需要登录</strong>。</p>
+
+<hr>
+
+<!-- ============================ English ============================ -->
+
+<h1>Baishen Privacy Policy</h1>
+<p class="last">Last updated: 2026-10-05 (with the v1.0.6 release)</p>
+
+<blockquote>
+<strong>In one sentence: the core detection runs entirely on your machine, needs no account, and uploads
+nothing.</strong> Data leaves your computer only after you <em>choose</em> to enter an activation code
+<strong>and</strong> you <em>choose</em> to turn cloud sync on.
+</blockquote>
+
+<h2>1. With no account: nothing is uploaded</h2>
+<p>These work fully offline and make no network request at all:</p>
+<ul>
+  <li>reading the move sequence, running the engine, computing the risk score</li>
+  <li>local archives and the sample library</li>
+  <li>the learning mechanism (automatic threshold search) and the blacklist</li>
+  <li>custom models (weight packages stay in local IndexedDB)</li>
+</ul>
+
+<h2>2. What is uploaded once you activate and sign in</h2>
+<table>
+  <tr><th>Item</th><th>Contents</th><th>Why</th></tr>
+  <tr><td>Identity</td><td>username, email</td><td>the account itself</td></tr>
+  <tr><td>Avatar</td><td>avatar (compressed to 256×256)</td><td>shown on your profile</td></tr>
+  <tr><td>Account state</td><td>activation status, device ID, last-seen</td><td>one code per account, 3-device limit</td></tr>
+  <tr><td>Sample metadata</td><td>counts and ratios — aggregates only</td><td>the numbers on the profile tab</td></tr>
+  <tr><td>Badges</td><td>which badge types were granted</td><td>the achievement system</td></tr>
+  <tr><td><strong>Platform traces</strong> (1.0.6)</td><td>extension or web build, the time of each sign-in, the inferred country code (no IP)</td><td>the operator's census — administrators only</td></tr>
+  <tr><td><strong>Message read watermarks</strong> (1.0.6)</td><td>the last-read time of the five partitions</td><td>the red dot</td></tr>
+</table>
+
+<h2>3. What is NOT uploaded</h2>
+<ul>
+  <li><strong>Your game records are not uploaded</strong> — the per-move data stays local</li>
+  <li><strong>Your detection results are not uploaded</strong> — scores and per-move verdicts are computed locally</li>
+  <li><strong>Your settings are not uploaded</strong> — unless you enable cloud sync</li>
+  <li><strong>Your blacklist is not uploaded</strong> — its default is NOT SYNCED; it needs an explicit tick</li>
+</ul>
+
+<h3>3.1 Data about your opponents</h3>
+<p>Samples, replay archives and blacklist rows carry your opponent's display name. With cloud sync on and those categories ticked, those names travel too — they are content you collected, not something we read off a server.</p>
+
+<h2>4. Where the data lives</h2>
+<p>Hosted by Supabase (PostgreSQL + Storage). Singapore (Southeast Asia) is recommended; the actual region depends on the deployment you use.</p>
+
+<h2>5. Retention</h2>
+<ul>
+  <li><strong>Active accounts</strong>: kept until you delete them</li>
+  <li><strong>Deleted accounts</strong>: your local data stays where it is, and the cloud data is permanently removed 30 days after you ask</li>
+  <li><strong>Leaked activation codes</strong>: an administrator can revoke them in bulk, and revocation does not touch your local data</li>
+  <li><strong>Platform login log</strong>: no separate retention window yet — kept alongside the account, deleted with the cloud data within 30 days of account deletion</li>
+  <li><strong>Chat messages</strong>: the window a client can read is the last 7 days; files shared into the chat keep a local copy for 15 minutes</li>
+</ul>
+
+<h2>6. Your rights</h2>
+<ul>
+  <li><strong>Export</strong>: the extension's 「导入与导出」 panel exports everything stored locally</li>
+  <li><strong>Delete</strong>: 「我的 → 注销账户」 requests deletion of the cloud data (effective after 30 days)</li>
+  <li><strong>Rectify</strong>: 「我的 → 修改资料」 edits your username, email and avatar</li>
+</ul>
+
+<h2>7. Minors</h2>
+<p>This extension targets adult players of online gomoku. If you believe the intended audience may include minors, obtain guardian consent before use.</p>
+
+<h2>8. Third parties</h2>
+<p>The service touches the following third parties, and sends data to no one else:</p>
+<ul>
+  <li><strong>Supabase</strong> — hosting and storage</li>
+  <li><strong>ipinfo.io</strong> — at sign-in the backend sends it your IP address to infer a country code (the IP itself is never stored — see §10)</li>
+  <li><strong>Resend</strong> — delivers the verification-code email and the email an administrator sends when replying to a report; your address and the message body pass through it</li>
+</ul>
+<p>The detection engines (Rapfi / KataGomo) run locally or at an address you configure, and the optional 「自动提问」 feature uses the LLM endpoint and key you provide — neither passes through us.</p>
+
+<h2>9. Contact</h2>
+<p>Administrator email: mod0207613@qq.com</p>
+
+<h2>10. On your own machine: what is stored in the clear</h2>
+<p><code>chrome.storage.local</code> is not encrypted. These live as plain text in your browser profile directory, readable by any process that can read that directory:</p>
+<ul>
+  <li>the LLM API key used by 「自动提问」 — an exported backup strips it; the local store does not</li>
+  <li>the cloud account's login token (JWT, valid for 30 days) — deliberately kept outside <code>settings</code>, so neither export/import nor cloud sync carries it; logging out, changing the password or an administrator's revocation invalidates it</li>
+  <li>the chat room's local cache (IndexedDB database <code>baishen-cache</code>) — the last 7 days of public-room messages, one copy of any shared file (15 minutes) and the sync metadata; recalling a message deletes it from this cache</li>
+</ul>
+<p>If you do not trust the other programs on this machine, do not enable 「自动提问」 and do not sign in to a cloud account — <strong>the core detection needs neither</strong>.</p>
+
+<h2>11. Who can see your online status and country</h2>
+<p>Your last-seen timestamp is answered with null for every other account (drawn as 「offline」), and that is enforced in the data, not in the rendering. The same holds for nationality: with 「隐藏国籍」 ticked, other users read null, and the raw <code>country_code</code> is not returned to a non-friend at all.</p>
+<p>⚠ <strong>One exception, stated plainly: the Realtime presence channel.</strong> Clients also share a
+<code>presence</code> channel so a friend list updates the moment somebody arrives. It is
+<strong>one channel for the whole product</strong>, not sharded per friendship, so
+<strong>any signed-in account</strong>
+that subscribes to it can see which accounts are currently present and whether they are 「online」 or
+「busy」. What it reveals is presence only; it does <strong>not</strong> reveal the historical last-seen
+timestamp, which stays friends-only as described above.</p>
+<p>Setting your status to 「隐身」 makes others see you as <strong>offline</strong>, but it does
+<strong>not</strong> remove you from the channel's member list. We would rather write that here than
+pretend otherwise.</p>
+<p>If you consider 「who is online right now」 itself too much to share with other signed-in users, do not use the community features — the core detection needs no account at all.</p>
+
+<h2>12. Who can see what (administrators included)</h2>
+<ul>
+  <li><strong>Other users</strong> see only your public profile — username, avatar, and (unless hidden) your country and last-seen</li>
+  <li><strong>Administrators</strong> can see your email, your country code, your platform traces and login log, and <strong>who redeemed an activation code</strong> (username + email + time) — the only place the backend reads an email address</li>
+</ul>
+<p>⚠ Platform traces and the login log are shown to <strong>administrators only</strong>: they are not on your settings screen and not on anyone's profile. The table that holds them, <code>platform_logins</code>, has no read policy at all — only the service role can reach it.</p>
+
+<h2>13. Recalling a chat message is not a server-side delete</h2>
+<p>Recalling a message <strong>only removes it from other people's screens (and yours)</strong> and marks it 「该消息已被撤回」. <strong>The original text and any attachment stay on the server</strong> so a report can be reviewed — a room where a speaker can erase the record at will hands an abuser a 「say it and run」 button.</p>
+<ul>
+  <li>Your client deletes it from the local cache</li>
+  <li>the server keeps the original for an administrator reviewing a report; the window a client can read is the last 7 days</li>
+</ul>
+<p>If you would rather no message be retained server-side, do not use the chat — <strong>the core detection needs no account at all</strong>.</p>
 
 <hr>
 <p class="last">© Baishen · Gomoku anti-cheat detector · <a href="https://github.com/AODOJUST/gomoku-anti-cheat-detector">GitHub</a></p>

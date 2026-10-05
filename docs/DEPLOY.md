@@ -13,7 +13,7 @@
 |---|---|---|
 | **Supabase 项目信息**（URL / anon / service role / region） | 建项目后从 **Project Settings → API** 抄；region **建议 Singapore** | `extension/cloud.js` 两个占位符（URL + anon）。**service role 只填进 Edge Function 的环境变量，永远不进扩展** |
 | **第一个管理员怎么标记** | 部署完用**一次性 SQL** 把某个用户置 `is_admin = true`（见第四节） | Supabase Studio 的 SQL Editor |
-| **隐私政策托管地址** | **默认用本仓库的 GitHub Pages**：仓库 Settings → Pages → Source 选 `main` 分支的 `/docs`，得到 `https://<用户>.github.io/<仓库>/privacy.html` | 填进 `extension/viewer.js` 的 `PRIVACY_URL` |
+| **隐私政策托管地址** | **默认用本仓库的 GitHub Pages**：仓库 Settings → Pages → Source 选 `main` 分支的 **`/(root)`**（页面就在仓库根的 `privacy.html`，不在 `docs/`），得到 `https://<用户>.github.io/<仓库>/privacy.html` | 填进 `extension/viewer.js` 的 `PRIVACY_URL` |
 
 三件事都填完之后，扩展里「设置 → 云账户与同步」的三个状态字会从「未配置」变成可激活。
 
@@ -160,7 +160,8 @@ var SUPABASE_ANON_KEY = 'eyJhbGciOi...';             // anon public key
 ## 六、隐私政策页（3 分钟）
 
 1. 仓库 **Settings → Pages**；
-2. Source 选 **Deploy from a branch**，分支 `main`，目录 **`/docs`**；
+2. Source 选 **Deploy from a branch**，分支 `main`，目录 **`/(root)`**（⚠ **不是 `/docs`** ——
+   4429d16 已把页面从 `docs/privacy.html` 挪到了仓库根的 `privacy.html`）；
 3. 保存后等一两分钟，`https://<用户>.github.io/<仓库>/privacy.html` 就能打开；
 4. 把这个地址填进 `extension/viewer.js` 的 `PRIVACY_URL`（留空时「关于」面板显示「尚未提供」而不是一个死链）。
 
