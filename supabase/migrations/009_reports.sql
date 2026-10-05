@@ -22,9 +22,13 @@
 -- ⚠ That split is why there is no `reports.user_state` snapshot column: it would be a second answer
 -- to 「他现在被禁言了吗」 and would go stale the moment an admin acts on a different report.
 --
--- §2.3.2's two product-wide switches live in `global_settings` rather than in a one-row table,
--- because they are read on every send and a key/value table can grow a third switch (§2.3.2's own
--- 「关闭聊天室」 and 「全体禁言」 are one row each) without a migration.
+-- §2.3.2's product-wide switch lives in `global_settings` rather than in a one-row table, because
+-- it is read on every send and a key/value table can grow a second switch without a migration.
+--
+-- ⚠ 1.0.6 三号 §二.2 — THIS TABLE SEEDS *ONE* ROW NOW, NOT TWO. The original seed also wrote
+-- `global_mute`; that key was a second way to say 「所有人不能发消息」, and 022_chat_switch.sql
+-- deletes it. See that file for the argument; the short version is that two switches which can
+-- contradict each other have no answer to 「那到底能不能发」.
 
 -- ---------------------------------------------------------------------------
 -- 1. reports (§2.2)
@@ -80,10 +84,12 @@ create table if not exists public.global_settings (
 );
 
 comment on table public.global_settings is
-  '1.0.3 §2.3.3 — product-wide switches. WRITTEN only by admin-global-mute (service role) and READ '
-  'only by chat-send, which enforces §2.3.2''s 「所有人不能发消息」 by failing CHAT_DISABLED / MUTED. '
-  'The SELECT policy in 011/012 exists so that a client-side 「为什么输入框是灰的」 read would need no '
-  'further migration; the EFFECTIVE gate is the server, not the client.';
+  '1.0.3 §2.3.3 — product-wide switches. WRITTEN only by admin-global-chat (service role, renamed '
+  'from admin-global-mute by 1.0.6 三号 §二.2) and READ only by chat-send, which enforces §2.3.2''s '
+  '「所有人不能发消息」 by failing CHAT_DISABLED. The SELECT policy in 011/012 exists so that a '
+  'client-side 「为什么输入框是灰的」 read would need no further migration — 1.0.6 §二.2 is the first '
+  'feature to use it, for the room''s 「聊天室已关闭」 banner; the EFFECTIVE gate is the server, not '
+  'the client.';
 
 -- ⚠⚠ RLS MUST BE ENABLED OR 011's POLICY IS DECORATION. This line was missing in the first cut of
 -- this migration, and the result was a real, exploitable hole: `anon` already holds INSERT/UPDATE/
@@ -98,9 +104,12 @@ alter table public.global_settings enable row level security;
 -- §2.3.3's seed, idempotent. `'true'::jsonb` rather than the bare `'true'` the spec writes: the
 -- bare literal happens to parse as JSON boolean too, but relying on that is how a value ends up
 -- stored as the four-character string "true" and every `== true` comparison is false forever.
+--
+-- ⚠ ONE ROW. Until 1.0.6 三号 §二.2 this seeded `('global_mute', 'false'::jsonb)` as well;
+-- 022_chat_switch.sql deletes that key from every existing deployment, and it is not seeded here so
+-- fresh installs and upgraded ones end up identical. Do NOT add it back — see 022's header.
 insert into public.global_settings (key, value) values
-  ('chat_enabled', 'true'::jsonb),
-  ('global_mute', 'false'::jsonb)
+  ('chat_enabled', 'true'::jsonb)
 on conflict (key) do nothing;
 
 -- ---------------------------------------------------------------------------
@@ -184,8 +193,8 @@ comment on table public.notifications is
 -- ---------------------------------------------------------------------------
 -- 「「关闭聊天室/全体禁言」不影响历史回放与样本互动——这两个是独立的`数据表`，与聊天室无关」.
 -- (The spec's own line carries stray markdown backticks around 数据表; read it as 「独立的数据表」.)
--- ⇒ `admin-global-mute` writes this table and nothing else, and the two switches are read by
--- exactly one thing: whether `chat-send` accepts a message. They are deliberately NOT consulted by
+-- ⇒ `admin-global-chat` writes this table and nothing else, and the one remaining switch is read by
+-- exactly one thing: whether `chat-send` accepts a message. It is deliberately NOT consulted by
 -- `friend-share` / `vote-cast` / `report-submit`, because §2.3.2 says in as many words that
 -- silencing the room must not silence the archive and sample features. A future reader tempted to
 -- "make the mute global" should read that sentence first.

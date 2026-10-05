@@ -57,6 +57,13 @@
     --inset-rgb:240,240,240; --btn-rgb:228,228,228; --blue-rgb:60,94,231;
     --hover:#ececec; --float:#ffffff;
     --info-bg:#e8f0fe; --info-line:#a8c4f0; --info-fg:#1f3f7a; --info-strong:#2c4a7a;
+    /* 1.0.6 三号 §二.2 — the YELLOW 「读一下，然后照做」 surfaces: `.warnbox` (数据不完整 / 活四停止)
+       and the room's two read-only banners (`.cm-gate`). They were the literal `#2a2113` /
+       `#6b5416` pair, which is a DARK box — so in this palette the box stayed dark while the text
+       inside it became `--txt` = #1a1a1a, i.e. black on near-black. Named here like every other
+       surface, so both palettes state the pair once and the same class cannot be legible in one
+       theme and invisible in the other. */
+    --warn-bg:#fff8e1; --warn-line:#e0c060; --warn-strong:#7a6200;
     --chip-fg:#2a4bd7; --chip-line:#a8c0ea;
     --lk:#2a4bd7; --dim:#9a9a9a; --txt-2:#333333;
     /* ---- 0.4.10 §一.2: tags and badges, as ALPHA colours ----
@@ -77,6 +84,16 @@
     --badge-pre-bg:rgba(80,90,105,.18); --badge-pre-fg:#3d4752;
     --badge-sim-bg:rgba(176,90,160,.15); --badge-sim-fg:#7a2a6b;
     --red:#e74c3c; --green:#2ecc71; --yellow:#f1c40f; --blue:#3c5ee7; --orange:#e67e22;
+    /* 1.0.6 三号 §1.1 — the three gomoku.com link TAGS (`.gomoku-tag-*`), one family per §1.1.2's
+       three kinds. A third chip family beside `--tag-*` (预设标签 / .acard .cat) and `--badge-*`
+       (开局名 / 预设 / 样本匹配), and named for the same reason those were: §1.1.2 gives SOLID hexes
+       (#3c5ee7 / #e67e22 / #2ecc71) for text, and the two warm ones are unreadable as text on this
+       palette — which is exactly the problem `--tag-custom-fg` (#b35a10) and `--badge-open-fg`
+       (#1d6b3a) already solved for the same two hues. The darkening is carried over rather than
+       rediscovered, and the dark block restores the brighter pair. */
+    --gtag-profile-fg:#3c5ee7; --gtag-profile-bg:rgba(60,94,231,.12); --gtag-profile-line:rgba(60,94,231,.45);
+    --gtag-spectate-fg:#b35a10; --gtag-spectate-bg:rgba(230,126,34,.12); --gtag-spectate-line:rgba(230,126,34,.45);
+    --gtag-room-fg:#1d6b3a; --gtag-room-bg:rgba(46,204,113,.12); --gtag-room-line:rgba(46,204,113,.5);
 
     /* ---- one UI scale for the whole viewer ----
        0.2.4 split the old single 2x scale into 外壳×2 / 细则×1.2, but switched it on only
@@ -124,6 +141,8 @@
     --inset-rgb:13,17,23; --btn-rgb:42,52,65;
     --hover:#202834; --float:#1f2733;
     --info-bg:#16233d; --info-line:#2f4b8f; --info-fg:#cfe0ff; --info-strong:#7fb0ff;
+    /* The 0.4.6 values exactly — this is the pair `.warnbox` / `.cm-gate` were hard-coded to. */
+    --warn-bg:#2a2113; --warn-line:#6b5416; --warn-strong:#f1c40f;
     --chip-fg:#8fb6ff; --chip-line:#3d5a80;
     --lk:#7aa2ff; --dim:#5c6773; --txt-2:#c3ccd6;
     /* The 0.4.6 values exactly, as the surface tokens above — see the light block for the names. */
@@ -132,6 +151,11 @@
     --badge-open-bg:rgba(46,204,113,.18); --badge-open-fg:#7fe0a3; --badge-open-border:rgba(46,204,113,.45);
     --badge-pre-bg:rgba(74,85,104,.9); --badge-pre-fg:#fff;
     --badge-sim-bg:rgba(176,90,160,.85); --badge-sim-fg:#fff;
+    /* §1.1's three link tags — the same three values `--tag-*` / `--badge-*` use for these hues on
+       this palette, so a green room chip and a green 开局 badge are the same green. */
+    --gtag-profile-fg:#8fb6ff; --gtag-profile-bg:rgba(60,94,231,.18); --gtag-profile-line:rgba(60,94,231,.45);
+    --gtag-spectate-fg:#e0c060; --gtag-spectate-bg:rgba(230,126,34,.18); --gtag-spectate-line:rgba(230,126,34,.45);
+    --gtag-room-fg:#7fe0a3; --gtag-room-bg:rgba(46,204,113,.18); --gtag-room-line:rgba(46,204,113,.45);
   }
   /* `auto` is the default and the OS decides. The LIGHT set is already on plain `:root`, so
      only the dark branch needs a media query — and `:root[data-theme=auto]` keeps it from
@@ -145,6 +169,7 @@
       --inset-rgb:13,17,23; --btn-rgb:42,52,65;
       --hover:#202834; --float:#1f2733;
       --info-bg:#16233d; --info-line:#2f4b8f; --info-fg:#cfe0ff; --info-strong:#7fb0ff;
+      --warn-bg:#2a2113; --warn-line:#6b5416; --warn-strong:#f1c40f;
       --chip-fg:#8fb6ff; --chip-line:#3d5a80;
       --lk:#7aa2ff; --dim:#5c6773; --txt-2:#c3ccd6;
       --tag-bg:rgba(60,94,231,.18); --tag-fg:#8fb6ff; --tag-border:rgba(60,94,231,.45);
@@ -152,6 +177,9 @@
       --badge-open-bg:rgba(46,204,113,.18); --badge-open-fg:#7fe0a3; --badge-open-border:rgba(46,204,113,.45);
       --badge-pre-bg:rgba(74,85,104,.9); --badge-pre-fg:#fff;
       --badge-sim-bg:rgba(176,90,160,.85); --badge-sim-fg:#fff;
+      --gtag-profile-fg:#8fb6ff; --gtag-profile-bg:rgba(60,94,231,.18); --gtag-profile-line:rgba(60,94,231,.45);
+      --gtag-spectate-fg:#e0c060; --gtag-spectate-bg:rgba(230,126,34,.18); --gtag-spectate-line:rgba(230,126,34,.45);
+      --gtag-room-fg:#7fe0a3; --gtag-room-bg:rgba(46,204,113,.18); --gtag-room-line:rgba(46,204,113,.45);
     }
   }
   /* ---- 透明度与模糊 ----
@@ -602,11 +630,21 @@
            min-width:176px;max-width:200px;max-height:calc(100vh - 104px);overflow-y:auto;
            background:var(--panel);border:1px solid var(--line);
            border-radius:calc(var(--ui-shell-radius) + 4px);padding:8px}
+  /* 1.0.6 三号 §4.1 — 字号 ×1.5. ⚠ 定稿示例写的「原」是 `var(--ui-detail-font)`,而交付时的这一行其实
+     是 `var(--ui-detail-small)`(=13px,`--ui-detail-font` 是 14px).所以要挑一个:照抄示例的**结果**
+     (14×1.5=21px)还是照抄「放大 1.5 倍」这条**要求**(13×1.5=19.5px).取后者 —— §4.1 的标题就是
+     「字体放大 1.5 倍」,而「原 → 新」这一对里能信的是「原」那半边的**实际值**,不是示例里手抄的那
+     个 token.两值只差 1.5px,所以这条不会有人从截图上看出来;正因如此它必须写在源码里,否则下一版
+     读者会把它当成抄错的 token 改回 21px. */
   .set-nav-item{display:block;padding:6px 10px;border-radius:var(--ui-detail-radius);cursor:pointer;
-                color:var(--mut);font-size:var(--ui-detail-small);text-decoration:none;
+                color:var(--mut);font-size:calc(var(--ui-detail-small) * 1.5);text-decoration:none;
                 white-space:normal;line-height:1.35}
   .set-nav-item:hover{background:var(--hover);color:var(--txt)}
-  .set-nav-item.active{background:var(--btn);color:var(--txt);font-weight:600}
+  /* 1.0.6 三号 §4.1 — 与顶部导航栏 `.navbtn.active` 同一个答案:蓝底白字. `.navbtn.active` 就在上面几
+     行,所以这里写的是它的**逐字**取值而不是一套新的蓝;⚠ 不把 `padding` / `border-radius` 搬进这一
+     条 —— 定稿的示例把它们写在 `.active` 里,而只在选中态改内距 = 每次滚动高亮切换时那一行会比邻行
+     胖一圈、整列跟着跳.尺寸留在基类,选中只改颜色. */
+  .set-nav-item.active{background:var(--blue);color:#fff;font-weight:600}
   /* §1.2.2「窗口宽度 < 900px 时，导航栏折叠为顶部的横向标签栏」. `position:sticky;top:0` under the
      header rather than beside the panels, and `overflow-x:auto` because twelve labels do not fit on
      a phone in one line. The strip keeps the surface from above — its fill arrives from the
@@ -995,7 +1033,17 @@
      about intent rather than a verdict on strength. */
   .badge.b-evasion{background:#0e7490;color:#e6f7fb}
   /* The learning before/after table. Two numeric columns with a signed delta. */
-  .ltable td,.ltable th{padding:5px 12px;text-align:start;white-space:nowrap}
+  /* ---- 1.0.6 三号 §3.1 — the header and the numbers must agree on an edge ----------------------
+     As first shipped this read `text-align:start` for every cell and `text-align:end` for
+     `.num`, so 项/学习前/学习后/变化 sat against the LEFT edge while the figures underneath them
+     sat against the RIGHT one — the header described a column that was not there. The global
+     `th,td` rule above is `center`, so this class is the ONLY thing aligning these tables.
+     ⚠ The rule that saves the FIRST column is what keeps a right-aligned table readable: 「Top-1
+     吻合」 is a name, not a figure, and pushing it against the right edge would make the label
+     and its own numbers look like they belong to different tables. 写 start/end 不写 left/right
+     —— 本项目有 RTL（`ar`），物理方向会在阿拉伯语下镜像错位（verify-046 也会点红）。 */
+  .ltable td,.ltable th{padding:5px 12px;text-align:end;white-space:nowrap}
+  .ltable td:first-child,.ltable th:first-child{text-align:start}
   .ltable td.num{text-align:end;font-family:Consolas,monospace}
   .ltable .up{color:var(--red)} .ltable .down{color:var(--green)} .ltable .same{color:var(--mut)}
   .lbox{background:var(--inset);border:1px solid var(--line);border-radius:var(--ui-detail-radius);
@@ -1152,10 +1200,10 @@
   /* 数据完整性提示. A mid-join game is complete ON THE BOARD but partial in the DATA, and
      every figure below is read differently because of it — so it sits above them, not as
      one more row inside the metrics table. */
-  .warnbox{background:#2a2113;border:1px solid #6b5416;border-inline-start:5px solid var(--yellow);
+  .warnbox{background:var(--warn-bg);border:1px solid var(--warn-line);border-inline-start:5px solid var(--yellow);
            border-radius:var(--ui-detail-radius);padding:var(--ui-detail-padding) var(--ui-shell-padding);
            margin-top:16px;font-size:var(--ui-detail-font);line-height:1.7}
-  .warnbox b{display:block;color:var(--yellow);font-size:var(--ui-detail-large);margin-bottom:4px}
+  .warnbox b{display:block;color:var(--warn-strong);font-size:var(--ui-detail-large);margin-bottom:4px}
   /* 0.3.1 活四停止 banner: blue, distinct from the yellow data-incompleteness box. */
   .warnbox.term{border-color:var(--info-line);border-inline-start-color:var(--blue);background:var(--info-bg)}
   .warnbox.term b{color:var(--info-strong)}
@@ -1312,6 +1360,31 @@
   .cm-link.btn{display:inline-block;padding:2px 10px;border:1px solid var(--blue);border-radius:999px;
     background:rgba(var(--blue-rgb),.10);color:var(--blue);text-decoration:none}
   .cm-link.btn:hover{background:rgba(var(--blue-rgb),.22)}
+  /* ---- 1.0.6 §1.1 — the three gomoku.com link TAGS ----
+     §1.1.1's 主页 / 观战 / 私人房间 stop being strings and become pressable chips whose COLOUR is the
+     kind (§1.1.2: blue profile, orange spectate, green room). The two `.cm-link` shapes above stay —
+     §1.1 names three routes, it does not repaint every gomoku.com URL, and `/game/<id>`'s 「查看对局」
+     chip is 1.0.6 一号 §1.4's, untouched.
+     ⚠ WHITE-SPACE. The bubble is `pre-wrap` + `overflow-wrap:anywhere`, which is right for a message
+     and wrong for a label: `anywhere` would break 「加入房间 #12345678」 across two lines mid-chip.
+     `nowrap` on the tag keeps one tag on one line while the prose around it still wraps. */
+  .gomoku-tag{display:inline-flex;align-items:center;gap:4px;padding:2px 8px;margin:0 2px;
+    border-radius:12px;border:1px solid var(--blue);background:rgba(var(--blue-rgb),.12);
+    color:var(--blue);font-size:.9em;cursor:pointer;user-select:none;white-space:nowrap;
+    transition:background .15s}
+  .gomoku-tag:hover{background:rgba(var(--blue-rgb),.25)}
+  .gomoku-tag .tag-icon{font-size:1em;line-height:1}
+  /* One rule per kind, each reading its own trio of theme variables — a hover rule that ignored
+     them is how a chip ends up hovering blue in a green chip. The hover itself is `brightness()`
+     rather than three more variable sets: the lift is the SAME gesture on all three kinds, and
+     spelling it as a colour would mean nine further declarations (3 kinds × 3 themes) whose only
+     job is to be the value that was already there, brightened. */
+  .gomoku-tag-profile{border-color:var(--gtag-profile-line);background:var(--gtag-profile-bg);color:var(--gtag-profile-fg)}
+  .gomoku-tag-profile:hover{background:var(--gtag-profile-bg);filter:brightness(1.35)}
+  .gomoku-tag-spectate{border-color:var(--gtag-spectate-line);background:var(--gtag-spectate-bg);color:var(--gtag-spectate-fg)}
+  .gomoku-tag-spectate:hover{background:var(--gtag-spectate-bg);filter:brightness(1.35)}
+  .gomoku-tag-room{border-color:var(--gtag-room-line);background:var(--gtag-room-bg);color:var(--gtag-room-fg)}
+  .gomoku-tag-room:hover{background:var(--gtag-room-bg);filter:brightness(1.35)}
   /* §1.8's `.chat-input-area{flex-shrink:0}`: the send row and the three hint lines under it keep
      their height whatever the log does. Without the zero basis a long draft in the textarea would
      be allowed to squeeze them off the bottom of a short window. */
@@ -1373,10 +1446,17 @@
   .cm-dot.busy{background:var(--yellow)}
   .cm-dot.offline{background:var(--mut)}
   .cm-flag{flex:0 0 auto;font-size:1.05em;line-height:1;margin-inline-start:5px}
-  /* §1.8.3's read-only banner. Yellow, like `.warnbox` — it is a statement about what the operator
-     may do, not an error they caused. */
-  .cm-gate{padding:9px 12px;border-radius:var(--ui-detail-radius);border:1px solid #6b5416;
-    border-inline-start:5px solid var(--yellow);background:#2a2113;color:var(--txt);
+  /* The read-only banner in the room, and there are TWO of them sharing this one class:
+     §1.8.3's 「激活后参与讨论」 (`#cmChatGate`) and §二.2's 「聊天室已关闭，仅可查看历史消息」
+     (`#cmChatClosed`). They differ in WHY the input is disabled and agree on everything a reader
+     sees, so the appearance has one definition — the second banner is the same statement with a
+     different cause, not a second kind of box.
+     Yellow, like `.warnbox` — a statement about what the operator may do, not an error they
+     caused. ⚠ The colours are named tokens (`--warn-*`) and not literals: this rule used to carry
+     `#2a2113` / `#6b5416` inline, which was invisible in the light palette (dark box, `--txt`
+     = #1a1a1a inside it). */
+  .cm-gate{display:block;padding:9px 12px;border-radius:var(--ui-detail-radius);border:1px solid var(--warn-line);
+    border-inline-start:5px solid var(--yellow);background:var(--warn-bg);color:var(--txt);
     font-size:var(--ui-detail-small);line-height:1.6;margin-bottom:8px}
   /* A row's inline actions: 接受 / 拒绝 / 备注 / 删除 / 拉黑. `flex:0 0 auto` on each, per the 0.5.5
      note — an auto basis is still allowed to shrink to nothing beside a long name. */
@@ -1584,6 +1664,9 @@
     .scroll{max-height:none;overflow:visible}
     .warnbox{background:#fff;border-color:#ccc;border-inline-start-color:#a08000}
     .warnbox b{color:#7a6200}
+    /* Same treatment for the room's read-only banners — they share `--warn-*` with `.warnbox`,
+       so they need the same paper override or they print as a pale cream block. */
+    .cm-gate{background:#fff;border-color:#ccc;border-inline-start-color:#a08000}
   }
 </style>
 </head>
@@ -2474,6 +2557,16 @@
                  `cmPaintGate()`; the text is written by the view rather than here because it is one
                  of the strings §1.8.3 asks for verbatim and it has to be translatable. -->
             <div class="cm-gate hidden" id="cmChatGate"></div>
+            <!-- 1.0.6 三号 §二.2 — 「关闭后，聊天室顶部显示横幅：『聊天室已关闭，仅可查看历史消息』」.
+                 A SECOND banner beside the gate's, not a reuse of it: an unactivated account and a
+                 closed room are two different reasons for the same disabled input, and one element
+                 can only carry one of them at a time — with the gate reused, a closed room would
+                 have told an unactivated reader the wrong reason, and an unactivated reader inside
+                 a closed room would have been told only one of the two. `cmPaintGate()` owns both,
+                 because 「是不是可写」 is one question with one answer.
+                 ⚠ Same CLASS as the gate banner, deliberately: both are 「读一下，然后照做」 yellow
+                 statements with the same appearance, and the CSS says so in one place. -->
+            <div class="cm-gate hidden" id="cmChatClosed"></div>
             <!-- §1.7.1's quote strip. Empty and hidden until 「引用并回复」 is chosen; the × clears it
                  WITHOUT clearing the text, because the two are separate decisions. -->
             <div class="cm-qstrip hidden" id="cmQuoteStrip">
@@ -2843,6 +2936,11 @@
        anything beyond this set is deliberately not drawn here. -->
   <section class="view" id="view-admin">
     <div class="set-cols">
+    <!-- 1.0.5 §二.3.1 — 「同设置页」. Same empty `<nav>`, same `data-section` join, same builder
+         (`buildAdminNav` → `sectionNav`) as the settings page. The 超级管理 row appears here only
+         for a super_admin, because the builder skips `hidden` panels — see `sectionNav`.
+         ⚠ 1.0.6 三号 §4.2 — 与设置页同样排在 `.set-main` 之前（理由见设置页那条注释）。 -->
+    <nav class="set-nav" id="adminNav" aria-label="管理员快速导航"></nav>
     <div class="set-main">
     <div class="panel" data-section="codes">
       <h2 id="adGenTitle">—</h2>
@@ -2916,7 +3014,14 @@
       <h2 id="adNewsTitle">—</h2>
       <div class="btn-row" style="margin-top:10px;line-height:2.2">
         <label><span id="adNewsCatLab">—</span> <select id="adNewsCat"></select></label>
-        <label><span id="adNewsLangLab">—</span> <input type="text" id="adNewsLang" style="width:90px"></label>
+        <!-- 1.0.6 三号 §2.1 — this control used to be a bare text `<input>` (a 90px box, one field
+             to the left): the operator typed a bare language code, so a typo shipped a news row no
+             reader could ever match (`zh`, `zh-CNx`, `ZH-cn`). It is a real <select> now, filled
+             from the SAME option builder as the settings dropdown — §2.1.2 「语言选择复用同一组件」.
+             ⚠ The old element is described rather than quoted: `verify-055` harvests `id="…"` with a
+             REGEX over the whole file, COMMENTS INCLUDED, so spelling the retired markup out here
+             reads as a second element with the same id. 「注释也算源码」 in its cheapest form. -->
+        <label><span id="adNewsLangLab">—</span> <select id="adNewsLang"></select></label>
         <label><input type="checkbox" id="adNewsPin"> <span id="adNewsPinLab">—</span></label>
       </div>
       <div class="rowline" style="margin-top:6px">
@@ -2934,21 +3039,71 @@
 
     <div class="panel" data-section="global">
       <h2 id="adGlobalTitle">—</h2>
+      <!-- 1.0.6 三号 §二.2 — ONE switch, not two. Until this release the panel drew 「允许发言」 and
+           「全体禁言」 as two independent checkboxes over two `global_settings` rows
+           (`chat_enabled` / `global_mute`), and `chat-send` refused on either — so ticking both was
+           reachable and the panel had no answer to 「那到底能不能发」. The pair is now one key with
+           one meaning (see 022_chat_switch.sql), and therefore one checkbox.
+           ⚠ The label is 「允许发言」 and the NOTE below spells the off-state out, rather than a
+           checkbox whose label changes with its own checked state — a control that renames itself
+           as you click it is the shape that made the old pair ambiguous in the first place. -->
       <div class="btn-row" style="margin-top:10px;line-height:2.2">
         <label><input type="checkbox" id="adChatEnabled"> <span id="adChatEnabledLab">—</span></label>
-        <label><input type="checkbox" id="adGlobalMute"> <span id="adGlobalMuteLab">—</span></label>
         <button class="sec" id="adGlobalSave">—</button>
         <span class="hint" id="adGlobalState">—</span>
       </div>
+      <div class="hint" id="adChatEnabledNote" style="margin-top:6px">—</div>
     </div>
 
     <div class="panel" data-section="revoke">
       <h2 id="adCodeTitle">—</h2>
       <div class="hint" id="adCodeHint" style="margin-top:6px">—</div>
-      <textarea id="adRevokeCodes" style="width:100%;height:90px;margin-top:6px"></textarea>
-      <div class="btn-row" style="margin-top:8px">
-        <button class="sec" id="adRevokeGo">—</button>
+      <!-- 1.0.6 三号 §2.3 — 「撤销激活码栏改为列表格式」.
+           The panel used to be a `<textarea>` where the operator pasted codes one per line, i.e. it
+           could only act on codes somebody had READ somewhere else. There was nowhere in the
+           extension that could read them — 1.0.0's `admin.js` said so in as many words (「the server
+           cannot re-list a code」) — so 「撤销我上次发出去的那一批」 was a copy-paste ritual with the
+           list kept in a text file. §2.3 gives the server that ability (`admin-list-codes`, the
+           project's 38th Function) and this panel the list.
+           ⚠ The three filter buttons carry their text in the MARKUP, like the archive/sample bulk
+           rows: `i18n.js`'s static pass reaches a text node, so these need no `adSay` line, and one
+           drawn label is one place a translator has to look. -->
+      <div class="tw-cats" style="margin-top:8px">
+        <!-- ⚠ `.tw-cat` RATHER THAN A NEW CLASS. It is the same object as §2.4.4's news filter —
+             a row of pills where exactly one is `on` and `on` is the blue fill — and a second class
+             for the same thing is a second place to change when the pills are restyled. `data-adc-flt`
+             carries the value, `on` carries the state; the delegated listener below reads the former
+             and `adCodeFilter()` writes the latter, so neither is inferred from the other. -->
+        <button class="tw-cat on" data-adc-flt="all">全部</button>
+        <button class="tw-cat" data-adc-flt="unused">未使用</button>
+        <button class="tw-cat" data-adc-flt="used">已使用</button>
+        <button class="tw-cat" data-adc-flt="revoked">已撤销</button>
+      </div>
+      <!-- §2.3.4's batch row. The ORDER is copied from the archive library's (`#aBulkBar`): the count
+           first, then the three selection buttons, then the actions — §2.3.3 asks for 「相同的批量
+           操作入口」, and the surest way to satisfy that is to be the same row. `反选本页` rather
+           than §2.3.4's abbreviated 「反选」 for the same reason.
+           ⚠ `撤销全部未使用` stays, and it is NOT the same button as 批量撤销: the batch acts on the
+           SELECTION (bounded, one page at a time), this one is `{all: true}` server-side and ignores
+           the selection entirely. Deleting it would remove the only way to sweep a whole backlog. -->
+      <div class="btn-row" style="margin-top:8px;line-height:2.2">
+        <span class="hint" id="adCodeSel">—</span>
+        <button class="sec" id="adCodeAll">全选本页</button>
+        <button class="sec" id="adCodeInvert">反选本页</button>
+        <button class="sec" id="adCodeNone">清空选择</button>
+        <span class="sp" style="flex:1"></span>
+        <button class="sec" id="adCodeCopy">批量复制</button>
+        <button class="danger" id="adCodeRevoke">批量撤销</button>
         <button class="sec" id="adRevokeAll">—</button>
+      </div>
+      <div id="adCodeRows" style="margin-top:8px"></div>
+      <div class="btn-row" style="margin-top:10px">
+        <!-- `‹` / `›` like the user list's pager, and for the same reason §1.2.2's `↓` has no
+             dictionary row: one glyph, fifteen languages. -->
+        <button class="sec" id="adCodePrev">‹</button>
+        <button class="sec" id="adCodeNext">›</button>
+        <span class="hint" id="adCodeTotal">—</span>
+        <span class="sp" style="flex:1"></span>
         <span class="hint" id="adCodeState">—</span>
       </div>
     </div>
@@ -2996,10 +3151,6 @@
       <div class="hint" id="adSuperState" style="margin-top:6px">—</div>
     </div>
       </div><!-- /.set-main -->
-    <!-- 1.0.5 §二.3.1 — 「同设置页」. Same empty `<nav>`, same `data-section` join, same builder
-         (`buildAdminNav` → `sectionNav`) as the settings page. The 超级管理 row appears here only
-         for a super_admin, because the builder skips `hidden` panels — see `sectionNav`. -->
-    <nav class="set-nav" id="adminNav" aria-label="管理员快速导航"></nav>
     </div><!-- /.set-cols -->
 </section>
 
@@ -3030,6 +3181,16 @@
        inflated it by one when 1.0.2 was implemented. -->
   <section class="view" id="view-settings">
     <div class="set-cols">
+    <!-- 1.0.5 §一.2 — the vertical 快速导航. It is a SIBLING of `.set-main` rather than a child of
+         each panel, and it is EMPTY in the markup: §1.2.3 builds the items from
+         `.panel[data-section]` so that the nav cannot name a panel that is not on the page, or miss
+         one that is. `viewer.js:buildSettingsNav()` is its only writer.
+
+         ⚠ 1.0.6 三号 §4.2 — 它在 `.set-main` **之前**（交付时在之后）. 「位置统一到左侧」不只是宽屏上的
+         一列:低于 900px 时 `.set-cols` 变 `display:block`,那时**文档顺序就是上下顺序** —— nav 若排在
+         内容之后,「折叠为顶部的横向标签栏」会变成「底部的横向标签栏」(`position:sticky` 只在你滚过它之后
+         才把它粘到顶).改顺序是同时满足宽/窄两种形态的唯一一处判据,所以它是 DOM 上的一行,不是 `order`. -->
+    <nav class="set-nav" id="settingsNav" aria-label="设置快速导航"></nav>
     <div class="set-main">
     <!-- 0.4.10 §三 — the tutorial, FIRST on the page. It is the one panel whose reader does not
          yet know what any of the others mean, so putting it anywhere else is putting it where the
@@ -3622,11 +3783,6 @@
       </div>
     </div>
       </div><!-- /.set-main -->
-    <!-- 1.0.5 §一.2 — the vertical 快速导航. It is a SIBLING of `.set-main` rather than a child of
-         each panel, and it is EMPTY in the markup: §1.2.3 builds the items from
-         `.panel[data-section]` so that the nav cannot name a panel that is not on the page, or miss
-         one that is. `viewer.js:buildSettingsNav()` is its only writer. -->
-    <nav class="set-nav" id="settingsNav" aria-label="设置快速导航"></nav>
     </div><!-- /.set-cols -->
 </section>
 
@@ -3649,9 +3805,11 @@
 <script src="locale/de.js"></script>
 <script src="locale/vi.js"></script>
 <script src="locale/es.js"></script>
+<script src="locale/es-MX.js"></script>
 <script src="locale/ms.js"></script>
 <script src="locale/ar.js"></script>
 <script src="locale/mn.js"></script>
+<script src="locale/lzh.js"></script>
 <script src="llm.js"></script>
 <script src="storage.js"></script>
 <script src="openings.js"></script>
@@ -3688,6 +3846,16 @@
      carries no user-visible text at all, the same rule auth.js / sync.js / admin.js follow. -->
 <script src="community-shared.js"></script>
 <script src="community.js"></script>
+<!-- 1.0.6 三号 §1.2 — 聊天室的本机缓存（IndexedDB `baishen-cache`）。⚠ AFTER `community.js` AND
+     BEFORE `viewer.js`, and both halves of that matter:
+       · its only caller is `viewer.js` (the room's view), NOT the transport — which is what keeps
+         it OUT of `web/lib/` (`sync-lib.cjs` copies `community.js` verbatim, and the web end
+         already has its own view-layer cache in `app/cache.js`; a second one inside the shared
+         transport would be two answers to one question);
+       · it needs `GMCommunity.shared()` for the two retention windows, so it must be able to ask
+         that module — at load time it only reads it, but keeping it after `community-shared.js`
+         is the order that cannot be misread. -->
+<script src="chat-cache.js"></script>
 <script src="viewer.js"></script>
 </body>
 </html>

@@ -1,12 +1,18 @@
-/* Español — es.
+/* Español (México) — es-MX.
  *
- * Only the SEMANTIC keys live here. The bulk of the UI uses source-text keys of the form
- * `viewer|查看` / `html|存档`, where the Chinese text IS the key; those entries are in the
- * long table below the divider and are what makes the UI itself switch language. Everything
- * above the divider is a stored identity value (tag / annotation / level / end reason) whose
- * zh-CN text is the canonical key — see the note in i18n.js.
+ * 1.0.6 三号 §5.1 — 墨西哥西班牙语与通用西班牙语（es）差异极小，所以**不维护第二套完整翻译**：
+ * 这张表的手写段与生成块都由 es 派生（生成块见 _tools/gen-locale.cjs 的 DERIVED 表，只做几处
+ * 词形替换）。它因此是一张**完整表** —— 键集与其余十二张逐字相同 —— 而不是像 zh-CN / lzh 那样
+ * 依赖回退链的部分表。
+ *
+ * ⚠ 定稿给的写法是运行时 `GMI18n.table('es')` + `Object.assign`，本仓库没有照抄，原因是两个真坑：
+ *   ① 测试桩（verify-046 §6）只提供 `register`，没有 `table` ⇒ 那一行会 TypeError 把套件打崩；
+ *   ② `fs.readdirSync('locale')` 的字母序里 `es-MX.js` **排在** `es.js` 之前（'-' < '.'）⇒ 派生会拿到
+ *      空表，而**没有任何静态断言看得见**（症状是「墨西哥界面大部分回退成中文」，看着像没翻译）。
+ *      生成期展开让两个坑一起消失，翻译仍然只有一份真源（i18n-ui.js 的 `es` 列）。
  */
-GMI18n.register('es', {
+
+GMI18n.register('es-MX', {
 
   // ---- risk levels. Stored in archives as blackLevel / whiteLevel. ----
   // Standalone labels (a badge, a `黑方 · 可疑` line, the copy output), never mid-sentence, so
@@ -179,7 +185,7 @@ GMI18n.register('es', {
 });
 
 /* ==== GENERATED UI TABLE — edit _tools/i18n-ui.js, then run: node _tools/gen-locale.cjs ==== */
-GMI18n.register('es', {
+GMI18n.register('es-MX', {
 
   // ---- archive ----
   'archive|[活四终止] ': '[fin por cuatro vivo] ',
@@ -516,7 +522,7 @@ GMI18n.register('es', {
   'html|加载更多': 'Cargar más',
   'html|检测': 'Detección',
   'html|检测模型': 'Modelo de análisis',
-  'html|检测设置（与页面浮层共享同一份存储）': 'Ajustes de detección (comparte un mismo almacén con la capa de la página)',
+  'html|检测设置（与页面浮层共享同一份存储）': 'Configuración de detección (comparte un mismo almacén con la capa de la página)',
   'html|检测思考时间（ms）': 'Tiempo de pensamiento de la detección (ms)',
   'html|检测思考ms': 'Pensamiento de detección ms',
   'html|检测信号权重': 'Pesos de las señales',
@@ -588,8 +594,8 @@ GMI18n.register('es', {
   'html|任一超过': 'Cualquiera supera',
   'html|筛选 ▾': 'Filtro ▾',
   'html|删除': 'Eliminar',
-  'html|删除样本不会自动更新学习结果 —— 需回到「样本库」点「重新学习」。': 'Eliminar muestras no actualiza el resultado del aprendizaje automáticamente — vuelve a «Biblioteca de muestras» y pulsa «Volver a aprender».',
-  'html|设置': 'Ajustes',
+  'html|删除样本不会自动更新学习结果 —— 需回到「样本库」点「重新学习」。': 'Eliminar muestras no actualiza el resultado del aprendizaje automáticamente — vuelve a «Biblioteca de muestras» y presiona «Volver a aprender».',
+  'html|设置': 'Configuración',
   'html|社区': 'Comunidad',
   'html|胜率差': 'Diferencia de tasa de victoria',
   'html|时间': 'Tiempo',
@@ -856,7 +862,7 @@ GMI18n.register('es', {
   'panel|全局分析（对局结束后一次）': 'Análisis de partida completa (una vez, al terminar la partida)',
   'panel|上一个问题还在等回答': 'La pregunta anterior sigue esperando respuesta',
   'panel|尚未配置服务地址，请先在查看器的引擎设置里填写': 'Aún no hay dirección de servidor; configúrala primero en los ajustes del motor del visor.',
-  'panel|设置预选项': 'Ajustes predefinidos',
+  'panel|设置预选项': 'Configuración predefinida',
   'panel|时间模式': 'Modo de tiempo',
   'panel|收起': 'Contraer',
   'panel|收起设置 ▴': 'Contraer ajustes ▴',
@@ -890,7 +896,7 @@ GMI18n.register('es', {
   'panel|向对手提问，用五子棋常识区分 AI 与人类高手': 'Haz una pregunta al oponente: el sentido común del cinco en línea distingue a la IA de un humano experto',
   'panel|选择提问语言': 'Elige el idioma para preguntar',
   'panel|移出黑名单': 'Quitar de la lista negra',
-  'panel|已 {n} 分钟无落子，且未检测到对局结束事件 —— 点「{btn}」可手动出报告。': 'Sin jugadas durante {n} minutos y sin evento de fin de partida — pulsa «{btn}» para generar el informe manualmente.',
+  'panel|已 {n} 分钟无落子，且未检测到对局结束事件 —— 点「{btn}」可手动出报告。': 'Sin jugadas durante {n} minutos y sin evento de fin de partida — presiona «{btn}» para generar el informe manualmente.',
   'panel|已采集：': 'Recopilado: ',
   'panel|已存档': 'Archivado',
   'panel|已存档：{name}': 'Archivado: {name}',
@@ -917,7 +923,7 @@ GMI18n.register('es', {
   'panel|自动（{n} 线程）': 'Automático ({n} hilos)',
   'panel|自动（按站点推断）': 'Automático (inferido del sitio)',
   'panel|自动发送反作弊声明': 'Enviar automáticamente la declaración antifraude',
-  'panel|自动分析已关闭，点「结束并出报告」收尾': 'El análisis automático está desactivado — pulsa «Terminar y generar el informe» para finalizar',
+  'panel|自动分析已关闭，点「结束并出报告」收尾': 'El análisis automático está desactivado — presiona «Terminar y generar el informe» para finalizar',
   'panel|自由（无禁手）': 'Libre (sin movimientos prohibidos)',
   'panel|最小存档': 'Archivo mínimo',
   'panel|AI 率 {r}% 在过滤范围内（{min}%–{max}%），未存档。': 'Tasa de IA {r}% dentro del rango del filtro ({min}%–{max}%): no archivado.',
@@ -1253,7 +1259,7 @@ GMI18n.register('es', {
   'viewer|还没有激活码。': 'Todavía no hay códigos.',
   'viewer|还没有记住其它账号': 'Aún no hay otras cuentas recordadas',
   'viewer|还没有添加其他语言的翻译。': 'Aún no hay traducciones a otros idiomas.',
-  'viewer|还没有样本。点右上角「＋ 新建样本」，或在「回放」里右键存档 →「转为样本…」。': 'Aún no hay muestras. Pulsa «＋ Nueva muestra» arriba a la derecha, o haz clic derecho en un archivo en «Repetición» → «Convertir en muestra…».',
+  'viewer|还没有样本。点右上角「＋ 新建样本」，或在「回放」里右键存档 →「转为样本…」。': 'Aún no hay muestras. Presiona «＋ Nueva muestra» arriba a la derecha, o haz clic derecho en un archivo en «Repetición» → «Convertir en muestra…».',
   'viewer|还没有自定义模型。': 'Aún no hay modelos personalizados.',
   'viewer|还没有自定义问题。': 'Aún no hay preguntas personalizadas.',
   'viewer|还原': 'Restaurar',
@@ -1429,15 +1435,15 @@ GMI18n.register('es', {
   'viewer|上次学习：{t}': 'Último aprendizaje: {t}',
   'viewer|上限': 'Límite',
   'viewer|上一步改动': 'el último cambio',
-  'viewer|尚未分析。点「编辑」进入编辑器，用「AI 分析」生成步骤明细后即可标注。': 'Aún no analizado. Pulsa «Editar» para abrir el editor; ejecuta «Análisis de IA» para generar el detalle de jugadas y ya podrás anotar.',
+  'viewer|尚未分析。点「编辑」进入编辑器，用「AI 分析」生成步骤明细后即可标注。': 'Aún no analizado. Presiona «Editar» para abrir el editor; ejecuta «Análisis de IA» para generar el detalle de jugadas y ya podrás anotar.',
   'viewer|尚未提供': 'Aún no disponible',
   'viewer|尚未学习 —— 检测使用 0.3.1 默认阈值与权重。': 'Aún sin aprender — la detección usa los umbrales y pesos por defecto de 0.3.1.',
   'viewer|少于 5 手，无法分析': 'Menos de 5 jugadas — no se puede analizar',
   'viewer|设备': 'Dispositivos',
   'viewer|设为首选': 'Establecer como preferido',
-  'viewer|设置': 'Ajustes',
-  'viewer|设置：{ok} 项成功，{refused} 项退回': 'Ajustes: {ok} aplicados, {refused} rechazados',
-  'viewer|设置（不含 API Key）': 'Ajustes (sin la clave de API)',
+  'viewer|设置': 'Configuración',
+  'viewer|设置：{ok} 项成功，{refused} 项退回': 'Configuración: {ok} aplicados, {refused} rechazados',
+  'viewer|设置（不含 API Key）': 'Configuración (sin la clave de API)',
   'viewer|社区贡献者': 'Colaborador de la comunidad',
   'viewer|社区资料': 'Perfil de comunidad',
   'viewer|身份': 'Identidad',
@@ -1685,7 +1691,7 @@ GMI18n.register('es', {
   'viewer|展开全部': 'Expandir todo',
   'viewer|占用': 'Uso',
   'viewer|站点数据（socket）': 'Datos del sitio (socket)',
-  'viewer|账号设置': 'Ajustes de la cuenta',
+  'viewer|账号设置': 'Configuración de la cuenta',
   'viewer|账号状态': 'Estado de la cuenta',
   'viewer|折叠 / 展开「{col}」列': 'Contraer o expandir la columna «{col}»',
   'viewer|折叠全部': 'Contraer todo',
@@ -1738,7 +1744,7 @@ GMI18n.register('es', {
   'viewer|注销账户': 'Eliminar cuenta',
   'viewer|注意：超出样本上限，最旧的样本已被丢弃。': 'Atención: se superó el límite de muestras y la más antigua se descartó.',
   'viewer|注意：删除样本不会自动更新学习结果，需要点「重新学习」。': 'Atención: eliminar muestras no actualiza el resultado del aprendizaje automáticamente; hay que pulsar «Volver a aprender».',
-  'viewer|注意：删除样本不会自动更新学习结果，需要回到样本库点「重新学习」。': 'Atención: eliminar muestras no actualiza el resultado del aprendizaje automáticamente; vuelve a la biblioteca de muestras y pulsa «Volver a aprender».',
+  'viewer|注意：删除样本不会自动更新学习结果，需要回到样本库点「重新学习」。': 'Atención: eliminar muestras no actualiza el resultado del aprendizaje automáticamente; vuelve a la biblioteca de muestras y presiona «Volver a aprender».',
   'viewer|注意：已达上限 {max}，最旧的存档会被淘汰。': 'Atención: se alcanzó el límite {max}; los archivos más antiguos se descartarán.',
   'viewer|转为样本…': 'Convertir en muestra…',
   'viewer|状态': 'Estado',

@@ -16,6 +16,11 @@
 -- caller could 「关闭聊天室」 or 「全体禁言」 — the two switches §2.3.2/§2.3.3 promise only
 -- `admin-global-mute` (service role) can move.
 --
+-- ⚠ 1.0.6 三号 §二.2 — THAT FUNCTION IS NOW `admin-global-chat`, and 「全体禁言」 is no longer a
+-- switch of its own: the two keys were one answer written twice, and 022_chat_switch.sql deletes
+-- `global_mute`. This paragraph is left as the post-mortem it is — it is a record of what 1.0.3
+-- shipped and what could be done to it, so it names the slug that existed then.
+--
 -- 009 is already applied remotely, so the fix is also stated there (fresh installs get it inline)
 -- AND here as a migration. Both are idempotent; `enable row level security` on a table that already
 -- has it is a no-op.

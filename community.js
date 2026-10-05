@@ -198,6 +198,39 @@
       });
   }
 
+  /**
+   * 1.0.6 三号 §二.2 — §2.3.2's 「聊天室开关」, as a READER sees it.
+   *
+   * The read goes through PostgREST + RLS like every other read in this file, and that is not a
+   * shortcut: `global_settings_read_all` (011/012) is 「已登录可读」 precisely so that a client-side
+   * 「为什么输入框是灰的」 needs no endpoint, and going through the policy means 「谁看得见这个开关」
+   * has one answer. Nothing here WRITES — the single writer is `admin-global-chat` (service role).
+   *
+   * ⚠ THIS IS NOT THE GATE. `chat-send` reads the same key and answers `CHAT_DISABLED`; this
+   * function exists so the room can say why before the operator presses 发送. A caller that treated
+   * the answer as authoritative would be trusting a copy — the same mistake 1.0.3's §1.8.3 made
+   * when a client predicate stood in for a server one.
+   *
+   * Returns a Promise of `true` / `false`, or of `null` when the value could not be read (no
+   * session, offline, a 4xx) — `null` is 「不知道」 and NOT 「关着」, because a room that put up a
+   * 「已关闭」 banner on a failed request would be inventing a verdict the server never gave.
+   * A missing row reads as `true`, matching the default `chat-send` and `admin-global-chat` use.
+   */
+  function chatEnabled() {
+    if (!jwt()) return Promise.resolve(null);
+    return cloud().rest('global_settings', {
+      query: 'select=key,value&key=eq.chat_enabled', jwt: jwt(),
+    }).then(function (r) {
+      if (!r || !r.ok) return null;
+      var rows = Array.isArray(r.data) ? r.data : [];
+      var on = true;
+      for (var i = 0; i < rows.length; i++) {
+        if (rows[i] && rows[i].key === 'chat_enabled') on = rows[i].value !== false;
+      }
+      return on;
+    });
+  }
+
   // ---- the Realtime client -------------------------------------------------------------------
   // The four constants below are protocol choices, not §2.3.5 limits; the limits live in the shared
   // block (`_tools/gen-community-shared.cjs` mirrors them from the Edge Function).
@@ -798,6 +831,41 @@
         sampleCount: Number(d.sampleCount) || 0,
         presence: typeof d.status === 'string' ? d.status : 'offline',
       };
+    });
+  }
+
+  /**
+   * 1.0.6 §1.1.1's 主页 tag: a gomoku.com USERNAME → the 白身 account that uses it, or null.
+   *
+   * ⚠ `ilike` IS A PATTERN, SO THE ROW IS VERIFIED IN JS. PostgREST offers no escape for a `%` or
+   * `_` inside an `ilike` value, and a username may legitimately contain an underscore — so the
+   * filter narrows the read to one round trip and the comparison below is the answer. `limit=5`
+   * rather than `limit=1` for the same reason: a `_` that matched some other row first must not
+   * hide the real one.
+   *
+   * ⚠ A MISS IS NOT AN ERROR, AND MUST NOT BE REPORTED AS ONE. The two namespaces are independent —
+   * a gomoku.com player need not have an account here — so `{ ok: true, user: null }` is the
+   * ordinary answer, and 「没有绑定白身账号」 is what the caller says about it. `{ ok: false }` is
+   * reserved for a read that actually failed.
+   *
+   * Reads `user_directory` and not `users`, for `USER_PUBLIC_COLS`' reason: 018 revokes the
+   * `country_code` / `last_seen_at` column grants, so the same select against the table answers 401.
+   */
+  function memberByName(name) {
+    var who = String(name == null ? '' : name).trim();
+    if (!who) return Promise.resolve({ ok: false, error: 'BAD_REQUEST' });
+    if (!uid()) return Promise.resolve(noSession());
+    var q = 'select=' + USER_PUBLIC_COLS + '&username=ilike.' + encodeURIComponent(who) + '&limit=5';
+    return restRead(USER_DIRECTORY, q).then(function (r) {
+      if (!r || !r.ok) return { ok: false, status: r && r.status, error: (r && r.error) || 'INTERNAL' };
+      var want = who.toLowerCase();
+      var rows = Array.isArray(r.data) ? r.data : [];
+      for (var i = 0; i < rows.length; i++) {
+        if (String(rows[i].username || '').toLowerCase() === want) {
+          return { ok: true, status: r.status, user: rows[i] };
+        }
+      }
+      return { ok: true, status: r.status, user: null };
     });
   }
 
@@ -1702,6 +1770,10 @@
             // 1.0.6 §1.11. `subscribe`'s contract grew an `onChange` beside its `onRow` in the same
             // release — see that function for why the two are not one callback.
             recall: chatRecall,
+            // 1.0.6 三号 §二.2 — §2.3.2's single switch, read side. Deliberately NOT part of the
+            // `subscribe` contract: a room's socket carries messages, and the switch is not a
+            // message — it is read once on entry and re-learned from a refusal.
+            enabled: chatEnabled,
             TOPIC: CHAT_TOPIC, POLL_MS: RT_POLL_MS },
 
     // 1.0.4 §P1 — the fan-out half of the SAME socket. `chat` keeps its 1.0.2 shape on purpose
@@ -1722,7 +1794,9 @@
     feedback: { submit: feedbackSubmit, mine: feedbackMine },
 
     // ---- 1.0.3 §一/§二/§三 -------------------------------------------------------------------
-    members: { profile: memberProfile },
+    // `byName` is 1.0.6 §1.1.1's resolver: a gomoku.com username (the 主页 tag's payload) → the
+    // 白身 account that uses it, or null. A reader, not a socket verb — nothing subscribes to it.
+    members: { profile: memberProfile, byName: memberByName },
     friends: {
       list: friendsList,
       relation: friendRelation,

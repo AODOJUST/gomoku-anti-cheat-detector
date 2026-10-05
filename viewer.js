@@ -1586,14 +1586,22 @@
   // 0.4.6 §2.4: the labels go through `GMI18n.langLabel()` — 「English（英语）」, the endonym plus
   // what the current language calls it. The endonym-only list was fine at eight entries; at
   // thirteen it asks the operator to recognise 「Монгол」 and 「Bahasa Melayu」 unaided.
-  function fillLangSelect() {
-    var sel = $('setLang');
-    if (!sel) return;
-    var html = '<option value="auto">' + esc(T('set|跟随浏览器')) + '</option>';
+  /** The `<option>` list for a language picker. ONE builder for the two pickers that exist — the
+   *  settings dropdown and the admin news form (§2.1) — so the two can never disagree about the
+   *  label format. 0.4.6 §2.4's 「English（英语）」 comes from `langLabel`; a second hand-written list
+   *  would start as a copy of this one and drift at the next language. */
+  function langOptions(withAuto) {
+    var html = withAuto ? '<option value="auto">' + esc(T('set|跟随浏览器')) + '</option>' : '';
     GMI18n.LOCALES.forEach(function (code) {
       html += '<option value="' + code + '">' + esc(GMI18n.langLabel(code)) + '</option>';
     });
-    sel.innerHTML = html;
+    return html;
+  }
+
+  function fillLangSelect() {
+    var sel = $('setLang');
+    if (!sel) return;
+    sel.innerHTML = langOptions(true);
   }
 
   // ---- 0.3.7 §二.1: the thread dropdown ----
@@ -3665,6 +3673,24 @@
   var cmChatMsg = null;
   var cmFbBusy = false;
   var cmBooted = false;
+  /**
+   * 1.0.6 三号 §二.2 — §2.3.2's 「聊天室开关」 as the ROOM sees it.
+   *
+   * ⚠ THIS IS A COURTESY, NOT THE GATE — and the difference is worth stating because the whole
+   * point of §二.2 is that the room says WHY it is unwritable instead of letting a send fail:
+   *   · the gate is `chat-send`, which reads the same key and answers `CHAT_DISABLED`;
+   *   · this flag only decides whether the operator is told BEFORE they press 发送.
+   * So a stale `true` here costs one refused message, never a message that got through. That is
+   * also why it is refreshed on entry and NOT polled: a banner that appears a few seconds late is
+   * the acceptable failure, and a request per room per minute is not.
+   *
+   * `true` until a read says otherwise — the same 「未设 = 开着」 default `chat-send` and
+   * `admin-global-chat` use, so a deployment whose `global_settings` row is missing behaves the
+   * same on all three sides.
+   */
+  var cmChatOn = true;
+  var cmChatOnLoaded = false;
+  var cmChatOnBusy = false;
 
   // ---- 1.0.3 §一/§二/§三 -----------------------------------------------------------------------
   // Every one of these is `null` until its read lands, for the same reason `cmNews` is: `null` is
@@ -3951,19 +3977,67 @@
    *  text where the sentence put it. */
   var CM_LINK_TAIL = /[.,;:!?)\]}」』】》”’…]+$/;
 
-  /** One link, as one of §1.4.2's three shapes. */
+  // ---- 1.0.6 §1.1 — the three TAGGED routes ---------------------------------------------------
+  //
+  // §1.1.1 names three gomoku.com URL shapes that are drawn as a CHIP rather than a string: a
+  // player's 主页, a 观战, and a 私人房间. §1.1.3 writes the language segment as a required
+  // `(?:zh-cn|zh-tw|en|ja|ko)`; this file makes it OPTIONAL and accepts any token, because §1.1.1's
+  // own table spells it `{lang}` and a link copied out of a session in a sixth language must not
+  // silently degrade to plain text. Widening here cannot mis-tag anything: the kind is decided by
+  // the segment AFTER the language, and 「其他 gomoku 链接」 is the fallthrough.
+  //
+  // ⚠ ONE classifier, and `cmLinkHtml` is its only caller. A kind recognised in two places is how
+  // the same room ends up green in the bubble and chip-blue in a quote.
+  var CM_GOMOKU_KINDS = [
+    { kind: 'profile',  re: /\/profile\/([a-zA-Z0-9_.-]+)/ },
+    { kind: 'spectate', re: /\/(?:spectate|watch)\/([a-zA-Z0-9]+)/ },
+    { kind: 'room',     re: /\/room\/(\d+)/ },
+  ];
+
+  /** §1.1.1's classification of one gomoku.com URL: `{kind, arg}` — or null for 「其他链接」. */
+  function cmGomokuKind(url) {
+    var u = String(url == null ? '' : url);
+    for (var i = 0; i < CM_GOMOKU_KINDS.length; i++) {
+      var m = CM_GOMOKU_KINDS[i].re.exec(u);
+      if (m && m[1]) return { kind: CM_GOMOKU_KINDS[i].kind, arg: m[1] };
+    }
+    return null;
+  }
+
+  /** §1.1.2's chip. `url` ARRIVES ALREADY ESCAPED — the whole message went through `esc()` before
+   *  the link pass — and that is exactly the form an attribute value wants, so it is written out
+   *  verbatim: escaping it a second time would print `&amp;amp;` for every `&` a URL carries, and
+   *  `getAttribute` hands the RAW url back at click time. The label is translated, so it IS escaped.
+   *  `data-gomoku-arg` is the username / game id / room number the tag is about, kept beside the url
+   *  so the click handler never has to re-parse what this function already parsed. */
+  function cmGomokuTagHtml(kind, arg, url) {
+    var icon = kind === 'profile' ? '👤' : kind === 'spectate' ? '👁' : '🚪';
+    var text = kind === 'profile' ? T('community|@{name} 的主页', { name: arg })
+             : kind === 'spectate' ? T('community|观战 #{n}', { n: arg })
+             : T('community|加入房间 #{n}', { n: arg });
+    return '<span class="gomoku-tag gomoku-tag-' + kind + '" data-gomoku-kind="' + kind +
+      '" data-gomoku-arg="' + esc(String(arg)) + '" data-gomoku-url="' + url + '"' +
+      ' title="' + url + '">' +
+      '<span class="tag-icon">' + icon + '</span>' +
+      '<span class="tag-text">' + esc(text) + '</span></span>';
+  }
+
+  /** One link: §1.1's three tags, or one of §1.4.2's shapes.
+   *
+   *  ⚠ `/room/<id>` USED TO BE DRAWN AS §1.4.2's 「加入房间 #N」 CHIP AND NOW COMES BACK AS A TAG.
+   *  That is §1.1.1's table, which lists 私人房间 among the three — same words, same destination,
+   *  one added icon and one colour that says 「这是房间」. `/game/<id>`'s 「查看对局」 is NOT one of
+   *  §1.1's three and keeps 1.0.6 一号 §1.4's chip, and every other gomoku.com URL stays a plain
+   *  anchor (§1.1.1's 「其他 gomoku 链接」). */
   function cmLinkHtml(url) {
-    var room = /\/room\/(\d+)/.exec(url);
-    var game = room ? null : /\/game\/([a-zA-Z0-9]+)/.exec(url);
-    // §1.4.2's two NAMED links read as buttons; §1.4.2's third is shown as itself.
-    // ⚠ The third branch is NOT escaped here: the whole message went through `esc()` before the
-    // link pass, so this URL is already escaped, and escaping it a second time would print
-    // `&amp;amp;` for every `&` a room id ever carries. The first two branches translate from the
-    // dictionary, so those DO need it.
-    var label = room ? esc(T('community|加入房间 #{n}', { n: room[1] }))
-              : game ? esc(T('community|查看对局'))
-              : url;
-    return '<a class="cm-link' + (room || game ? ' btn' : '') + '" href="' + url +
+    var g = cmGomokuKind(url);
+    if (g) return cmGomokuTagHtml(g.kind, g.arg, url);
+    var game = /\/game\/([a-zA-Z0-9]+)/.exec(url);
+    // ⚠ The untranslated branch is NOT escaped here: the message went through `esc()` before the
+    // link pass, so `url` is already escaped and escaping it again would double every `&`. The
+    // translated branch comes from the dictionary, so that one DOES need it.
+    var label = game ? esc(T('community|查看对局')) : url;
+    return '<a class="cm-link' + (game ? ' btn' : '') + '" href="' + url +
       '" target="_blank" rel="noopener noreferrer">' + label + '</a>';
   }
 
@@ -4192,6 +4266,53 @@
     }
   }
 
+  // ---- 1.0.6 §1.2 — the room's LOCAL CACHE ------------------------------------------------------
+  //
+  // ⚠⚠ WHY THIS LIVES IN THE VIEWER AND NOT IN `community.js`. `community.js` is copied VERBATIM into
+  // `web/lib/` by `web/tools/sync-lib.cjs`, and the web end already has a view-layer cache of its own
+  // (`web/app/cache.js`, `window.GMCache`, localStorage). Putting a second one inside the shared
+  // transport would give the same room two caches on one page — the 「一份实现只服务一半入口」 shape.
+  // The viewer is extension-only, and it is also the only layer that knows when the room was
+  // ENTERED, which is when §1.2.6 says to prune.
+  //
+  // ⚠ EVERY CALL IS DEFENSIVE AND EVERY FAILURE IS SILENT. `chat-cache.js` may not be loaded at all
+  // (the behaviour suites serve the page with their own script list), IndexedDB may be unavailable,
+  // the quota may be full — none of those is a reason for the room not to draw. A cache that is not
+  // there must cost nothing.
+
+  function cmCache() {
+    try { return (typeof GMChatCache !== 'undefined' && GMChatCache) || null; } catch (e) { return null; }
+  }
+
+  /** §1.2.5 — one row that ARRIVED. ⚠ THE WITHDRAWN-MEANS-DELETED RULE IS NOT HERE: it is `put()`'s,
+   *  in `chat-cache.js`, so that the four arrival paths (the page, the socket's INSERT, the socket's
+   *  UPDATE, our own send) cannot each decide it for themselves. */
+  function cmCacheWrite(row) {
+    var C = cmCache();
+    if (!C) return;
+    try { C.put(row); } catch (e) { /* a cache that cannot write is a cache that is not there */ }
+  }
+
+  /** §1.2.7.1 — 「首次进入聊天室立即显示本地缓存」. Called on ENTRY only, never on a repaint: a
+   *  language switch must not re-read a hundred rows off disk and re-sort them. */
+  function cmCachePaint() {
+    var C = cmCache();
+    if (!C) return;
+    // §1.2.6 — 「每次进入聊天室时检查，删除过期项」. Issued and not awaited: the point of this
+    // function is that the room is on screen before the disk has answered, and a prune is
+    // bookkeeping, not part of the paint.
+    try { C.prune(); } catch (e) { /* as above */ }
+    C.rows(C.PAINT_ROWS).then(function (rows) {
+      if (!rows || !rows.length) return;
+      // `skipCache` — these rows CAME from the cache; writing them straight back is 100 writes on
+      // every entry, which is the one thing this layer exists to avoid.
+      rows.forEach(function (row) { cmPush(row, true); });
+      // §1.2.1's 「进入聊天室时自动滚动到底部」 applies to this paint as well: the reader arriving
+      // at the room expects the newest line, whichever half of the load put it there.
+      cmScrollBottom(false);
+    }, function () { /* no cache, nothing to paint */ });
+  }
+
   /**
    * One row in, from wherever it came.
    *
@@ -4215,9 +4336,17 @@
    * (The comparison is a stringify, and it is allowed to be conservative in one direction only: two
    * rows that stringify alike are equal, which is all a skip needs. Key ORDER can differ between the
    * socket's record and PostgREST's projection, and that only costs a repaint.)
+   *
+   * ⚠ 1.0.6 §1.2 — THE LOCAL WRITE IS ISSUED BEFORE THE PAINT (`skipCache` marks the one caller that
+   * must not make it: `cmCachePaint`, which is holding rows it just read). §1.2.3's 「先写本地缓存，
+   * 再渲染」 is honoured as an ORDER OF ISSUE, not as an `await`: awaiting would put an IndexedDB
+   * round trip in front of every message, and the first page arrives row-by-row synchronously. What
+   * the order buys is that a recall delivered immediately after an insert cannot find the row
+   * missing from the store.
    */
-  function cmPush(row) {
+  function cmPush(row, skipCache) {
     if (!row || typeof row.id !== 'string') return;
+    if (!skipCache) cmCacheWrite(row);
     var at = cmIndexOf(row.id);
     if (at >= 0) {
       var was = cmRows[at];
@@ -4271,8 +4400,16 @@
    */
   function cmRowChanged(row) {
     if (!row || typeof row.id !== 'string') return;
+    // ⚠⚠ 1.0.6 §1.2.5 — THE LOCAL WRITE COMES BEFORE THE 「is it on screen」 TEST, and the order is
+    // the feature. This callback is how a recall reaches us (and how the polling fallback's page
+    // sweep does), and §1.2.5 says a withdrawn message is DELETED locally. A row the reader happens
+    // to be scrolled away from — or that the loaded page never contained — still has to leave the
+    // store: 「撤回」 that keeps the text on this device is not a withdrawal. `put(row)` decides
+    // delete-vs-keep, so nothing here has to know which case this is.
+    cmCacheWrite(row);
     if (cmIndexOf(row.id) < 0) return;
-    cmPush(row);
+    // `skipCache` — already written above; a second write would be the same row twice.
+    cmPush(row, true);
   }
 
   // ---- 1.0.4 §P1 — 「加载更多」 (the older half of the room) -------------------------------------
@@ -4318,6 +4455,10 @@
         if (!row || typeof row.id !== 'string' || cmSeen[row.id]) return;
         cmSeen[row.id] = true;
         cmRows.push(row);
+        // 1.0.6 §1.2 — 「加载更多」 is a page of the room like any other, so it goes into the local
+        // store too: otherwise the cache would only ever hold the newest 50 rows, and the reader
+        // who always scrolls back would keep asking the server for the half that was already here.
+        cmCacheWrite(row);
       });
       cmRows.sort(function (a, b) {
         var x = String(a.created_at || ''), y = String(b.created_at || '');
@@ -4418,6 +4559,11 @@
         cmChatMsg = (r && r.error === 'RATE_LIMITED')
           ? { code: 'rateChat', n: S.CHAT_RATE_MAX, tone: 'err' }
           : { code: 'sendFailed', err: (r && r.error) || 'INTERNAL', tone: 'err' };
+        // 1.0.6 三号 §二.2 — 「房间关了」 IS the answer, not a failed send: the refusal carries the
+        // fact the banner exists to show, so it is installed here instead of being asked for again.
+        // This is the path that closes the entry-time read's one gap — an admin flipping the switch
+        // while the reader is already sitting in the room — and it costs no request.
+        if (r && r.error === 'CHAT_DISABLED') cmChatFlagSet(false);
         cmPaintChatMsg();
         return;
       }
@@ -5123,6 +5269,12 @@
       return;
     }
 
+    // 1.0.6 §1.1.4 — a gomoku.com link TAG. Checked before the message row's own hooks because the
+    // tag is INSIDE `.cm-bub`, and the tag is the more specific claim: an operator who pressed
+    // 「👤 @alice 的主页」 meant that chip, not the message it sits in.
+    var gt = t.closest('[data-gomoku-kind]');
+    if (gt) { cmGomokuTagOpen(gt); return; }
+
     var go = t.closest('[data-cm-goto]');
     if (go) { cmJumpToMessage(go.getAttribute('data-cm-goto')); return; }
   }
@@ -5307,7 +5459,12 @@
     if (!cloudId) return Promise.resolve();
     cmCloudBusy = true;
     cmNote({ code: 'loading' });
-    return GMCommunity.shares.fetchCloud(cloudId).then(function (r) {
+    // ⚠ 1.0.6 §1.2.4 — THROUGH `cmDoorFetch`, WHICH IS ITS DOCUMENTED MEANING. This call used to go
+    // straight to `GMCommunity.shares.fetchCloud`, i.e. the function whose own header says it is
+    // 「the only place that turns one into a request」 was not the only place. Routing it back through
+    // the door is what gives the ROOM's 「打开」 §1.2.4's cache at all — and it must: this button, not
+    // the import path, is what a reader presses to look at the same replay a second time.
+    return cmDoorFetch('cloud', cloudId).then(function (r) {
       cmCloudBusy = false;
       if (!r || !r.ok) {
         cmCloud = null;
@@ -5335,8 +5492,50 @@
    * local write still happens first in both cases: a failed import must leave the share takeable.
    */
   function cmDoorFetch(door, id) {
-    return door === 'friend' ? GMCommunity.shares.fetch(id)
-                             : GMCommunity.shares.fetchCloud(id);
+    return cmShareFromCache(door, id).then(function (rec) {
+      if (rec) {
+        // ⚠ A CACHE HIT ANSWERS IN `resolveSharePayload`'s EXACT SHAPE. A shape that differed by one
+        // field would make the preview draw differently depending on whether the body came off the
+        // disk or the wire — a difference nobody can reproduce, because it depends on what this
+        // device happened to have opened recently.
+        return { ok: true, status: 200, payload: rec.payload, kind: rec.kind || null,
+                 stored: false, url: null, cached: true };
+      }
+      return door === 'friend' ? GMCommunity.shares.fetch(id)
+                               : GMCommunity.shares.fetchCloud(id);
+    }).then(function (r) {
+      // ⚠ WRITTEN ON SUCCESS ONLY. A failed fetch has no payload to write, and a NOT_FOUND written
+      // as an empty entry would be a share that stays 「opened」 on this device forever.
+      if (r && r.ok && r.payload !== undefined) cmShareToCache(door, id, r);
+      return r;
+    });
+  }
+
+  /** §1.2.4's cache key. The door is part of it for `cmDoorFetch`'s reason: `friend_shares.id` and
+   *  `cloud_shares.id` are different uuid spaces, and one flat keyspace would let the two doors
+   *  answer for each other. */
+  function cmShareKey(door, id) { return String(door) + ':' + String(id); }
+
+  function cmShareFromCache(door, id) {
+    var C = cmCache();
+    if (!C) return Promise.resolve(null);
+    try {
+      return C.file(cmShareKey(door, id)).then(function (rec) { return rec || null; },
+        function () { return null; });
+    } catch (e) { return Promise.resolve(null); }
+  }
+
+  function cmShareToCache(door, id, r) {
+    var C = cmCache();
+    if (!C) return;
+    // ⚠ THE WINDOW DEPENDS ON THE DOOR, AND THAT IS §1.2.4's OWN TABLE. A friend's share
+    // (`friend_shares`) lives 15 minutes — §1.2.4 「15 分钟过期」; a ROOM attachment (`cloud_shares`)
+    // lives as long as the message that carries it, i.e. the room's seven days (008: 「保留时间与
+    // 普通消息一致」). Both windows are READ FROM THE SHARED BLOCK — `chat-cache.js` refuses to
+    // hard-code either, and picking one here would be exactly the second copy it is guarding against.
+    var ttl = door === 'friend' ? C.shareTtlMs() : C.retentionMs();
+    var base = r.created_at || null;
+    try { C.saveFile(cmShareKey(door, id), r.kind, r.payload, ttl, base); } catch (e) { /* silent */ }
   }
 
   /**
@@ -5653,6 +5852,10 @@
     cmBoot();
     cmPaintAll();
     if (repaint) return;
+    // 1.0.6 三号 §二.2 — §2.3.2's switch, read on ENTRY and not on repaint: `repaint` means the
+    // operator changed the language, and re-asking the server for a flag nothing in the wording
+    // depends on would put a request behind every language switch.
+    cmLoadChatFlag();
     // ---- 1.0.6 §1.2.1 — 「进入聊天室时自动滚动到底部」 ------------------------------------------
     // HERE, and not inside `cmPaintChat`, because this is the function that knows the difference
     // between ENTERING the room and merely repainting it (`was === 'community'` at the call site):
@@ -5660,6 +5863,13 @@
     // oldest line of a full page. Both panes and view are already `active` by now — `showView`
     // flips the class before it calls this — so the log has a real height to scroll to.
     cmScrollBottom(false);
+    // ---- 1.0.6 §1.2 — THE CACHE FIRST, THE NETWORK SECOND --------------------------------------
+    // §1.2.7.1's 「首次进入聊天室立即显示本地缓存」. It is fire-and-forget on purpose: the request
+    // below must not wait for a disk read, and `cmPush`'s upsert makes the two halves order-free —
+    // whichever arrives first, the other one merges into it rather than replacing it. Called HERE and
+    // not on a repaint (this function's `if (repaint) return;` above), because §1.2.6's prune is an
+    // entry cost, not a redraw cost.
+    cmCachePaint();
     // ⚠ THE RESULT IS GUARDED, not assumed: `chat.subscribe` answers with a promise in every real
     // path, but this call is also the seam every behaviour suite stubs, and a stub that returns
     // nothing would turn a missing page length into a thrown TypeError on view entry.
@@ -6470,6 +6680,91 @@
     });
   }
 
+  // ---- 1.0.6 §1.1.4 — what a gomoku.com link TAG does when pressed -----------------------------
+
+  /**
+   * §1.1.4's 「操作者是否已登录 gomoku.com」.
+   *
+   * ⚠⚠ THIS VIEWER CANNOT KNOW, AND MUST NOT PRETEND TO. The site's session lives in an HttpOnly
+   * cookie; the extension holds no `cookies` permission (adding one on an update disables the
+   * extension until the store re-approves it, which is a real price for a hint), and nothing here
+   * has a route to the answer. What CAN answer is a gomoku.com TAB — `content.js` is already running
+   * in it and can read the page. So the question is asked there, once, on the click that needs it.
+   *
+   * THREE ANSWERS, AND `null` IS NOT A FAILURE:
+   *   'in'  — at least one tab reports a session;
+   *   'out' — at least one tab reports a sign-in form and none reports a session;
+   *   null  — no gomoku.com tab is open, or none of them has an opinion. The caller then simply
+   *           opens the link: gomoku.com routes an unauthenticated visitor to its own sign-in page,
+   *           which is the outcome §1.1.4's hint exists to produce.
+   *
+   * ⚠ 'in' WINS OVER 'out' WHEN TABS DISAGREE. A login page open in a second tab beside a signed-in
+   * one is an ordinary state, and answering 「请先登录」 to someone who is logged in is a false
+   * refusal — the worse of the two possible mistakes.
+   */
+  function cmGomokuSession() {
+    return new Promise(function (resolve) {
+      var done = false;
+      var finish = function (v) { if (!done) { done = true; resolve(v); } };
+      try {
+        chrome.tabs.query({ url: ['https://gomoku.com/*', 'https://www.gomoku.com/*'] },
+          function (tabs) {
+            void chrome.runtime.lastError;
+            var ids = [];
+            (tabs || []).forEach(function (t) { if (t && t.id != null) ids.push(t.id); });
+            if (!ids.length) { finish(null); return; }
+            var left = ids.length;
+            var seen = [];
+            ids.forEach(function (id) {
+              var answer = function (state) {
+                if (state === 'in' || state === 'out') seen.push(state);
+                if (--left > 0) return;
+                finish(seen.indexOf('in') >= 0 ? 'in' : (seen.indexOf('out') >= 0 ? 'out' : null));
+              };
+              try {
+                chrome.tabs.sendMessage(id, { type: 'gm-gomoku-login' }, function (r) {
+                  void chrome.runtime.lastError;
+                  answer(r && r.state);
+                });
+              } catch (e) { answer(null); }
+            });
+          });
+      } catch (e) { finish(null); }
+    });
+  }
+
+  /** §1.1.4's click on one tag. The two 「去别处」 kinds are opened in a new tab and gated on the
+   *  session; 主页 is the viewer's own 他人主页 and needs no gomoku.com session at all. */
+  function cmGomokuTagOpen(el) {
+    var kind = el.getAttribute('data-gomoku-kind');
+    var url = el.getAttribute('data-gomoku-url') || '';
+    if (!url) return;
+    if (kind === 'profile') { cmGomokuOpenProfile(el.getAttribute('data-gomoku-arg'), url); return; }
+    cmGomokuSession().then(function (state) {
+      if (state === 'out') { alert(T('community|请先在 gomoku.com 登录')); return; }
+      try { chrome.tabs.create({ url: url, active: true }); } catch (e) { /* no tab API — nothing to do */ }
+    });
+  }
+
+  /**
+   * §1.1.4's 「主页标签 → 在查看器内打开他人主页」.
+   *
+   * ⚠ THE TWO NAMESPACES ARE INDEPENDENT. The tag carries a gomoku.com USERNAME; §1.3's 他人主页 is
+   * keyed by a 白身 account id, so the name has to be resolved (`members.byName`) and MAY NOT
+   * resolve — a gomoku.com player need not have an account here. When it does not, the honest
+   * answer is 「没有绑定」 plus the gomoku page itself: opening the 他人主页 on an id we do not have
+   * would draw 「没有这个用户」, which blames the reader's search for what is a fact about the player.
+   */
+  function cmGomokuOpenProfile(name, url) {
+    var who = String(name == null ? '' : name).trim();
+    if (!who) return;
+    GMCommunity.members.byName(who).then(function (r) {
+      if (r && r.ok && r.user && r.user.id) { cmOpenUser(r.user.id); return; }
+      alert(T('community|「{name}」没有绑定白身账号，已在新标签页打开 gomoku 主页。', { name: who }));
+      try { chrome.tabs.create({ url: url, active: true }); } catch (e) { /* same as above */ }
+    });
+  }
+
   function cmPaintUser() {
     var box = $('cmUserCard');
     var head = $('cmUserName');
@@ -6875,6 +7170,11 @@
         cmShareMsg = (to === 'room' && r && r.error === 'RATE_LIMITED')
           ? { code: 'rateChat', n: sh.CHAT_RATE_MAX, tone: 'err' }
           : { code: 'shareFailed', err: (r && r.error) || 'INTERNAL', tone: 'err' };
+        // 1.0.6 三号 §二.2 — an attachment to the ROOM is a message, so a closed room refuses it
+        // with the same code and the same consequence: the banner goes up. (A friend share cannot
+        // produce CHAT_DISABLED — §2.3.2 says the switch silences the room and nothing else — but
+        // the code is installed on the code rather than on `to` for the same reason `cmSend` does.)
+        if (r && r.error === 'CHAT_DISABLED') cmChatFlagSet(false);
         cmPaintShare();
         return;
       }
@@ -6921,7 +7221,9 @@
     if (!id) return Promise.resolve();
     cmCloudBusy = true;
     cmNote({ code: 'loading' });
-    return GMCommunity.shares.fetch(id).then(function (r) {
+    // Same door as `cmOpenCloud`'s, same reason (1.0.6 §1.2.4): §1.2.4's 15-minute window IS this
+    // door's window, so this is the call the cache was specified for in the first place.
+    return cmDoorFetch('friend', id).then(function (r) {
       cmCloudBusy = false;
       if (!r || !r.ok) {
         cmCloud = null;
@@ -7197,32 +7499,84 @@
    *  ⚠ A `MUTED` account is a DIFFERENT state and is deliberately NOT painted here: the client
    *  cannot know it (`muted_until` is on its own row, not on anybody else's) and the refusal is the
    *  server's, which has the `cloudErrText` branch for it. Painting a lock the server did not ask
-   *  for would be the client inventing a verdict. */
+   *  for would be the client inventing a verdict.
+   *
+   *  ⚠⚠ 1.0.6 三号 §二.2 ADDS A SECOND REASON FOR THE SAME DISABLED INPUT, AND THEREFORE A SECOND
+   *  BANNER. 「未激活」 and 「管理员关闭了聊天室」 are different facts with different fixes, so one
+   *  element cannot carry both — with the gate's element reused, a closed room would tell an
+   *  unactivated reader to go and get activated, which is not the problem. Both are painted HERE
+   *  because 「是不是可写」 is one question: two functions deciding it is how the input ends up
+   *  enabled by one and the send button disabled by the other.
+   *
+   *  ⚠ `cmChatOn` is the LAST READ of §二.2's flag — see its declaration for why a courtesy copy is
+   *  allowed to exist at all (the server holds the real gate). */
   function cmPaintGate() {
     var gate = $('cmChatGate');
+    var closed = $('cmChatClosed');
     var input = $('cmChatInput');
     var send = $('cmChatSend');
     var att = $('cmChatAttach');
     var fb = $('cmFbSend');
+    // Two questions, two names, and `open` keeps the name it had: 「这个账号能不能写」(§1.8.3) and
+    // 「这个房间现在收不收」(§二.2) are different facts, so the conjunction needs its own variable
+    // rather than one of them being overwritten by the other.
     var open = true;
     try { open = !cmReadOnly(); } catch (e) { open = true; }
+    var canWrite = open && cmChatOn;
     if (gate) {
       if (open) { gate.classList.add('hidden'); gate.textContent = ''; }
       else { gate.textContent = T('viewer|激活后参与讨论'); gate.classList.remove('hidden'); }
     }
-    if (input) input.disabled = !open;
-    if (send) send.disabled = !open;
-    if (att) att.disabled = !open;
+    if (closed) {
+      if (cmChatOn) { closed.classList.add('hidden'); closed.textContent = ''; }
+      else { closed.textContent = T('viewer|聊天室已关闭，仅可查看历史消息'); closed.classList.remove('hidden'); }
+    }
+    if (input) input.disabled = !canWrite;
+    if (send) send.disabled = !canWrite;
+    if (att) att.disabled = !canWrite;
     // §1.8's emoji button is a WRITE surface like 文件 and 发送 (§1.8's matrix is nine rows that must
     // all answer the same), so it is disabled with them. It also closes any panel already open: a
     // picker whose faces would silently do nothing is the 「looks live and answers nothing」 shape
     // §1.8.3 exists to prevent.
     var emo = $('cmChatEmoji');
-    if (emo) emo.disabled = !open;
-    if (!open) cmEmojiClose();
+    if (emo) emo.disabled = !canWrite;
+    if (!canWrite) cmEmojiClose();
     // §1.8.3's third bullet. The form itself stays editable — an unactivated operator may compose
     // and be told what is missing — but the button that writes is inert.
-    if (fb) fb.disabled = !open;
+    if (fb) fb.disabled = !canWrite;
+  }
+
+  /**
+   * 1.0.6 三号 §二.2 — install a KNOWN value for the room's switch and repaint. Used by the two
+   * callers that learn it without a read of their own: the admin panel, whose save already returned
+   * the stored value, and `cmSend`, whose `CHAT_DISABLED` refusal IS the answer.
+   *
+   * ⚠ A non-boolean is ignored rather than coerced. `undefined` here would mean 「the read said
+   * nothing」, and painting that as 「已关闭」 would put a banner in front of every reader on a
+   * deployment whose flag could not be fetched — a client inventing a verdict, which is the one
+   * thing this file's other gates refuse to do.
+   */
+  function cmChatFlagSet(on) {
+    if (typeof on !== 'boolean') return;
+    cmChatOn = on;
+    cmChatOnLoaded = true;
+    cmPaintGate();
+  }
+
+  /** §二.2's one read, on entering the room. Resolves to the flag, or `null` when it could not be
+   *  read (no session, offline, a 401) — in which case the last known value stays on screen, which
+   *  is the honest default rather than a banner nobody can justify. */
+  function cmLoadChatFlag() {
+    var c = GMCommunity.chat;
+    if (cmChatOnBusy || !c || typeof c.enabled !== 'function') return Promise.resolve(null);
+    cmChatOnBusy = true;
+    var p;
+    try { p = c.enabled(); } catch (e) { cmChatOnBusy = false; return Promise.resolve(null); }
+    return Promise.resolve(p).then(function (on) {
+      cmChatOnBusy = false;
+      cmChatFlagSet(on);
+      return typeof on === 'boolean' ? on : null;
+    }, function () { cmChatOnBusy = false; return null; });
   }
 
 
@@ -8209,7 +8563,16 @@
   var ADR = { status: '', rows: [] };    // §2.2 举报
   var ADF = { rows: [] };                // §2.5 反馈
   var ADN = { rows: [] };                // §2.4 新闻
-  var ADG = { chat: true, mute: false, loaded: false };   // §2.3.3 全局开关
+  // 1.0.6 三号 §2.3 — 激活码列表. `sel` is a SET (code -> true; absent = not selected) rather than
+  // a per-row flag, because the selection has to survive the three things that rebuild the rows:
+  // a filter change, a page change, and the reload after a revoke. `全选本页` and `反选本页` act on
+  // `rows` (what is on screen) while `批量撤销` acts on `sel` — which is why the count beside them
+  // is printed from `sel` and not derived from the checkboxes: 「已选 N 个」 must tell the truth even
+  // when the selected rows are on another page.
+  var ADK = { status: 'all', page: 1, limit: 50, total: 0, rows: [], loaded: false, sel: {}, busy: false };
+  // 1.0.6 三号 §二.2 — §2.3.3's switch, now ONE key (`chat_enabled`); the old pair carried a `mute`
+  // field, which is why this line changed shape and not just name.
+  var ADG = { chat: true, loaded: false };
   var ADS = { row: null };               // the account the lower panel points at
 
   /** `el.textContent = text`, tolerantly. Every label in this section is `—` in the markup and
@@ -8252,11 +8615,13 @@
     adSay('adNewsReload', T('viewer|刷新'));
     adSay('adGlobalTitle', T('viewer|聊天室开关'));
     adSay('adChatEnabledLab', T('viewer|允许发言'));
-    adSay('adGlobalMuteLab', T('viewer|全体禁言'));
+    // 1.0.6 三号 §二.2 — the off-state is spelled out BESIDE the single checkbox instead of as a
+    // second checkbox. 「全体禁言」 stopped being a control and became what this line says the
+    // unchecked state MEANS.
+    adSay('adChatEnabledNote', T('viewer|关闭后全体禁言：所有已激活用户只能查看历史消息，输入框不可用。'));
     adSay('adGlobalSave', T('viewer|保存'));
-    adSay('adCodeTitle', T('viewer|撤销激活码'));
-    adSay('adCodeHint', T('viewer|每行一个激活码；也可以一次撤销所有未使用的码。'));
-    adSay('adRevokeGo', T('viewer|撤销这些'));
+    adSay('adCodeTitle', T('viewer|激活码管理'));
+    adSay('adCodeHint', T('viewer|每行可单独撤销；「撤销全部未使用」只处理从未被使用的码。'));
     adSay('adRevokeAll', T('viewer|撤销全部未使用'));
     adSay('adUserTitle', T('viewer|用户详情与操作'));
     adSay('adUserLab', T('viewer|用户 ID'));
@@ -8310,7 +8675,14 @@
       if (keepC) cat.value = keepC;
     }
     var lang = $('adNewsLang');
-    if (lang && !lang.value) lang.value = S.NEWS_DEFAULT_LANG || 'zh-CN';
+    if (lang) {
+      // §2.1 — same options as `#setLang` (minus 「跟随浏览器」: a news row is written in ONE
+      // named language, so "auto" is not a thing it can be). Keep the operator's current pick when
+      // the panel is repainted, else fall back to the server's default.
+      var keepL = lang.value || '';
+      lang.innerHTML = langOptions(false);
+      lang.value = (keepL && GMI18n.LOCALES.indexOf(keepL) >= 0) ? keepL : (S.NEWS_DEFAULT_LANG || 'zh-CN');
+    }
   }
 
   function wireAdmin() {
@@ -8337,8 +8709,46 @@
     if ($('adNewsGo') && !$('adNewsGo').onclick) $('adNewsGo').onclick = adminPublishNews;
     if ($('adNewsReload') && !$('adNewsReload').onclick) $('adNewsReload').onclick = adminLoadNews;
     if ($('adGlobalSave') && !$('adGlobalSave').onclick) $('adGlobalSave').onclick = adminSaveGlobal;
-    if ($('adRevokeGo') && !$('adRevokeGo').onclick) $('adRevokeGo').onclick = function () { adminRevoke(false); };
-    if ($('adRevokeAll') && !$('adRevokeAll').onclick) $('adRevokeAll').onclick = function () { adminRevoke(true); };
+    // ---- 1.0.6 三号 §2.3 — the code list's controls ------------------------------------------
+    // ⚠ `adRevokeAll` KEEPS ITS OLD ID AND ITS OLD MEANING (`{all: true}`), it just moved into the
+    // batch row: it is the only way to sweep a backlog larger than one page, and it is NOT 批量撤销
+    // — that one acts on the selection. `adminRevoke('all')` vs `adminRevoke(codes)` is one call
+    // with two arguments, so the count after either comes from one sentence.
+    if ($('adRevokeAll') && !$('adRevokeAll').onclick) $('adRevokeAll').onclick = function () { adminRevoke('all'); };
+    if ($('adCodeAll') && !$('adCodeAll').onclick) $('adCodeAll').onclick = function () { adminSelectCodes('all'); };
+    if ($('adCodeInvert') && !$('adCodeInvert').onclick) $('adCodeInvert').onclick = function () { adminSelectCodes('invert'); };
+    if ($('adCodeNone') && !$('adCodeNone').onclick) $('adCodeNone').onclick = function () { adminSelectCodes('none'); };
+    if ($('adCodeRevoke') && !$('adCodeRevoke').onclick) $('adCodeRevoke').onclick = function () {
+      adminRevoke(adCodeSelCodes());
+    };
+    if ($('adCodeCopy') && !$('adCodeCopy').onclick) $('adCodeCopy').onclick = function () {
+      var btn = $('adCodeCopy');
+      adCopyText(adCodeSelCodes().join('\n')).then(function (ok) {
+        if (!btn) return;
+        // The button says what happened, then goes back to its own name: a button that stays
+        // 「已复制」 is a button the operator has to reset before they can use it again.
+        btn.textContent = ok ? T('viewer|已复制') : T('viewer|复制失败');
+        setTimeout(function () { btn.textContent = T('viewer|批量复制'); }, 1200);
+      });
+    };
+    if ($('adCodePrev') && !$('adCodePrev').onclick) $('adCodePrev').onclick = function () {
+      if (ADK.page > 1) adminLoadCodes(ADK.page - 1);
+    };
+    if ($('adCodeNext') && !$('adCodeNext').onclick) $('adCodeNext').onclick = function () {
+      if (ADK.page * ADK.limit < ADK.total) adminLoadCodes(ADK.page + 1);
+    };
+    // The four pills are one listener, because they are one control with four values — the same
+    // shape `[data-cmcat]` uses in the news panel.
+    Array.prototype.forEach.call(document.querySelectorAll('[data-adc-flt]'), function (b) {
+      if (b.onclick) return;
+      b.onclick = function () {
+        ADK.status = b.getAttribute('data-adc-flt') || 'all';
+        // A filter change goes back to page 1: staying on page 3 of a list that now has one page
+        // paints an empty panel that looks like 「这个状态一个码都没有」.
+        adminLoadCodes(1);
+      };
+    });
+    wireCodeRows();
     if ($('adUserLoad') && !$('adUserLoad').onclick) $('adUserLoad').onclick = function () {
       adminPickUser(($('adUserId') || {}).value || '');
     };
@@ -8400,6 +8810,12 @@
     // The switches are cached because they are two booleans that change rarely, and re-reading them
     // on every entry would overwrite a checkbox the operator had just flipped but not saved.
     if (!ADG.loaded) adminLoadGlobal();
+    // §2.3's list is cached for the same reason as the user list, with one addition: the SELECTION
+    // lives beside it, and reloading on every entry would silently drop it — an operator who
+    // filtered, ticked six codes, glanced at 举报 and came back would find the batch button greyed
+    // out with no explanation. `adminRevoke` is what reloads it, because that is the press that
+    // changes the rows.
+    if (!ADK.loaded) adminLoadCodes(1);
   }
 
   // ---------------------------------------------------------------------------------------------
@@ -8561,7 +8977,6 @@
     return GMAdmin.readGlobal().then(function (r) {
       if (!r || !r.ok) { adState('adGlobalState', cloudErrText((r && r.error) || 'INTERNAL'), true); return; }
       ADG.chat = r.chatEnabled;
-      ADG.mute = r.globalMute;
       ADG.loaded = true;
       adminPaintGlobal();
     });
@@ -8569,40 +8984,256 @@
 
   function adminPaintGlobal() {
     if ($('adChatEnabled')) $('adChatEnabled').checked = !!ADG.chat;
-    if ($('adGlobalMute')) $('adGlobalMute').checked = !!ADG.mute;
   }
 
+  /**
+   * 1.0.6 三号 §二.2 — save the ONE switch, behind §二.2's confirmation.
+   *
+   * 「关闭时弹出确认：『关闭后所有用户将无法发言，确定吗？』」 — the confirm is on the CLOSING
+   * direction only. Turning the room back on cannot surprise anyone (it restores the default state),
+   * and a dialog on both directions is the kind that gets clicked through, which would leave the
+   * one that matters unread.
+   *
+   * ⚠ The early return is a real decision, not a guard: an operator who declines must leave the
+   * panel exactly as it was — no request, no state write — so the checkbox still shows what is
+   * stored. Clearing it first and asking afterwards is the shape that leaves the panel disagreeing
+   * with the database when the answer is 「不」.
+   */
   async function adminSaveGlobal() {
     var chat = !!($('adChatEnabled') || {}).checked;
-    var mute = !!($('adGlobalMute') || {}).checked;
+    if (!chat && ADG.chat) {
+      if (!confirm(T('viewer|关闭后所有用户将无法发言，确定吗？'))) { adminPaintGlobal(); return; }
+    }
     adState('adGlobalState', T('viewer|正在保存…'), false);
-    var res = await GMAdmin.setGlobalMute(chat, mute);
+    var res = await GMAdmin.setGlobalChat(chat);
     if (!res.ok) { adState('adGlobalState', cloudErrText(res.error), true); return; }
-    // ⚠ Paint from the RESPONSE, never from the checkbox: the Function reads both keys back from
-    // the database, and a partial patch must not leave the untouched switch showing what the
-    // operator clicked rather than what is stored.
+    // ⚠ Paint from the RESPONSE, never from the checkbox: the Function reads the key back from the
+    // database, and the panel must show what is STORED rather than what was clicked.
     ADG.chat = res.chatEnabled;
-    ADG.mute = res.globalMute;
+    ADG.loaded = true;
     adminPaintGlobal();
     adState('adGlobalState', T('viewer|已保存'), false);
+    // The admin is also a reader of the room: without this the banner and the disabled input box
+    // would lag behind the switch the operator just moved, until the next page load. It refreshes
+    // ONE cached flag and repaints — no request of its own, because the write above already told
+    // the cache the new value.
+    cmChatFlagSet(res.chatEnabled);
   }
 
-  /** §0 #11's 「泄露了」 button. `all` skips redeemed codes server-side — revoking a used code would
-   *  not un-issue anything — so the count is 「已撤销 N 个」 of the still-unused ones. */
-  async function adminRevoke(all) {
-    adState('adCodeState', T('viewer|正在撤销…'), false);
-    var spec;
-    if (all) spec = { all: true };
-    else {
-      var raw = String(($('adRevokeCodes') || {}).value || '');
-      var codes = raw.split(/\r?\n|,|，/).map(function (s) { return s.trim(); }).filter(Boolean);
-      if (!codes.length) { adState('adCodeState', cloudErrText('BAD_REQUEST'), true); return; }
-      spec = { codes: codes };
+  // ===========================================================================================
+  // 1.0.6 三号 §2.3 — 撤销激活码栏：列表 / 筛选 / 分页 / 选择集 / 批量撤销
+  // ===========================================================================================
+  // The panel this replaces was a `<textarea>` (paste codes, one per line) with two buttons, and it
+  // could only act on codes the operator had READ somewhere else — 1.0.0's admin.js said the server
+  // could not re-list one. §2.3 gives the server that ability (`admin-list-codes`) and this half the
+  // list, so 「撤销上次发出去的那一批」 stops being a copy-paste ritual.
+  //
+  // ⚠ §2.3.3 「与用户列表的格式一致」 IS TAKEN LITERALLY: the rows are `.urow` / `.uhead` / `.uexp`
+  // / `.udet` — the user list's own classes, unmodified — the status is the same plain `.hint` span
+  // the user list uses for 已封禁 / 已禁言 / 正常, the batch row is the archive library's shape, and
+  // the caret toggles one class on one element exactly as `toggleUserRow` does. A parallel set of
+  // classes for the same layout would be the second answer this project keeps paying for, and it
+  // would drift the first time either list was restyled.
+
+  /** §2.3's three states, derived in ONE place. Precedence 已撤销 → 已使用 → 未使用 — a code revoked
+   *  by name may already have been redeemed, and the label has to agree with the filter it appears
+   *  under or the operator looks for a row in the wrong list. See admin-list-codes' header. */
+  function adCodeStatus(row) {
+    if (row && row.revoked) return 'revoked';
+    if (row && row.redeemed) return 'used';
+    return 'unused';
+  }
+
+  function adCodeLabel(status) {
+    if (status === 'revoked') return T('viewer|已撤销');
+    if (status === 'used') return T('viewer|已使用');
+    return T('viewer|未使用');
+  }
+
+  function adCodeSelCodes() {
+    return Object.keys(ADK.sel).filter(function (c) { return !!ADK.sel[c]; });
+  }
+
+  function adminPaintCodeSel() {
+    var n = adCodeSelCodes().length;
+    if ($('adCodeSel')) $('adCodeSel').textContent = T('viewer|已选 {n} 个', { n: n });
+    // ⚠ The two batch buttons are DISABLED at zero rather than left to fail on press. §2.3.4 draws
+    // them as ordinary buttons and a press with nothing selected has an obvious answer
+    // ("please select something"), but a button that cannot act should say so before it is pressed —
+    // the same rule §1.8.1 applied to the poll buttons.
+    var empty = n === 0;
+    if ($('adCodeRevoke')) $('adCodeRevoke').disabled = empty;
+    if ($('adCodeCopy')) $('adCodeCopy').disabled = empty;
+  }
+
+  function adminPaintCodeFilter() {
+    Array.prototype.forEach.call(document.querySelectorAll('[data-adc-flt]'), function (b) {
+      b.classList.toggle('on', b.getAttribute('data-adc-flt') === ADK.status);
+    });
+  }
+
+  function adminPaintCodeRows() {
+    var host = $('adCodeRows');
+    if (!host) return;
+    if (!ADK.rows.length) {
+      host.innerHTML = '<div class="hint">' + esc(T('viewer|还没有激活码。')) + '</div>';
+      return;
     }
-    var res = await GMAdmin.revokeCodes(spec);
+    host.innerHTML = ADK.rows.map(adCodeRowHtml).join('');
+  }
+
+  function adCodeRowHtml(row) {
+    var code = String((row && row.code) || '');
+    var st = adCodeStatus(row);
+    var picked = !!ADK.sel[code];
+    return '<div class="urow" data-adc="' + esc(code) + '">' +
+      '<div class="uhead">' +
+        // The checkbox leads the row, the caret follows: §2.3.4's 全选本页 needs one, and putting it
+        // after the caret would make 「点这一行」 land on it. `data-adc-pick` is handled BEFORE the
+        // row-toggle in the delegated listener below — a checkbox that also expanded the row would
+        // make selecting three codes a three-click-per-code job.
+        '<input type="checkbox" data-adc-pick="' + esc(code) + '"' + (picked ? ' checked' : '') + '>' +
+        '<span class="ucare">▶</span>' +
+        '<span class="em">' + esc(code) + '</span>' +
+        '<span class="hint">' + esc(adWhen(row && row.issued_at)) + '</span>' +
+        '<span class="sp"></span>' +
+        '<span class="hint">' + esc(adCodeLabel(st)) + '</span>' +
+        (st === 'revoked' ? '' :
+          '<button class="sec" data-adc-revoke="' + esc(code) + '">' + esc(T('viewer|撤销')) + '</button>') +
+      '</div>' +
+      '<div class="uexp">' +
+        uDetailRow(T('viewer|生成时间'), adWhen(row && row.issued_at)) +
+        // The server resolved the uuid to a name in one extra read; `issued_by` is the fallback, so
+        // an account that has since been purged shows something true rather than an empty line.
+        uDetailRow(T('viewer|生成者'), (row && (row.issuer || row.issued_by)) || '') +
+        uDetailRow(T('viewer|备注'), (row && row.note) || '') +
+        uDetailRow(T('viewer|状态'), adCodeLabel(st)) +
+        '<div class="btn-row" style="margin-top:6px">' +
+          (st === 'revoked' ? '' :
+            '<button class="sec" data-adc-revoke="' + esc(code) + '">' + esc(T('viewer|撤销')) + '</button>') +
+          '<button class="sec" data-adc-copy="' + esc(code) + '">' + esc(T('viewer|复制')) + '</button>' +
+        '</div>' +
+      '</div>' +
+    '</div>';
+  }
+
+  async function adminLoadCodes(page) {
+    ADK.page = Math.max(1, Math.floor(Number(page) || ADK.page || 1));
+    var host = $('adCodeRows');
+    if (host) host.innerHTML = '<div class="hint">' + esc(T('viewer|正在同步…')) + '</div>';
+    // The filter is read from `ADK.status` and not from the buttons: the buttons are painted FROM
+    // it (`adminPaintCodeFilter`), and reading the state back off the DOM it was painted into is how
+    // the two end up able to disagree.
+    var res = await GMAdmin.listCodes({ status: ADK.status, page: ADK.page, limit: ADK.limit });
+    if (!host) return;
+    if (!res.ok) {
+      host.innerHTML = '<div class="hint">' + esc(cloudErrText(res.error)) + '</div>';
+      return;
+    }
+    ADK.rows = res.rows;
+    ADK.total = res.total;
+    ADK.loaded = true;
+    if ($('adCodeTotal')) $('adCodeTotal').textContent = res.total + ' / ' + ADK.limit;
+    adminPaintCodeFilter();
+    adminPaintCodeSel();
+    adminPaintCodeRows();
+  }
+
+  /** §2.3's three selection buttons, as one function with an argument — the shape `setAllUserRows`
+   *  uses for 展开全部/折叠全部, and for the same reason: two functions would be two places to
+   *  forget that 「本页」 means `ADK.rows`. */
+  function adminSelectCodes(how) {
+    ADK.rows.forEach(function (row) {
+      var code = String((row && row.code) || '');
+      if (!code) return;
+      if (how === 'all') ADK.sel[code] = true;
+      else if (how === 'invert') { if (ADK.sel[code]) delete ADK.sel[code]; else ADK.sel[code] = true; }
+      else delete ADK.sel[code];
+    });
+    // `none` is the only one that is not about this page: §2.3.4's 清空选择 clears the whole set, so
+    // a selection made on another page cannot be left behind where the count would keep reporting it.
+    if (how === 'none') ADK.sel = {};
+    adminPaintCodeSel();
+    adminPaintCodeRows();
+  }
+
+  /** The clipboard, in one place. `navigator.clipboard` is absent on a page without a secure
+   *  context, so the failure is reported rather than swallowed — a 「已复制」 that copied nothing is
+   *  worse than a sentence saying so. */
+  function adCopyText(text) {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      return navigator.clipboard.writeText(text).then(
+        function () { return true; }, function () { return false; });
+    }
+    return Promise.resolve(false);
+  }
+
+  /**
+   * §0 #11's 「泄露了」 button AND §2.3.4's 批量撤销, through one entry point.
+   *
+   * ⚠ THEY ARE NOT THE SAME OPERATION AND ARE NOT MERGED. `codes` revokes exactly the selection;
+   * `all` is `{all: true}` server-side and ignores the selection entirely (it also skips redeemed
+   * codes, which the by-name path does not). Two arguments to one function because the CALL is one
+   * call and the sentence afterwards is one sentence; two functions would be two places to get the
+   * count wrong.
+   */
+  async function adminRevoke(codes) {
+    if (ADK.busy) return;
+    var list = (codes === 'all') ? null
+      : (codes || []).map(String).map(function (s) { return s.trim(); }).filter(Boolean);
+    if (codes !== 'all' && (!list || !list.length)) {
+      adState('adCodeState', T('viewer|请先选择要撤销的激活码。'), true);
+      return;
+    }
+    ADK.busy = true;
+    adState('adCodeState', T('viewer|正在撤销…'), false);
+    var res = await GMAdmin.revokeCodes(list ? { codes: list } : { all: true });
+    ADK.busy = false;
     if (!res.ok) { adState('adCodeState', cloudErrText(res.error), true); return; }
     adState('adCodeState', T('viewer|已撤销 {n} 个', { n: res.revoked }), false);
-    if (!all && $('adRevokeCodes')) $('adRevokeCodes').value = '';
+    // The rows were reloaded, so a selection that has just been revoked must not survive it: the
+    // next 批量撤销 would send codes the server already retired and report a count of zero.
+    if (list) ADK.sel = {};
+    adminLoadCodes(ADK.page);
+  }
+
+  /** The delegated listeners for the list. On the CONTAINER, because `adminLoadCodes` replaces the
+   *  whole `innerHTML` on every filter / page / revoke — a per-row handler would be attached to
+   *  detached nodes, which is the same reason the user list's three listeners live here. */
+  function wireCodeRows() {
+    var host = $('adCodeRows');
+    if (!host || host.dataset.wired === '1') return;
+    host.dataset.wired = '1';
+    host.addEventListener('click', function (ev) {
+      var t = ev.target;
+      var pick = t && t.closest ? t.closest('[data-adc-pick]') : null;
+      if (pick) {
+        // Toggled by hand rather than read from `checkbox.checked`: this handler runs on `click`,
+        // which fires BEFORE the DOM applies the checkbox's new state in some engines, and the set
+        // is the authority the batch button reads.
+        var pc = pick.getAttribute('data-adc-pick');
+        if (ADK.sel[pc]) delete ADK.sel[pc]; else ADK.sel[pc] = true;
+        adminPaintCodeSel();
+        return;
+      }
+      var copy = t && t.closest ? t.closest('[data-adc-copy]') : null;
+      if (copy) {
+        var cc = copy.getAttribute('data-adc-copy');
+        adCopyText(cc).then(function (ok) {
+          // ⚠ TWO LITERAL `T()` CALLS, not `T(ok ? 'viewer|已复制' : 'viewer|…')`. `keys.cjs` finds a
+          // key by regex over the source, so a computed argument is a key no dictionary can answer
+          // and no check would report — 「T() 的实参必须是紧贴的字面量」, this project's oldest i18n rule.
+          copy.textContent = ok ? T('viewer|已复制') : T('viewer|复制失败');
+        });
+        return;
+      }
+      var rev = t && t.closest ? t.closest('[data-adc-revoke]') : null;
+      if (rev) { adminRevoke([rev.getAttribute('data-adc-revoke')]); return; }
+      // §2.3.3's 「使用相同的折叠/展开样式」 — measured on the ROW, like `toggleUserRow` (the hands
+      // above are handled first precisely because they are INSIDE the row).
+      var row = t && t.closest ? t.closest('[data-adc]') : null;
+      if (row) row.classList.toggle('expanded');
+    });
   }
 
   // ---------------------------------------------------------------------------------------------
@@ -10613,7 +11244,12 @@
   function summaryTableHtml(rep, opts) {
     rep = rep || {};
     opts = opts || {};
-    return '<table style="text-align:left">' +
+    // §3.1 — `class="ltable"` rather than the old inline `style="text-align:left"`. That inline
+    // declaration was DEAD: the global `th,td{text-align:center}` sets the alignment on the cells
+    // themselves, and a rule on `th,td` beats an inherited value from the `<table>`, so the table
+    // was centred while the markup said left. It shares `.ltable` now, which is the one place the
+    // 「names left, figures right, header agrees with the figures」 rule lives.
+    return '<table class="ltable">' +
       '<tr><th>' + T('viewer|指标') + '</th><th>' + T('viewer|黑方') + '</th><th>' + T('viewer|白方') + '</th></tr>' +
       '<tr><td>' + T('viewer|Top-1 吻合') + '</td><td>' + (rep.black ? pct(rep.black.top1) : '—') + '</td><td>' + (rep.white ? pct(rep.white.top1) : '—') + '</td></tr>' +
       '<tr><td>' + T('viewer|Top-3') + '</td><td>' + (rep.black ? pct(rep.black.top3) : '—') + '</td><td>' + (rep.white ? pct(rep.white.top3) : '—') + '</td></tr>' +

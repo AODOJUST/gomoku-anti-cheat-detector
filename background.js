@@ -18,7 +18,8 @@
 importScripts('i18n.js',
   'locale/zh-CN.js', 'locale/zh-TW.js', 'locale/ja.js', 'locale/ko.js',
   'locale/en.js', 'locale/ru.js', 'locale/fr.js', 'locale/de.js',
-  'locale/vi.js', 'locale/es.js', 'locale/ms.js', 'locale/ar.js', 'locale/mn.js',
+  'locale/vi.js', 'locale/es.js', 'locale/es-MX.js', 'locale/ms.js', 'locale/ar.js', 'locale/mn.js',
+  'locale/lzh.js',
   'llm.js',
   'storage.js');
 

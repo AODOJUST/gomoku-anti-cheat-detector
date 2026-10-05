@@ -9,8 +9,8 @@
  * 0.3.6 §1.8 requires a language change to repaint the panel and the viewer WITHOUT a reload
  * (background.js only writes `settings.lang` and relies on `chrome.storage.onChanged`). A
  * lazy "load the one locale you need" design would therefore need a fetch at switch time and
- * would still need the old table to redraw. Thirteen tables of ~900 short strings is well under
- * 400KB, so all thirteen are registered up front and `setLocale()` is a pointer swap.
+ * would still need the old table to redraw. Fifteen tables of ~900 short strings is well under
+ * 400KB, so all fifteen are registered up front and `setLocale()` is a pointer swap.
  *
  * ---------------------------------------------------------------------------
  * Keys, not strings, in storage
@@ -38,8 +38,13 @@
   'use strict';
   if (g.GMI18n) return;
 
+  // 1.0.6 三号 §5.1 — 末尾追加两种:
+  //   `es-MX` 墨西哥西班牙语(复用 `es` 的整列,生成期只做几处词形替换 —— 见 _tools/gen-locale.cjs
+  //            的 DERIVED 表,它让这份表**生成出来就完整**,不靠「es 必须先加载」的运行时顺序);
+  //   `lzh`   文言(手写核心词条,其余走 tCore 的 zh-CN 回退 —— 它是第二张「故意不完整」的表,
+  //            与 zh-CN 并列,所以任何「每张表键集逐字相同」的不变量都要把它排除)。
   var LOCALES = ['zh-CN', 'zh-TW', 'ja', 'ko', 'en', 'ru', 'fr', 'de',
-                 'vi', 'es', 'ms', 'ar', 'mn'];
+                 'vi', 'es', 'es-MX', 'ms', 'ar', 'mn', 'lzh'];
   var DEFAULT = 'zh-CN';
 
   // 0.4.6 §二.2 — the right-to-left set. Kept as a list rather than a single `ar` test so that a
@@ -221,6 +226,16 @@
     } catch (e) { return null; }
   }
 
+  // 1.0.6 三号 §5.1.4 — 「`Intl.DisplayNames` 对 `lzh` 可能返回 'lzh' 本身或空 ⇒ 特判」.
+  // ⚠ 这里**没有**那个特判，是刻意的，而且两个新语言都靠同一条通路上岸：
+  //   · 名字的第一来源是词典（基准表 zh-CN 的 `lang.<code>`，见 locale/zh-CN.js）。`lzh` 是
+  //     「文言」、`es-MX` 是「Español (México)」，两者都**在 Intl 之前**就被答出来了；
+  //   · `intlLangName` 本来就拒收「Intl 把标签原样还回来」的结果（`n !== tag`），所以在 zh-CN 下
+  //     `lzh` 拿到的是 `null` 而不是字符串 `'lzh'` —— 定稿要防的那件事，现有机制自己就防住了；
+  //   · 定稿给的写法是在 i18n.js 里硬写一张 `code === 'lzh' ? … : …` 的三分支表。那会让两条文案
+  //     离开 15 张语言表、变成 i18n.js 里不可翻译也不可校验的中英混合串，正是本项目「同一答案只准
+  //     有一份」要挡的东西，而且 `gen-locale --check` 看不见它。
+  //   ⇒ 代价是 zh-CN 下显示「文言」而不是「文言（lzh）」：端名本身就是答案，代码只在端名缺席时才有用。
   function langLabel(code, override) {
     var cur = override || current;
     var native = (dict[DEFAULT] && dict[DEFAULT]['lang.' + code]) ||

@@ -113,8 +113,11 @@ serve(async (req: Request): Promise<Response> => {
     const community = communityRefusal(caller.row);
     if (community) return fail(community, HttpStatus.FORBIDDEN, refusalMessage(community));
 
-    // §2.3.2 「关闭聊天室 / 全体禁言」. TWO keys, ONE effect — see `admin-global-mute` for why the
-    // spec's two names are both honoured rather than collapsed into one flag.
+    // §2.3.2 「关闭聊天室」 — ONE switch, ONE effect (1.0.6 三号). This used to read `global_mute`
+    // beside `chat_enabled`: two names for the same outcome, and the console offered both, so an
+    // operator could tick 「允许发言」 and 「全体禁言」 together with no defined answer. The pair is
+    // collapsed — `admin-global-chat` owns the single key, 022 deletes the other row, and this is
+    // the only place the flag is enforced.
     //
     // ⚠ IT APPLIES TO EVERYONE, INCLUDING AN ADMIN. There is no bypass, on purpose: an admin who
     // needs to speak can reopen the room, and a bypass would be a second answer to 「聊天室开着吗」
@@ -122,15 +125,13 @@ serve(async (req: Request): Promise<Response> => {
     const { data: flagRows, error: flagError } = await sb
       .from("global_settings")
       .select("key, value")
-      .in("key", ["chat_enabled", "global_mute"]);
+      .eq("key", "chat_enabled");
     if (flagError) throw flagError;
     let chatEnabled = true;
-    let globalMute = false;
     for (const row of (flagRows ?? []) as { key: string; value: unknown }[]) {
       if (row.key === "chat_enabled") chatEnabled = row.value !== false;
-      if (row.key === "global_mute") globalMute = row.value === true;
     }
-    if (!chatEnabled || globalMute) {
+    if (!chatEnabled) {
       return fail("CHAT_DISABLED", HttpStatus.CONFLICT, "The room is closed");
     }
 

@@ -760,6 +760,39 @@
     };
   }
 
+  // ---- 1.0.6 §1.1.4 — 「操作者是否已登录 gomoku.com」, answered ONLY here --------------------------
+  //
+  // §1.1.4 wants a click on a 观战 / 私人房间 tag to be refused with 「请先在 gomoku.com 登录」 when
+  // there is no session. The viewer cannot answer that itself: the session is an HttpOnly cookie,
+  // this extension holds no `cookies` permission, and an extension page has no route to the page.
+  // A gomoku.com TAB can answer, because this file is already running in it — so the viewer asks a
+  // tab (`gm-gomoku-login`) and this is the only place the answer is computed.
+  //
+  // ⚠⚠ THREE ANSWERS, AND `null` IS THE HONEST ONE MOST OF THE TIME. There is no verified selector
+  // for gomoku.com's signed-out header, so 「not signed in」 CANNOT be concluded from an absence —
+  // an absent element is exactly what a signed-in lobby looks like too. Only two conclusions are
+  // supported by evidence this file actually has:
+  //   'in'  — a seat row's 「you」 element is on the page (`DOM_NAME_SEL.self`, the site's own
+  //           「you」, in use since 0.4.x). A page rendered around our own seat is a session.
+  //   'out' — a password field is on the page. A password field IS a sign-in form; that is what the
+  //           element means, rather than a class name a redesign can rename. Nothing else this
+  //           content script is loaded into asks for a password.
+  //   null  — everything else, INCLUDING a signed-in lobby. The caller must treat null as 「no
+  //           opinion」: it opens the link and lets gomoku.com route the visitor to its own sign-in
+  //           page. Guessing here would refuse the click of a signed-in operator, which is the
+  //           failure `sites.js` warns about for exactly this kind of invented selector.
+  function gomokuLoginState() {
+    try {
+      if (document.querySelector('input[type="password"]')) return 'out';
+      var sels = nameSelectors();
+      var self = (sels && sels.self) || [];
+      for (var i = 0; i < self.length; i++) {
+        if (document.querySelector(self[i])) return 'in';
+      }
+    } catch (e) { /* a page we cannot read has no opinion */ }
+    return null;
+  }
+
   // Names are compared here, never displayed, so the comparison is case- and space-insensitive:
   // the account menu and the player row are two different renders of the same string.
   function normName(s) {
@@ -2014,6 +2047,12 @@
     // this the overlay would keep the old picture (or no picture at all) until the tab reloaded.
     if (msg.type === 'gm-bg-changed') {
       if (!msg.slot || msg.slot === 'bg-overlay') refreshOverlayBg();
+      return;
+    }
+    // 1.0.6 §1.1.4 — the viewer's question about the gomoku.com session, asked once per click on a
+    // 观战 / 私人房间 tag. See `gomokuLoginState` for why the answer is three-valued.
+    if (msg.type === 'gm-gomoku-login') {
+      sendResponse({ state: gomokuLoginState() });
       return;
     }
   });

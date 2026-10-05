@@ -103,6 +103,50 @@
     };
   }
 
+  /**
+   * 1.0.6 三号 §2.3 — 「撤销激活码栏改为列表格式」, so the console needs the list.
+   *
+   * ⚠ WHY THIS IS A FUNCTION CALL AND NOT A POSTGREST READ, WHICH IS THE OPPOSITE OF THE USUAL RULE.
+   * Every other console list goes through RLS (`readTable`): 011 wrote admin policies for reports and
+   * feedback precisely so 「谁看得见什么」 has one answer. `activation_codes` is the exception, and
+   * 002_rls.sql states it — 「Do not add a policy here -- code lookup/validation must stay
+   * server-side so codes can never be enumerated.」 §2.3 asks for the list anyway, so the list is a
+   * Function that reads the table with the server-side privileged key and re-verifies the admin, and
+   * the policy stays absent. See `admin-list-codes/index.ts` for the long form.
+   *
+   * ⚠ THAT PARAGRAPH IS WRITTEN WITHOUT THE USUAL TWO WORDS ON PURPOSE. `verify-062 §3` fails any
+   * extension script except `cloud.js` that so much as NAMES the key — it cannot tell a comment from
+   * a value, and it is right not to try. The boundary is a fact about the text, not about intent.
+   *
+   * `status` is clamped here as well as server-side so a typo cannot turn 「未使用」 into 「全部」:
+   * an unknown value falls back to `'all'` and is NEVER passed through, because the failure mode of
+   * guessing is an operator revoking from a list they did not ask for.
+   */
+  async function listCodes(opts) {
+    var gu = guard();
+    if (!gu.ok) return gu;
+    var o = opts || {};
+    var status = String(o.status || 'all');
+    if (['all', 'unused', 'used', 'revoked'].indexOf(status) < 0) status = 'all';
+    var body = {
+      status: status,
+      page: Math.max(1, Math.floor(Number(o.page) || 1)),
+      // Same ceiling as `admin-list-users`: the two lists page identically, and one of them
+      // allowing 500 rows would make 「每页条数」 mean two things in one console.
+      limit: Math.min(200, Math.max(1, Math.floor(Number(o.limit) || 50))),
+    };
+    var res = await invoke('admin-list-codes', body, gu.jwt);
+    if (!res.ok) return res;
+    var d = res.data || {};
+    return {
+      ok: true,
+      rows: Array.isArray(d.codes) ? d.codes : [],
+      total: Number(d.total) || 0,
+      page: body.page,
+      limit: body.limit,
+    };
+  }
+
   /** §6.2: 「封禁用户 `{ user_id, reason }` → `{ ok }`」. */
   async function banUser(userId, reason) {
     var gu = guard();
@@ -240,19 +284,28 @@
   }
 
   /**
-   * §2.3.2 / §2.3.3's two switches. Both keys are always sent, because the Function answers with
-   * both read back from the database and a partial patch would make the untouched switch look like
-   * it changed — the panel paints from the RESPONSE, never from the checkbox.
+   * 1.0.6 三号 §二.2 — the room's ONE switch.
+   *
+   * Was `setGlobalMute(chatEnabled, globalMute)` against `admin-global-mute`, i.e. two keys per
+   * call. The pair is gone: `global_mute` was a second way to say 「所有人不能发消息」 and the two
+   * could be set to contradict each other, so §二.2 merged them into one key with one meaning.
+   * The endpoint is renamed with it (`admin-global-chat`) — a Function's slug is part of its API,
+   * and a name that no longer describes what it does is a name the next reader has to open the file
+   * to trust.
+   *
+   * The value still comes back from the database rather than being echoed: the panel paints from
+   * the RESPONSE, never from the checkbox, so a write that silently failed cannot leave the switch
+   * showing what the operator clicked instead of what is stored.
    */
-  async function setGlobalMute(chatEnabled, globalMute) {
+  async function setGlobalChat(chatEnabled) {
     var gu = guard();
     if (!gu.ok) return gu;
-    var res = await invoke('admin-global-mute', {
-      chat_enabled: !!chatEnabled, global_mute: !!globalMute,
-    }, gu.jwt);
+    var res = await invoke('admin-global-chat', { chat_enabled: !!chatEnabled }, gu.jwt);
     if (!res.ok) return res;
     var s = (res.data && res.data.settings) || {};
-    return { ok: true, chatEnabled: !!s.chat_enabled, globalMute: !!s.global_mute };
+    // `!== false` rather than `!!`: the readers' rule is 「未设 = 开着」 (see chat-send and
+    // admin-global-chat), and a missing row must not paint as 「已关闭」.
+    return { ok: true, chatEnabled: s.chat_enabled !== false };
   }
 
   /**
@@ -286,16 +339,17 @@
       'select=*&order=created_at.desc&limit=' + Math.min(200, Math.max(1, Number(limit) || 50)));
   }
 
-  /** §2.3.3's two booleans, for the panel's initial state. */
+  /** 1.0.6 三号 §二.2 — the ONE switch, for the panel's initial state. Straight off PostgREST: the
+   *  policy 011/012 wrote for this table is 「已登录可读」, so the console needs no endpoint for it,
+   *  and the room's own banner reads the same row through the same policy. */
   function readGlobal() {
     return readTable('global_settings', 'select=key,value').then(function (r) {
       if (!r.ok) return r;
-      var out = { chatEnabled: true, globalMute: false };
+      var chatEnabled = true;
       r.rows.forEach(function (row) {
-        if (row && row.key === 'chat_enabled') out.chatEnabled = row.value !== false;
-        if (row && row.key === 'global_mute') out.globalMute = row.value === true;
+        if (row && row.key === 'chat_enabled') chatEnabled = row.value !== false;
       });
-      return { ok: true, chatEnabled: out.chatEnabled, globalMute: out.globalMute };
+      return { ok: true, chatEnabled: chatEnabled };
     });
   }
 
@@ -323,17 +377,22 @@
     isAdmin: isAdmin,
     generateCodes: generateCodes,
     listUsers: listUsers,
+    // 1.0.6 三号 §2.3 — the list behind the revoke panel's rows.
+    listCodes: listCodes,
     banUser: banUser,
     unbanUser: unbanUser,
     revokeCodes: revokeCodes,
     grantBadge: grantBadge,
     setRole: setRole,        // 1.0.5 §二.2.3 — super-admin only, enforced server-side
     reissueJwt: reissueJwt,
-    // 1.0.4 §P0 — the operations panel.
+    // 1.0.4 §P0 — the operations panel. ⚠ 1.0.6 三号 §二.2 renamed `setGlobalMute` to
+    // `setGlobalChat` and dropped its second argument; nothing calls the old name (the slug it
+    // used is deleted from the project, so a stale caller would be a 404 rather than a silent
+    // write to a dead key).
     handleReport: handleReport,
     replyFeedback: replyFeedback,
     publishNews: publishNews,
-    setGlobalMute: setGlobalMute,
+    setGlobalChat: setGlobalChat,
     readTable: readTable,
     listReports: listReports,
     listFeedback: listFeedback,

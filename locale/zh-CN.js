@@ -265,9 +265,15 @@ GMI18n.register('zh-CN', {
   'learn.noRoleTags': '没有样本带「AI 样本」「人类样本」「黑方AI」或「白方AI」标签，权重无法调整（阈值与特征库仍已更新）。',
 
   // ---- 语言选择 (§1.2). Two entry points consume these: the toolbar right-click menu
-  // (background.js) and the viewer's settings dropdown. The thirteen `lang.*` values are
-  // ENDONYMS — every table carries the identical eight strings, because 「日本語」 reads
-  // 「日本語」 no matter which language the rest of the UI is in.
+  // (background.js) and the viewer's settings dropdown. The `lang.*` values are ENDONYMS —
+  // 「日本語」 reads 「日本語」 no matter which language the rest of the UI is in.
+  //
+  // ⚠ 1.0.6 三号 §5.1 — `lang.es-MX` / `lang.lzh` **与其余十二张同步补入**（那个端名块本来就是
+  // 「一份事实、每张表各存一遍」的既有约定）。另外一条路是「只写基准表、靠 `langLabel()` 先查
+  // DEFAULT 的既有顺序」，但那样 `lang.*` 这块就出现唯一的例外，而 verify-036 §7「每张表覆盖每个
+  // 键」这条不变量得为它开一个洞 —— 保留约定的代价是十二行机械写入，比削弱一条不变量便宜。
+  // 唯一真正的例外是 `lzh`：它是**部分表**（只收核心词条），凡「每张表都齐全」的度量为它开了口子，
+  // 但那是因为它整张表都短，不是因为这两个端名。
   'menu.lang': '语言',
   'lang.zh-CN': '简体中文',
   'lang.zh-TW': '繁體中文',
@@ -279,9 +285,11 @@ GMI18n.register('zh-CN', {
   'lang.de': 'Deutsch',
   'lang.vi': 'Tiếng Việt',
   'lang.es': 'Español',
+  'lang.es-MX': 'Español (México)',
   'lang.ms': 'Bahasa Melayu',
   'lang.ar': 'العربية',
   'lang.mn': 'Монгол',
+  'lang.lzh': '文言',
 
   // ---- 网络自主更新 (0.4.0 §一). 更新横幅、设置页的「检测更新」按钮与它的三种结果。
   // 版本号走 {v}；releaseNotes 直接显示 version.json 的原文，故意不翻译（它随每次发布变）。

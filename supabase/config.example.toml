@@ -137,7 +137,7 @@ verify_jwt = false
 [functions.admin-handle-report]
 verify_jwt = false
 
-[functions.admin-global-mute]
+[functions.admin-global-chat]
 verify_jwt = false
 
 [functions.geo-update]
@@ -150,4 +150,7 @@ verify_jwt = false
 verify_jwt = false
 
 [functions.chat-recall]
+verify_jwt = false
+
+[functions.admin-list-codes]
 verify_jwt = false
