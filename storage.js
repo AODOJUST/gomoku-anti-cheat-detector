@@ -1352,6 +1352,55 @@
 
   function overlayDefaults() { return Object.assign({}, DEFAULT_OVERLAY); }
 
+  // ---- 1.0.6 四号 §2.3.4 — 管理员列表的折叠状态 ------------------------------------------------
+  // §2.3.4's object, verbatim: `{ userListCollapsed, codeListCollapsed }`, defaulting to `true`
+  // (「默认全部折叠——避免打开就被大量信息淹没」).
+  //
+  // ⚠ IT IS THE ALL-ROWS STATE, NOT PER-ROW STATE, AND THAT IS WHY IT IS STORABLE AT ALL.
+  // §2.3.5's sketch writes this key from inside `toggleAllUsers`, i.e. what is remembered is the
+  // answer to 「展开全部 / 折叠全部」. An operator who afterwards opens ONE row by hand has not
+  // changed that answer: the next visit re-applies the stored all-rows state and the single row is
+  // folded again, which is exactly what 「默认折叠」 means. Remembering per-row ids instead would
+  // need a list that grows with every account ever clicked, and it would fight the two buttons —
+  // 「展开全部」 could not then cover a row that had been hand-folded.
+  //
+  // ⚠ IT LIVES AT THE TOP LEVEL, NOT INSIDE `settings`, for the reason the cloud keys give above:
+  // `settings` is the object `stripSecrets()` copies out wholesale when a backup is exported, and a
+  // backup carrying 「codeListCollapsed: true」 is a field no setting page can show or explain. This
+  // is one console's view state, so it sits beside `overlayState`.
+  var ADMIN_PREFS_KEY = 'adminListPrefs';
+  var DEFAULT_ADMIN_PREFS = { userListCollapsed: true, codeListCollapsed: true };
+
+  async function loadAdminListPrefs() {
+    var got = null;
+    try { got = await api().get(ADMIN_PREFS_KEY); } catch (e) { got = null; }
+    var raw = (got && got[ADMIN_PREFS_KEY]) || {};
+    var out = {};
+    for (var k in DEFAULT_ADMIN_PREFS) {
+      // Booleans only, and anything unparseable lands on the DEFAULT (`true` = collapsed) rather
+      // than on `false`. The failure worth avoiding is 「a value nobody can read expands every
+      // list」: an expanded fifty-row console is the thing §2.3.1 exists to stop, while a collapsed
+      // one is the shipped state and needs no explanation.
+      out[k] = (typeof raw[k] === 'boolean') ? raw[k] : DEFAULT_ADMIN_PREFS[k];
+    }
+    return out;
+  }
+
+  function saveAdminListPrefs(patch) {
+    return enqueue(async function () {
+      var st = await loadAdminListPrefs();
+      if (patch) for (var k in patch) if (k in DEFAULT_ADMIN_PREFS) st[k] = !!patch[k];
+      // ⚠ Through `enqueue`, like every other write in this file: read-modify-write on one key, and
+      // two of these can be in flight at once (「折叠全部」 on the user list while the code list
+      // repaints), so a bare `set` is how one of the two would be lost.
+      var put = {}; put[ADMIN_PREFS_KEY] = st;
+      try { await api().set(put); } catch (e) {}
+      return st;
+    });
+  }
+
+  function adminListPrefsDefaults() { return Object.assign({}, DEFAULT_ADMIN_PREFS); }
+
   // ---------- 0.4.0 §一: remote update check ----------
   // Why not `chrome.runtime.requestUpdateCheck()`: that API only sees extensions installed
   // from the Chrome Web Store. This one is loaded unpacked from a GitHub repository, so it
@@ -4004,6 +4053,14 @@
     loadOverlay: loadOverlay,
     saveOverlay: saveOverlay,
     overlayDefaults: overlayDefaults,
+    // ---- 1.0.6 四号 §2.3.4 列表一键折叠 ----
+    // Exported so the console's two lists share ONE reading of 「展开还是折叠」: the pref is read
+    // once at render time and written by the two buttons, and a second spelling of the key or of
+    // the default would be the sixth copy of a single answer this project has already paid for.
+    ADMIN_PREFS_KEY: ADMIN_PREFS_KEY,
+    loadAdminListPrefs: loadAdminListPrefs,
+    saveAdminListPrefs: saveAdminListPrefs,
+    adminListPrefsDefaults: adminListPrefsDefaults,
     // ---- 0.4.0 §一 remote update check ----
     UPDATE_REPO: UPDATE_REPO,
     UPDATE_SOURCE: UPDATE_SOURCE,

@@ -3703,6 +3703,19 @@
   var cmSent = null;          // …and the ones I sent, so 「需重发」 is a decision I can make
   var cmNotices = null;       // notifications rows (system + mention)
   var cmMyReports = null;     // `reports.mine` — what I filed, and what became of it (1.0.4 §P1)
+  /** 1.0.6 四号 §2.1.2 — which 消息 分区 is on screen. The id is one of the shared block's
+   *  `MESSAGE_CATEGORIES`; the markup's tabs are pinned to that list by `verify-068`. */
+  var CM_MSGCAT = 'friends';
+  /** The one 分区 that ALSO has a nav tab of its own. Named here because two places need the same
+   *  answer to 「which 分区 is not part of the 消息 dot」: the badge sum below, and nothing else — the
+   *  point of naming it is that a sixth 分区 added to the shared list is counted by the dot without
+   *  anyone remembering to edit a list of four. */
+  var CM_MSGCAT_SPLIT = 'friends';
+  /** §2.1.1's mark, deferred until rows are in hand — see `cmMsgFlushRead`.
+   *  ⚠ IT EXISTS BECAUSE THE 30-SECOND BADGE POLL RUNS `cmLoadMsgs` TOO. Marking read from inside the
+   *  load would mean the dot beside 好友 cleared itself every 30 seconds for somebody who never
+   *  opened the pane; only a 分区 the operator actually entered may set this. */
+  var cmMsgWantRead = '';
   var cmMsgsMsg = null;
   var cmMsgsLoading = false;
   /** §1.7.1's quote. `{id, username, content}` — the PREVIEW is snapshotted into the message by
@@ -4686,6 +4699,11 @@
     // tick, or it keeps formatting a clock for a node nobody can see.
     if (name !== 'chat') cmStopVoteTick();
     else cmPaintVotes();
+    // 1.0.6 四号 §2.1 — entering the 消息 pane counts as entering whichever of its 分区 is up, which
+    // is §2.1.1's 「进入分区即标记为已读」. ⚠ THIS IS THE ONLY DOOR THAT MARKS, and that is load-bearing:
+    // the 30-second badge poll calls `cmLoadMsgs()` directly and never passes through here, so a dot
+    // the operator has not looked at keeps its number for as long as they leave it alone.
+    if (name === 'msgs') cmShowMsgCat(CM_MSGCAT);
   }
 
   /** §2.5.4's type options, from `FEEDBACK_CATEGORIES` rather than from markup: the server accepts
@@ -5115,7 +5133,20 @@
     if ($('cmQuoteClear')) $('cmQuoteClear').onclick = function () { cmQuote = null; cmPaintQuote(); };
     if ($('cmFriendReload')) $('cmFriendReload').onclick = function () { cmLoadFriends(); cmLoadQuota(); };
     if ($('cmMsgsReload')) $('cmMsgsReload').onclick = cmLoadMsgs;
-    if ($('cmMsgsReadAll')) $('cmMsgsReadAll').onclick = function () { cmNoticeAct(null, 'all'); };
+    // ---- 1.0.6 四号 §2.1.2 — the five 分区 tabs ------------------------------------------------
+    // One listener per button, taken off the DOM: the strip is markup (see the block above
+    // `cmPaintMsgTabs`), so the loop is over what is on the page, and `data-mcat` is the category.
+    Array.prototype.forEach.call(document.querySelectorAll('#cmMsgTabs [data-mcat]'), function (b) {
+      if (b.onclick) return;
+      b.onclick = function () { cmShowMsgCat(b.getAttribute('data-mcat')); };
+    });
+    // §2.1.1's 「全部标记已读」, widened from 「所有通知」 to 「所有分区」 by this release.
+    // ⚠ THE BUTTON'S MEANING FOLLOWED THE BADGE'S. `notices.markAllRead` writes
+    // `notifications.read = true` — a per-row flag that no longer decides any dot, so leaving the
+    // button on it would have made it a control that appears to do nothing. It now walks the five
+    // partitions through the same `cmMsgReadMap` the tabs use, and that function's two guards
+    // (nothing on screen; a watermark that would move backwards) apply to each of them in turn.
+    if ($('cmMsgsReadAll')) $('cmMsgsReadAll').onclick = function () { cmMarkMsgRead(cmMsgCats()); };
     // 1.0.4 §P1 — §1.1.2's 「加载更多」. A plain handler is right here (unlike the lists, which
     // delegate): the node is in `viewer.html`, never rebuilt, and has no per-row identity.
     if ($('cmChatMore')) $('cmChatMore').onclick = cmLoadMore;
@@ -5229,10 +5260,14 @@
     var ja = t.closest('[data-ja]');
     if (ja) { cmJumpToMessage(ja.getAttribute('data-ja')); return; }
 
-    // 1.0.4 §P1 — 「标记已读」 on one notification. `cmNoticeAct` already had the read / all split
-    // (it is what `#cmMsgsReadAll` calls with `null`); this is the per-row door it was written for.
+    // 1.0.4 §P1 — 「标记已读」 on one notification. 1.0.6 四号 §2.1.1 narrowed this function to the
+    // ONE verb it still has: the pane's all-or-nothing button stopped being a caller when the dots
+    // became watermark-based (`#cmMsgsReadAll` now writes the five watermarks), and leaving a
+    // `markAllRead` branch here would be a second way to say 「全部已读」 that no dot listens to.
+    // ⚠ `notifications.read` ITSELF SURVIVES, and it is not the same question — 024's header states
+    // the split: the watermark answers 「有新东西吗」 and this flag answers 「我办完了没有」.
     var na = t.closest('[data-na]');
-    if (na) { cmNoticeAct(na.getAttribute('data-nid'), 'read'); return; }
+    if (na) { cmNoticeAct(na.getAttribute('data-nid')); return; }
 
     var va = t.closest('[data-vc]');
     if (va) { cmVoteCast(va.getAttribute('data-vk'), va.getAttribute('data-vc')); return; }
@@ -5376,7 +5411,13 @@
    *  notification that is UNREAD; arriving at the message is what 「已读」 means, so leaving the
    *  badge lit after the operator has followed it makes the badge a claim about their own attention
    *  rather than about the notice. Marked by matching `data.message_id` on the loaded rows, and
-   *  ONLY when that row is still unread — a second jump must not re-PATCH. */
+   *  ONLY when that row is still unread — a second jump must not re-PATCH.
+   *  ⚠ 1.0.6 四号 §2.1.1 — `cmNoticeAct` IS SINGLE-ARGUMENT NOW. It used to take
+   *  `(id, 'read')`, because 1.0.4's delegate had 「标记已读」 and 「标记未读」 behind one handler; the
+   *  watermark rewrite left the function one-armed and this call site behind. A second argument that
+   *  nothing reads is worse than a stale comment: it pins the OLD signature (verify-066 used to
+   *  assert this very spelling), so the day someone changes the signature again the dead argument is
+   *  what tells them the call site is current. */
   function cmJumpToMessage(messageId) {
     var at = cmIndexOf(messageId);
     var hit = at < 0 ? null : cmRows[at];
@@ -5384,7 +5425,7 @@
     var notice = (cmNotices || []).filter(function (n) {
       return !n.read && n.data && String(n.data.message_id || '') === String(messageId);
     })[0];
-    if (notice) cmNoticeAct(notice.id, 'read');
+    if (notice) cmNoticeAct(notice.id);
     if (!hit) {
       cmChatMsg = { code: 'jumpMissing', tone: 'err' };
       cmPaintChatMsg();
@@ -6490,6 +6531,215 @@
 
   // ---- §1.5.3 消息 ------------------------------------------------------------------------------
 
+  // =============================================================================================
+  // 1.0.6 四号 §2.1 — 五个分区：横向导航 + 进入即已读
+  // =============================================================================================
+  // The pane used to be five sections STACKED VERTICALLY, so 「去系统通知看看」 meant scrolling past
+  // three lists that are usually empty. §2.1.2 asks for a tab strip and for each 分区 to have a
+  // window of its own; §2.1.1 asks that opening one CLEAR its dot, without a per-row click.
+  //
+  // ⚠ THE TAB STRIP IS MARKUP AND THE CATEGORY LIST IS THE SHARED BLOCK, AND THE DUPLICATION IS
+  // PINNED RATHER THAN AVOIDED. `data-mcat` appears five times in viewer.html because the labels have
+  // to be translatable text nodes, and `MESSAGE_CATEGORIES` appears once in `community-shared.js`
+  // because 024's five watermark columns and `readAtColumn()` were both written from it. This is the
+  // same arrangement `REALTIME_TABLES` has with `013_realtime.sql` (see the shared block): a second
+  // spelling is acceptable exactly where a test compares the two, and `verify-068` does. The
+  // alternative — building the tabs from the list in JavaScript — would move five `T()` literals out
+  // of the file the extractor reads text nodes from, for no gain over one assertion.
+
+  /** The shared block's 分区 list, or `[]` on a build where the block failed to load. */
+  function cmMsgCats() {
+    var S = GMCommunity.shared() || {};
+    return S.MESSAGE_CATEGORIES || [];
+  }
+
+  /** The `.msg-sec` element of 分区 `cat`. Found through the DOM rather than through a JavaScript
+   *  table of five container ids: the panes already carry `data-mcat`, and a map from category to
+   *  container is one more thing to keep in step with the markup. */
+  function cmMsgPane(cat) {
+    return document.querySelector('#cmPane-msgs .msg-sec[data-mcat="' + cat + '"]');
+  }
+
+  /** The list container inside 分区 `cat` — what `cmPaintMsgs` fills. */
+  function cmMsgList(cat) {
+    return document.querySelector('#cmPane-msgs .msg-sec[data-mcat="' + cat + '"] .cm-list');
+  }
+
+  /**
+   * §2.1.1's 读水位 for 分区 `cat`, off the SESSION's own user row.
+   *
+   * ⚠ THE COLUMN NAME COMES FROM THE SHARED BLOCK, not from `cat + '_read_at'` spelled here. The
+   * same derivation is what 024's five `alter table` lines and the PATCH body below are written from,
+   * so a partition renamed in one place cannot leave this reading a column that does not exist.
+   */
+  function cmReadAt(cat) {
+    var S = GMCommunity.shared() || {};
+    if (typeof S.readAtColumn !== 'function') return '';
+    var me = (GMAuth.status() || {}).user || {};
+    return String(me[S.readAtColumn(cat)] || '');
+  }
+
+  /**
+   * The rows 分区 `cat` is drawn from. ONE function for both the paint and the count, so the list on
+   * screen and the number on its tab cannot describe different things — which is what would happen
+   * the day one of the two filters changed.
+   *
+   * `null` for an unknown id rather than `[]`: an empty array is a real 分区 with nothing in it.
+   */
+  function cmMsgRows(cat) {
+    if (cat === 'friends') return (cmFriends && cmFriends.incoming) || [];
+    if (cat === 'shares') return (cmInbox || []).filter(function (s) { return GMCommunity.shares.isLive(s); });
+    // The `notifications` split is by KIND, not by table — 024's header has the long form, and it is
+    // total (every row lands in exactly one of the two) and disjoint (no row lands in both).
+    if (cat === 'mentions') return (cmNotices || []).filter(function (n) { return n.kind === 'mention'; });
+    if (cat === 'system') return (cmNotices || []).filter(function (n) { return n.kind !== 'mention'; });
+    if (cat === 'reports') return cmMyReports || [];
+    return null;
+  }
+
+  /** When row `r` of 分区 `cat` arrived, as an ISO string, or `''` for a row with no such instant
+   *  (an open report nobody has acted on).
+   *
+   *  ⚠ `reports` IS THE ONE THAT IS NOT `created_at`, AND DELIBERATELY. My own report shows up in
+   *  this list the moment I file it, so counting `created_at > 水位` would badge my own submission as
+   *  something I have not seen. What I have not seen is the ANSWER, and `handled_at` is when an
+   *  operator acted — which is exactly the 「处理状态」 §2.1.2's table names as this 分区's content. */
+  function cmMsgTs(cat, r) {
+    if (cat === 'friends') return String((r && r.friendship && r.friendship.created_at) || '');
+    if (cat === 'reports') return String((r && r.handled_at) || '');
+    return String((r && r.created_at) || '');
+  }
+
+  /** How many rows of 分区 `cat` are newer than its watermark.
+   *
+   *  ⚠ THE EPOCH COMES FROM THE SHARED BLOCK'S `unreadSince`, not from a literal here: the same
+   *  function states why an absent watermark must read as 1970 (「created_at > null is NULL」), and
+   *  that is a rule the counts, the tabs and the dot all have to agree about. */
+  function cmUnreadCount(cat) {
+    var S = GMCommunity.shared() || {};
+    if (typeof S.unreadSince !== 'function') return 0;
+    var since = Date.parse(S.unreadSince(cmReadAt(cat), ''));
+    var rows = cmMsgRows(cat) || [];
+    return rows.filter(function (r) {
+      var t = Date.parse(cmMsgTs(cat, r));
+      return isFinite(t) && t > since;
+    }).length;
+  }
+
+  /** The newest arrival among the rows 分区 `cat` is currently showing, or `''` when there is nothing
+   *  to point at — an empty list, or one holding only reports nobody has acted on. */
+  function cmNewestTs(cat) {
+    var best = 0;
+    (cmMsgRows(cat) || []).forEach(function (r) {
+      var t = Date.parse(cmMsgTs(cat, r));
+      if (isFinite(t) && t > best) best = t;
+    });
+    return best ? new Date(best).toISOString() : '';
+  }
+
+  /**
+   * §2.1.1's 进入分区即标记为已读, as the map `GMCommunity.messages.markRead` takes.
+   *
+   * ⚠ THE WATERMARK IS THE NEWEST ROW ON SCREEN, NOT `new Date()` — A DELIBERATE DEPARTURE FROM
+   * §2.1.1's OWN SNIPPET. The snippet writes `var now = new Date().toISOString()`, which is the
+   * OPERATOR'S clock, while everything the watermark is later compared against is a SERVER clock
+   * (`notifications.created_at` / `friendships.created_at` / `reports.handled_at`). A machine whose
+   * clock runs behind would therefore write a watermark in the past and its dot would NEVER clear —
+   * P0's own acceptance criterion (「点击分区立即标记为已读，红点消失」) failing on that machine, and
+   * staying failed until the clock caught up. Taking the instant from the rows makes both sides of
+   * the comparison the same clock by construction, and it is also the truer reading of the word: a
+   * watermark says 「我看过到这一刻为止的东西」, and the newest thing I saw IS that instant.
+   *
+   * ⚠ AND IT NEVER MOVES BACKWARDS. Opening a 分区 whose newest row is older than the watermark (all
+   * of it already read) must not rewind it: that would turn every older row unread again and the dot
+   * would come back on its own — a bug that would look like the badge being 「乱跳」.
+   */
+  function cmMsgReadMap(cat) {
+    var at = cmNewestTs(cat);
+    if (!at) return null;
+    var cur = cmReadAt(cat);
+    if (cur && Date.parse(at) <= Date.parse(cur)) return null;
+    var map = {};
+    map[cat] = at;
+    return map;
+  }
+
+  /**
+   * Write one or more watermarks and repaint from the server's answer.
+   *
+   * ⚠ THE REPAINT READS THE ROW POSTGREST RETURNED, not the map that was just sent. `patchUser`
+   * merges that row into the session, so the counts below are computed from what the DATABASE now
+   * holds — and a write that did not happen (RLS, a missing column grant, an offline minute) leaves
+   * the dot exactly where it was instead of clearing a badge nothing was recorded for.
+   */
+  async function cmMarkMsgRead(cats) {
+    var map = null;
+    for (var i = 0; i < cats.length; i++) {
+      var m = cmMsgReadMap(cats[i]);
+      if (!m) continue;
+      map = map || {};
+      map[cats[i]] = m[cats[i]];
+    }
+    if (!map) return null;
+    var res = await GMCommunity.messages.markRead(map);
+    if (res && res.ok && res.user) await GMAuth.patchUser(res.user);
+    cmPaintMsgTabs();
+    cmPaintBadges();
+    return res;
+  }
+
+  /**
+   * §2.1.2's 分区切换: the tab, the window, and §2.1.1's mark.
+   *
+   * Deliberately NOT part of `cmPaintMsgs`: a repaint re-draws what is already in hand and must ask
+   * nobody anything (0.5.1's rule), whereas switching 分区 IS the act §2.1.1 says counts as reading.
+   * An unknown id does nothing — the tabs come from the markup, so anything else is a caller error.
+   */
+  function cmShowMsgCat(cat) {
+    var tabs = document.querySelectorAll('#cmMsgTabs [data-mcat]');
+    var known = false;
+    Array.prototype.forEach.call(tabs, function (b) {
+      if (b.getAttribute('data-mcat') === cat) known = true;
+    });
+    if (!known) return;
+    CM_MSGCAT = cat;
+    Array.prototype.forEach.call(tabs, function (b) {
+      b.classList.toggle('on', b.getAttribute('data-mcat') === cat);
+    });
+    Array.prototype.forEach.call(document.querySelectorAll('#cmPane-msgs .msg-sec'), function (p) {
+      p.classList.toggle('hidden', p.getAttribute('data-mcat') !== cat);
+    });
+    // §2.1.1's mark. NOT awaited: the window is already on screen, and a paint waiting on a round
+    // trip would show the dot lingering for exactly as long as the write takes.
+    // ⚠ IF THE ROWS ARE NOT IN HAND YET the mark is DEFERRED rather than skipped — `cmMsgReadMap`
+    // needs the newest arrival on screen, and on a first visit there is nothing to point at. The
+    // deferred form is also what keeps the 30-second poll from marking anything: only this function,
+    // reached by a press, ever sets the flag.
+    if (cmInbox !== null || cmNotices !== null) cmMarkMsgRead([cat]).catch(function () {});
+    else cmMsgWantRead = cat;
+  }
+
+  /** Spend the deferred mark, if the rows for it have arrived. Called at the end of `cmLoadMsgs`.
+   *  The flag is cleared either way: a 分区 that turned out to be EMPTY must not be marked read by
+   *  whatever arrives next, because by then the operator is somewhere else. */
+  function cmMsgFlushRead() {
+    var cat = cmMsgWantRead;
+    if (!cat) return;
+    cmMsgWantRead = '';
+    cmMarkMsgRead([cat]).catch(function () {});
+  }
+
+  /** §2.1.2's counts, one per tab, written from `cmUnreadCount` — the same number the dot beside
+   *  消息 sums up. Empty (not `0`) for a 分区 with nothing new: a tab reading 「分享 0」 is noise,
+   *  and it is what makes the strip's width jump as items arrive and are read. */
+  function cmPaintMsgTabs() {
+    Array.prototype.forEach.call(document.querySelectorAll('#cmMsgTabs [data-mcat]'), function (b) {
+      var n = cmUnreadCount(b.getAttribute('data-mcat'));
+      var el = b.querySelector('.msg-n');
+      if (el) el.textContent = n > 0 ? cmBadgeText(n) : '';
+    });
+  }
+
   function cmLoadMsgs() {
     cmMsgsLoading = true;
     cmMsgsMsg = { code: 'loading' };
@@ -6516,6 +6766,10 @@
       cmPaintMsgsMsg();
       cmPaintMsgs();
       cmPaintBadges();
+      // §2.1.1 — a 分区 entered before its rows existed gets its mark now, from the rows that just
+      // arrived. See `cmMsgFlushRead` for why this is a deferred request rather than a mark written
+      // from inside the load: the 30-second badge poll calls this function too.
+      cmMsgFlushRead();
       return null;
     });
   }
@@ -6525,38 +6779,36 @@
   function cmPaintMsgs() {
     // 1) 好友请求 — derived from `friendships`, not from `notifications`. 009_reports.sql states the
     // rule: a section whose source row DIES when the event is dealt with is derived.
-    var reqs = (cmFriends && cmFriends.incoming) || [];
-    cmFillList('cmMsgsReq',
-      reqs.map(function (f) { return cmFriendRow(f, 'incoming'); }),
+    cmFillEl(cmMsgList('friends'), (cmMsgRows('friends') || []).map(function (f) { return cmFriendRow(f, 'incoming'); }),
       T('community|暂无好友请求'));
 
     // 2) 分享 — `friend_shares` addressed to me, still live (§1.2.4's 15 minutes).
-    var live = (cmInbox || []).filter(function (s) { return GMCommunity.shares.isLive(s); });
-    cmFillList('cmMsgsShare', live.map(function (s) { return cmShareRow(s, 'in'); }),
+    cmFillEl(cmMsgList('shares'), (cmMsgRows('shares') || []).map(function (s) { return cmShareRow(s, 'in'); }),
       T('community|暂无待接收的分享'));
     // 「我还发出去了什么」 sits under the same heading: §1.2.4's 「A 需重发」 is a decision the
     // SENDER makes, and a sent list nobody can see is a share nobody knows to resend.
+    // ⚠ It is NOT part of `cmMsgRows('shares')` and must not become so: 「我发出的」 is not
+    // something addressed to me, so it has no place in the 分区's unread count — appending it here
+    // keeps the count and the list's first half about the same thing.
     var mine = (cmSent || []).filter(function (s) { return GMCommunity.shares.isLive(s); });
     if (mine.length) {
-      var box = $('cmMsgsShare');
+      var box = cmMsgList('shares');
       if (box) box.innerHTML += '<div class="cm-sec">' + esc(T('community|我发出的')) + '</div>' +
         mine.slice(0, 20).map(function (s) { return cmShareRow(s, 'out'); }).join('');
     }
 
-    // 3) @提及 — the `mention` rows of `notifications`, split out by KIND rather than by table.
-    var ats = (cmNotices || []).filter(function (n) { return n.kind === 'mention'; });
-    cmFillList('cmMsgsAt', ats.map(function (n) { return cmNoticeRow(n, true); }),
+    // 3) @提及 and 4) 系统通知 — the two halves of `notifications`, split by KIND.
+    cmFillEl(cmMsgList('mentions'), (cmMsgRows('mentions') || []).map(function (n) { return cmNoticeRow(n, true); }),
       T('community|暂无提及'));
-
-    // 4) 系统通知 — everything else in that table (a 警告 is not derivable — see 009).
-    var sys = (cmNotices || []).filter(function (n) { return n.kind !== 'mention'; });
-    cmFillList('cmMsgsSys', sys.map(function (n) { return cmNoticeRow(n, false); }),
+    cmFillEl(cmMsgList('system'), (cmMsgRows('system') || []).map(function (n) { return cmNoticeRow(n, false); }),
       T('community|暂无通知'));
 
     // 5) 我的举报 — 1.0.4 §P1. `reports.mine`, drawn with the处理状态 so 「处理了吗」 has an answer
     // that does not require an admin to be asked. The section sits here rather than in 举报 because
     // it is a LIST OF MINE, like 「我发出的」 — the report form is a dialog, not a page.
-    cmFillList('cmMsgsRep', (cmMyReports || []).map(cmReportRow), T('community|暂无举报'));
+    cmFillEl(cmMsgList('reports'), (cmMsgRows('reports') || []).map(cmReportRow), T('community|暂无举报'));
+
+    cmPaintMsgTabs();
   }
 
   /** One of my own reports. `status` is 009's closed set (`REPORT_STATUSES`), and `admin_action`
@@ -6575,8 +6827,10 @@
       '</div>';
   }
 
-  function cmFillList(id, htmlRows, emptyText) {
-    var box = $(id);
+  /** Fill one list. `htmlRows` are already-escaped strings. ⚠ Takes the ELEMENT, not an id: §2.1.2's
+   *  分区 containers are reached through the markup's own `data-mcat` (see `cmMsgList`), so the five
+   *  container ids are written down in exactly one place each — the markup. */
+  function cmFillEl(box, htmlRows, emptyText) {
     if (!box) return;
     box.innerHTML = htmlRows.length
       ? htmlRows.join('')
@@ -6640,9 +6894,10 @@
         : '') + '</div>';
   }
 
-  function cmNoticeAct(id, action) {
-    var P = (action === 'read') ? GMCommunity.notices.markRead : GMCommunity.notices.markAllRead;
-    return P(id).then(function (r) {
+  /** §1.2.4's per-row 「标记已读」 — 「我办完了」, NOT 「有别的新东西吗」. See its call site for why the
+   *  all-or-nothing verb moved out of here in 1.0.6 四号. */
+  function cmNoticeAct(id) {
+    return GMCommunity.notices.markRead(id).then(function (r) {
       if (!r || !r.ok) {
         cmMsgsMsg = { code: 'loadFailed', err: (r && r.error) || 'INTERNAL', tone: 'err' };
         cmPaintMsgsMsg();
@@ -7344,25 +7599,34 @@
 
   // ---- §1.6.3's red dots -------------------------------------------------------------------------
 
-  /** The badges on the 好友 / 消息 tabs — in the sidebar AND, since 1.0.6 §1.3.2, in the avatar
-   *  drawer — plus §1.3.2's tab-title prefix. Derived, not stored: 好友 counts the requests awaiting
-   *  an answer and 消息 counts what is unread, and both are questions about rows already in hand.
+  /** §1.6.3's red dots — the badges on the 好友 / 消息 tabs, in the sidebar AND, since 1.0.6 §1.3.2, in
+   *  the avatar drawer, plus §1.3.2's tab-title prefix.
+   *
+   *  ⚠ 1.0.6 四号 §2.1.1 CHANGED WHAT THESE COUNT, AND IT IS THE POINT OF THE RELEASE. Until now they
+   *  were 「一共有多少」 — every pending request, every live share, every unread notice — so the dot
+   *  stayed up after the operator had opened the list and read it. They are now 「比这个分区的水位新
+   *  的还有几条」 (`cmUnreadCount`), which is what makes 「进入分区即标记为已读，红点消失」 true: the
+   *  count reads the SAME watermark the mark writes, so there is no third thing to keep in step.
    *
    *  ⚠ ONE DERIVATION, FIVE SURFACES. §1.3.4's sketch gives the title its own `fetchUnreadCounts()`,
    *  which is a second reader for a number that is already on screen: the first time one of the two
    *  is a moment late, the dot beside 好友 and the tab title disagree about how much is waiting. The
-   *  two counts are computed once, here, and written to every surface that shows them. */
+   *  counts are computed once, here, and written to every surface that shows them — including the
+   *  five tabs of §2.1.2's strip, which is why `cmPaintMsgTabs` is called from here. */
   function cmPaintBadges() {
-    var reqs = (cmFriends && cmFriends.incoming) ? cmFriends.incoming.length : 0;
-    var live = (cmInbox || []).filter(function (s) { return GMCommunity.shares.isLive(s); }).length;
-    var unread = (cmNotices || []).filter(function (n) { return !n.read; }).length;
-    var msgs = live + unread;
+    var reqs = cmUnreadCount(CM_MSGCAT_SPLIT);
+    // The 消息 tab sums the OTHER four 分区 rather than all five: a friend request is already counted
+    // beside 好友, and a total that included it would report one arrival twice.
+    var msgs = cmMsgCats().reduce(function (a, c) {
+      return c === CM_MSGCAT_SPLIT ? a : a + cmUnreadCount(c);
+    }, 0);
     cmBadge('cmFriendsBadge', reqs);
     cmBadge('cmMsgsBadge', msgs);
     // The drawer's two rows. They exist only while the menu is open (`cmBadge` returns early on a
     // missing element), so `showUserMenu` paints them as part of building it — see there.
     cmBadge('menuFriendsBadge', reqs);
     cmBadge('menuMsgsBadge', msgs);
+    cmPaintMsgTabs();
     // ⚠ A PREFIX ONLY WHILE THERE IS SOMEBODY TO COUNT FOR. The counts can outlive the session by
     // one in-flight read, and 「(3) 白身 · 查看器」 over a signed-out page is a claim about an account
     // nobody is in. `cmBadgeOpen()` is that question, asked in the one place that is about to act on
@@ -8570,10 +8834,19 @@
   // is printed from `sel` and not derived from the checkboxes: 「已选 N 个」 must tell the truth even
   // when the selected rows are on another page.
   var ADK = { status: 'all', page: 1, limit: 50, total: 0, rows: [], loaded: false, sel: {}, busy: false };
+  // 1.0.6 四号 §一.5.3 — 平台统计. One census object, re-read on entering the section and by the
+  // panel's own 刷新; `loaded` is what keeps a language switch from firing it again.
+  var ADP = { stats: null, loaded: false };
+  // 1.0.6 四号 §2.3.4 — the persisted all-rows state of the TWO lists (`adminListPrefs`). Read once;
+  // the four buttons write it back. ⚠ The in-memory copy exists so a repaint can re-apply the state
+  // without waiting for a storage round trip — `applyListPrefs()` is what the paints call.
+  var ADL = { userListCollapsed: true, codeListCollapsed: true, loaded: false };
   // 1.0.6 三号 §二.2 — §2.3.3's switch, now ONE key (`chat_enabled`); the old pair carried a `mute`
   // field, which is why this line changed shape and not just name.
   var ADG = { chat: true, loaded: false };
-  var ADS = { row: null };               // the account the lower panel points at
+  // §2.4.3's 「查看用户」 target — the row the user list is supposed to be showing highlighted.
+  // `row` is the account the lower 用户详情 panel points at; `hl` is the one the LIST should mark.
+  var ADS = { row: null, hl: '' };
 
   /** `el.textContent = text`, tolerantly. Every label in this section is `—` in the markup and
    *  filled here, because `_tools/keys.cjs` only inventories `T('…')` literals in this file and a
@@ -8586,6 +8859,89 @@
     if (!el) return;
     el.textContent = text;
     el.style.color = isErr ? 'var(--red)' : '';
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  // 1.0.6 四号 §一.5.2 — the platform chip, and why this half does NOT recompute it
+  // ---------------------------------------------------------------------------------------------
+  /**
+   * The four tag values, taken from the shared block rather than typed out here. `PLATFORM` is the
+   * ONE list (`community-shared.js`, mirrored from `_shared/community.ts`), and it is what
+   * `GMPlatform.report` refuses to go outside of — a second array of four strings in this file is
+   * exactly the shape this project has paid for six times.
+   */
+  function adPlatformValues() {
+    var S = GMCommunity.shared() || {};
+    var P = S.PLATFORM || {};
+    return [P.EXTENSION, P.WEB, P.BOTH, P.NONE].filter(function (v) { return !!v; });
+  }
+
+  /**
+   * The row's tag, as the SERVER computed it.
+   *
+   * ⚠ READ, NOT RE-DERIVED — AND THIS IS THE POINT RATHER THAN A SHORTCUT. `admin-list-users` fills
+   * `platform_tag` by calling the shared block's own `platformTag()`, i.e. the answer already exists
+   * and is already the authority's. Recomputing it here from `u.platforms` would be a second copy of
+   * a derivation that also has a SQL twin (`public.platform_tag()`), and the three would then be
+   * able to disagree — the console drawing 「两者」 on the row while the 平台统计 panel counts the
+   * same account as 「仅扩展」.
+   *
+   * ⚠ AN UNRECOGNISED TAG DRAWS NOTHING rather than falling back to `none`. 「未上报」 is a claim
+   * about the account (it has never reported); a build talking to a server that does not send the
+   * field at all has no basis for making that claim, and a wrong chip on a moderation row is worse
+   * than a missing one.
+   */
+  function adPlatformTagOf(u) {
+    var tag = String((u && u.platform_tag) || '');
+    return adPlatformValues().indexOf(tag) >= 0 ? tag : '';
+  }
+
+  /**
+   * §一.5.2's chip label. A `switch` of literal `T('…')` calls, for the reason `cmStateText` gives:
+   * `keys.cjs` only sees a quoted literal, so four keys held in a table would be four keys no
+   * dictionary ever answers — and the chip would stay Chinese in fourteen languages.
+   * ⚠ The CASES are the shared block's values, not four string literals, so the tag vocabulary is
+   * still stated in exactly one place.
+   */
+  function adPlatformLabel(tag) {
+    var P = (GMCommunity.shared() || {}).PLATFORM || {};
+    switch (tag) {
+      case P.EXTENSION: return T('viewer|仅扩展');
+      case P.WEB: return T('viewer|仅网页');
+      case P.BOTH: return T('viewer|两者');
+      case P.NONE: return T('viewer|未上报');
+    }
+    return '';
+  }
+
+  /** The chip itself, or `''` when the server sent no tag — see `adPlatformTagOf`. */
+  function adPlatformChip(u) {
+    var tag = adPlatformTagOf(u);
+    if (!tag) return '';
+    var label = adPlatformLabel(tag);
+    if (!label) return '';
+    return '<span class="pftag pftag-' + esc(tag) + '">' + esc(label) + '</span>';
+  }
+
+  /**
+   * §1.5.2's 平台历史 block: one indented line per platform the account has ever logged in from.
+   *
+   * ⚠ THE LINES ARE BUILT HERE BUT THE NUMBERS ARE NOT. `platform_history` is an aggregate computed
+   * in the database for the WHOLE PAGE in one call (see `admin-list-users`'s header) — this function
+   * only formats what arrived, and an account that has never reported leaves `[]`, which draws the
+   * same 「—」 an empty field does.
+   */
+  function adPlatformHistoryHtml(u) {
+    var rows = Array.isArray(u && u.platform_history) ? u.platform_history : [];
+    var head = '<div class="udet"><span class="hint">' + esc(T('viewer|平台历史')) + '：</span></div>';
+    if (!rows.length) {
+      return '<div class="udet"><span class="hint">' + esc(T('viewer|平台历史')) + '：</span>—</div>';
+    }
+    return head + rows.map(function (h) {
+      return '<div class="udet pfind">' + esc(adPlatformLabel(h && h.platform)) + '：' +
+        esc(T('viewer|首次 {a}，最近 {b}', { a: adWhen(h && h.first_at), b: adWhen(h && h.last_at) })) +
+        '</div>';
+    }).join('');
   }
 
   function renderAdmin() {
@@ -8637,6 +8993,19 @@
     // ---- 1.0.5 §二.3.2 -----------------------------------------------------------------------
     adSay('adExpandAll', T('viewer|展开全部'));
     adSay('adCollapseAll', T('viewer|折叠全部'));
+    // ---- 1.0.6 四号 §2.3.1 — the code list's own pair, SAME two strings.
+    // ⚠ Two controls, one pair of `T()` calls. Giving the code list its own wording («全部展开»)
+    // would be a second name for one operation, and the translator would then have to be told that
+    // the two are meant to read alike.
+    adSay('adCodeExpandAll', T('viewer|展开全部'));
+    adSay('adCodeCollapseAll', T('viewer|折叠全部'));
+    // ---- 1.0.6 四号 §一.5.3 平台统计 -----------------------------------------------------------
+    adSay('adPfTitle', T('viewer|平台统计'));
+    adSay('adPfReload', T('viewer|刷新'));
+    adSay('adPfExport', T('viewer|导出 CSV'));
+    // ---- 1.0.6 四号 §2.4.4 按使用者搜索 -------------------------------------------------------
+    adSay('adCodeQueryLab', T('viewer|搜索使用者'));
+    adSay('adCodeSearch', T('viewer|搜索'));
     // ⚠ VISIBILITY, and only that. §2.2.5 wants the panel to exist for a super admin and for the
     // page to say nothing about why — so the reveal is a plain `hidden` toggle off the SESSION's own
     // role, and `admin-set-role` re-decides server-side on every press. A client patched to unhide
@@ -8687,15 +9056,20 @@
 
   function wireAdmin() {
     if ($('adGen') && !$('adGen').onclick) $('adGen').onclick = adminGenerate;
+    // ⚠ §2.4.3's highlight is CLEARED by the three controls that mean 「去别处」 — 搜索, ‹ and ›.
+    // It is deliberately NOT cleared inside `adminLoadUsers`, which is also the reload after a ban
+    // or a promotion: dropping the mark there would erase the operator's own jump the moment they
+    // acted on the row they jumped to. See `adJumpToUser`.
     if ($('adSearch') && !$('adSearch').onclick) $('adSearch').onclick = function () {
       ADC.query = ($('adQuery') || {}).value || '';
+      ADS.hl = '';
       adminLoadUsers(1);
     };
     if ($('adPrev') && !$('adPrev').onclick) $('adPrev').onclick = function () {
-      if (ADC.page > 1) adminLoadUsers(ADC.page - 1);
+      if (ADC.page > 1) { ADS.hl = ''; adminLoadUsers(ADC.page - 1); }
     };
     if ($('adNext') && !$('adNext').onclick) $('adNext').onclick = function () {
-      if (ADC.page * ADC.limit < ADC.total) adminLoadUsers(ADC.page + 1);
+      if (ADC.page * ADC.limit < ADC.total) { ADS.hl = ''; adminLoadUsers(ADC.page + 1); }
     };
     // ---- 1.0.4 §P0. Every control is wired HERE, next to the labels that name it, for the 1.0.0
     // reason: `buildCloudPanel` drew six controls and wired none, and no static assertion can tell
@@ -8737,6 +9111,34 @@
     if ($('adCodeNext') && !$('adCodeNext').onclick) $('adCodeNext').onclick = function () {
       if (ADK.page * ADK.limit < ADK.total) adminLoadCodes(ADK.page + 1);
     };
+    // ---- 1.0.6 四号 §2.4.4 — 按使用者搜索 -------------------------------------------------------
+    // Submitted by the button rather than per keystroke: each press is a Function call, and the
+    // reason is written where the markup is.
+    if ($('adCodeSearch') && !$('adCodeSearch').onclick) $('adCodeSearch').onclick = function () {
+      ADK.query = ($('adCodeQuery') || {}).value || '';
+      // Back to page 1 for the same reason the filter pills do it: page 3 of a list that now has one
+      // page is an empty panel that looks like 「搜不到」.
+      adminLoadCodes(1);
+    };
+    // ---- 1.0.6 四号 §2.3.1 — 展开全部 / 折叠全部, on BOTH lists --------------------------------
+    // One function with two arguments (`adToggleAllRows`) rather than four handlers, for the reason
+    // `setAllUserRows` already gives: the two buttons per list are one operation with a different
+    // argument, and two functions would be two places to forget which list 「全部」 means.
+    if ($('adExpandAll') && !$('adExpandAll').onclick) $('adExpandAll').onclick = function () {
+      adToggleAllRows('user', true);
+    };
+    if ($('adCollapseAll') && !$('adCollapseAll').onclick) $('adCollapseAll').onclick = function () {
+      adToggleAllRows('user', false);
+    };
+    if ($('adCodeExpandAll') && !$('adCodeExpandAll').onclick) $('adCodeExpandAll').onclick = function () {
+      adToggleAllRows('code', true);
+    };
+    if ($('adCodeCollapseAll') && !$('adCodeCollapseAll').onclick) $('adCodeCollapseAll').onclick = function () {
+      adToggleAllRows('code', false);
+    };
+    // ---- 1.0.6 四号 §一.5.3 平台统计 ------------------------------------------------------------
+    if ($('adPfReload') && !$('adPfReload').onclick) $('adPfReload').onclick = function () { adminLoadPlatformStats(true); };
+    if ($('adPfExport') && !$('adPfExport').onclick) $('adPfExport').onclick = function () { adminExportPlatformCsv(); };
     // The four pills are one listener, because they are one control with four values — the same
     // shape `[data-cmcat]` uses in the news panel.
     Array.prototype.forEach.call(document.querySelectorAll('[data-adc-flt]'), function (b) {
@@ -8761,9 +9163,6 @@
     if ($('adSuperDemote') && !$('adSuperDemote').onclick) $('adSuperDemote').onclick = function () {
       adminSetRole('user');
     };
-    // ---- 1.0.5 §二.3.2 -----------------------------------------------------------------------
-    if ($('adExpandAll') && !$('adExpandAll').onclick) $('adExpandAll').onclick = function () { setAllUserRows(true); };
-    if ($('adCollapseAll') && !$('adCollapseAll').onclick) $('adCollapseAll').onclick = function () { setAllUserRows(false); };
   }
 
   /**
@@ -8803,6 +9202,12 @@
    */
   function adminEnter() {
     renderAdmin();
+    // 1.0.6 四号 §2.3.4 — the stored all-rows state, read once. ⚠ IT IS READ ALONGSIDE THE SERVER
+    // CALLS, NOT BEFORE THEM. Both are independent, and awaiting a local storage round trip before
+    // the first list request would make the console's first paint wait on the slower of two
+    // unrelated things. Rows painted before the read resolves are collapsed, which is the DEFAULT
+    // (「默认全部折叠」), so the intermediate state is the shipped one rather than a wrong one.
+    if (!ADL.loaded) adminPrefsLoad().then(function () { applyListPrefs(); });
     if (!ADC.loaded) adminLoadUsers(1);
     adminLoadReports();
     adminLoadFeedback();
@@ -8816,6 +9221,10 @@
     // out with no explanation. `adminRevoke` is what reloads it, because that is the press that
     // changes the rows.
     if (!ADK.loaded) adminLoadCodes(1);
+    // 1.0.6 四号 §一.5.3 — the census. Cached like the switches and for the same reason: it is a
+    // whole-population aggregate that an operator reads once per visit, and re-reading it on every
+    // entry would fire a GROUP BY because somebody changed the language. 刷新 is the way to re-ask.
+    if (!ADP.loaded) adminLoadPlatformStats(false);
   }
 
   // ---------------------------------------------------------------------------------------------
@@ -9021,6 +9430,114 @@
   }
 
   // ===========================================================================================
+  // 1.0.6 四号 §一.5.3 — 平台统计：一次全量普查 + 导出 CSV
+  // ===========================================================================================
+  // `admin-platform-stats` is the door to `public.platform_stats()` (023), which does the counting
+  // in SQL because neither of the two questions can be asked over PostgREST: 「仅扩展」 is a property
+  // of a DERIVED tag (`platform_tag`) and 「近 7 天」 is a window over a second table. This half only
+  // formats the answer.
+  //
+  // ⚠ NOTHING HERE RECOUNTS. The four buckets and the two login counts arrive as numbers from the
+  // database, and a total assembled on this side would be a second census computed over a page of
+  // rows — the 1.0.5 audit's 「计数必须在数据库」, and the shape that produces a number that changes
+  // when the operator turns a page.
+
+  /**
+   * §一.5.3's read. `force` is the 刷新 button; without it the panel uses the copy it already has,
+   * which is why the language-switch repaint (`renderAdmin`) can call this indirectly and ask the
+   * network nothing.
+   */
+  async function adminLoadPlatformStats(force) {
+    if (ADP.loaded && !force) return;
+    adState('adPfState', T('viewer|正在加载…'), false);
+    var res = await GMAdmin.platformStats();
+    if (!res.ok) { adState('adPfState', cloudErrText(res.error), true); return; }
+    ADP.stats = res.stats || {};
+    ADP.loaded = true;
+    adState('adPfState', '', false);
+    adminPaintPlatformStats();
+  }
+
+  /** A number that may not have arrived. `—` rather than `0`: a zero is a fact about the product and
+   *  a dash is a fact about the read, and the panel has to be able to tell the operator which. */
+  function adCount(v) {
+    return (typeof v === 'number' && isFinite(v)) ? String(v) : '—';
+  }
+
+  function adminPaintPlatformStats() {
+    var s = ADP.stats || {};
+    var u = s.users || {};
+    var l = s.logins7d || {};
+    var P = (GMCommunity.shared() || {}).PLATFORM || {};
+    var host = $('adPfRows');
+    if (host) {
+      // The four buckets in the SQL's own order, then the account total — so the sum checks itself
+      // on screen: extension + web + both + none === total. ⚠ `none` is drawn, not hidden: on the
+      // day this ships every existing account is `none`, and three lines that visibly do not add up
+      // is how somebody talks themselves into counting something else.
+      var rows = [
+        [adPlatformLabel(P.EXTENSION), u.extension],
+        [adPlatformLabel(P.WEB), u.web],
+        [adPlatformLabel(P.BOTH), u.both],
+        [adPlatformLabel(P.NONE), u.none],
+        [T('viewer|账号总数'), u.total],
+      ];
+      host.innerHTML = rows.map(function (r) {
+        return '<div class="rowline"><span class="hint">' + esc(r[0]) + '</span>' +
+          '<span class="sp"></span><span>' + esc(adCount(r[1])) + '</span></div>';
+      }).join('');
+    }
+    adSay('adPfLogins', T('viewer|近 7 天登录：扩展 {a} 次，网页 {b} 次', { a: adCount(l.extension), b: adCount(l.web) }));
+    adSay('adPfAt', s.generated_at ? T('viewer|统计于 {t}', { t: adWhen(s.generated_at) }) : '');
+  }
+
+  /** A CSV cell. ⚠ QUOTED WHENEVER IT COULD CONTAIN THE DELIMITER, A QUOTE OR A NEWLINE, and the
+   *  label column is why: it is dictionary text, and a translator is free to put a comma, a full-width
+   *  comma or a line break in it. A CSV that is correct only in English splits a translated label
+   *  across five columns in the operator's spreadsheet. */
+  function adCsvCell(v) {
+    var s = (v == null) ? '' : String(v);
+    return /[",\r\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+  }
+
+  /**
+   * §一.5.3's 「导出 CSV」.
+   *
+   * ⚠ THE MACHINE KEY IS A COLUMN OF ITS OWN, next to the translated label. The operator's
+   * spreadsheet is the one place this data will be joined with something else (a billing run, a
+   * support list), and joining on 「两者」 or 「未上报」 is joining on a string that changes with the
+   * UI language. `users.both` does not.
+   *
+   * ⚠ AND IT IS `\ufeff`-PREFIXED, because Excel reads a BOM-less UTF-8 CSV as the system ANSI
+   * codepage — the Chinese labels would arrive as mojibake on the very machine this console runs on.
+   * The BOM is not part of the data; it is four bytes of instruction to the reader.
+   */
+  async function adminExportPlatformCsv() {
+    if (!ADP.stats) await adminLoadPlatformStats(true);
+    if (!ADP.stats) return;   // the panel has already printed why
+    var s = ADP.stats;
+    var u = s.users || {};
+    var l = s.logins7d || {};
+    var P = (GMCommunity.shared() || {}).PLATFORM || {};
+    var rows = [
+      ['metric', 'label', 'value'],
+      ['users.' + P.EXTENSION, adPlatformLabel(P.EXTENSION), u.extension],
+      ['users.' + P.WEB, adPlatformLabel(P.WEB), u.web],
+      ['users.' + P.BOTH, adPlatformLabel(P.BOTH), u.both],
+      ['users.' + P.NONE, adPlatformLabel(P.NONE), u.none],
+      ['users.total', T('viewer|账号总数'), u.total],
+      ['logins7d.' + P.EXTENSION, T('viewer|近 7 天登录（扩展）'), l.extension],
+      ['logins7d.' + P.WEB, T('viewer|近 7 天登录（网页）'), l.web],
+      ['generated_at', T('viewer|统计时间'), s.generated_at || ''],
+    ];
+    var csv = '\ufeff' + rows.map(function (r) {
+      return r.map(adCsvCell).join(',');
+    }).join('\r\n') + '\r\n';
+    download('baishen-platform-stats.csv', csv, 'text/csv');
+    adState('adPfState', T('viewer|已导出。'), false);
+  }
+
+  // ===========================================================================================
   // 1.0.6 三号 §2.3 — 撤销激活码栏：列表 / 筛选 / 分页 / 选择集 / 批量撤销
   // ===========================================================================================
   // The panel this replaces was a `<textarea>` (paste codes, one per line) with two buttons, and it
@@ -9080,6 +9597,29 @@
       return;
     }
     host.innerHTML = ADK.rows.map(adCodeRowHtml).join('');
+    // 1.0.6 四号 §2.3.4 — re-apply the stored all-rows state. `innerHTML` above threw every row's
+    // `expanded` class away, so without this a filter change or a page turn would silently unfold a
+    // list the operator had folded.
+    applyCodeListPref();
+  }
+
+  /**
+   * 1.0.6 四号 §2.4.2 — the account a 已使用 code belongs to, as §2.4.3 spells it:
+   * 「张三（zhang@example.com）」.
+   *
+   * ⚠ THE ROW'S STATE COMES FROM `redeemed`, NEVER FROM WHETHER A NAME ARRIVED. `redeemed_by` is
+   * `on delete set null` (020_reports…'s sibling, and `admin-list-codes` says the same), so a spent
+   * code can outlive the account that spent it: `redeemed` is true and both name fields are null.
+   * Drawing that as 「未使用」 would be the one actively wrong answer — the code WAS spent, and what
+   * the operator needs to know is that the holder is gone, not to hand the same code out again.
+   * So the missing-name case gets a sentence rather than a dash.
+   */
+  function adCodeUserLabel(row) {
+    var name = (row && row.redeemed_username) || '';
+    var mail = (row && row.redeemed_email) || '';
+    if (name && mail) return name + '（' + mail + '）';
+    if (name || mail) return name || mail;
+    return T('viewer|账号已注销');
   }
 
   function adCodeRowHtml(row) {
@@ -9108,10 +9648,31 @@
         uDetailRow(T('viewer|生成者'), (row && (row.issuer || row.issued_by)) || '') +
         uDetailRow(T('viewer|备注'), (row && row.note) || '') +
         uDetailRow(T('viewer|状态'), adCodeLabel(st)) +
+        // §2.4.3 — the per-state block. The three states are NOT merged into one list of seven
+        // fields: 「使用时间：—」 on a 未使用 row reads as 「用过但没记下时间」 rather than 「还没人
+        // 用过」, and the sketch draws three separate blocks for exactly that reason.
+        (st === 'used'
+          ? uDetailRow(T('viewer|使用者'), adCodeUserLabel(row)) +
+            uDetailRow(T('viewer|使用时间'), adWhen(row && row.redeemed_at))
+          : '') +
+        (st === 'revoked'
+          ? uDetailRow(T('viewer|撤销时间'), (row && row.revoked_at) ? adWhen(row.revoked_at) : '') +
+            uDetailRow(T('viewer|撤销者'), (row && (row.revoker || row.revoked_by)) || '')
+          : '') +
         '<div class="btn-row" style="margin-top:6px">' +
           (st === 'revoked' ? '' :
             '<button class="sec" data-adc-revoke="' + esc(code) + '">' + esc(T('viewer|撤销')) + '</button>') +
           '<button class="sec" data-adc-copy="' + esc(code) + '">' + esc(T('viewer|复制')) + '</button>' +
+          // ⚠ A 已使用 ROW KEEPS ITS 撤销 BUTTON even though §2.4.3's sketch of that state draws only
+          // [复制] [查看用户]. The by-name revoke path in `admin-revoke-codes` deliberately does NOT
+          // filter on `redeemed` — 「这个码泄露了，作废」 applies to a spent code too — and dropping the
+          // button would leave that path reachable only through 撤销全部未使用, which skips precisely
+          // these rows. The sketch is a sketch; the capability shipped in 1.0.6 三号.
+          ((row && row.redeemed_by)
+            ? '<button class="sec" data-adc-user="' + esc(row.redeemed_by) + '" data-adc-term="' +
+              esc(row.redeemed_email || row.redeemed_username || '') + '">' +
+              esc(T('viewer|查看用户')) + '</button>'
+            : '') +
         '</div>' +
       '</div>' +
     '</div>';
@@ -9124,7 +9685,9 @@
     // The filter is read from `ADK.status` and not from the buttons: the buttons are painted FROM
     // it (`adminPaintCodeFilter`), and reading the state back off the DOM it was painted into is how
     // the two end up able to disagree.
-    var res = await GMAdmin.listCodes({ status: ADK.status, page: ADK.page, limit: ADK.limit });
+    // §2.4.4's term goes through `listCodes` as `query`, and the client half of its empty-means-
+    // nothing rule lives there (an untouched box must not become `filter: { query: '' }`).
+    var res = await GMAdmin.listCodes({ status: ADK.status, page: ADK.page, limit: ADK.limit, query: ADK.query });
     if (!host) return;
     if (!res.ok) {
       host.innerHTML = '<div class="hint">' + esc(cloudErrText(res.error)) + '</div>';
@@ -9229,6 +9792,14 @@
       }
       var rev = t && t.closest ? t.closest('[data-adc-revoke]') : null;
       if (rev) { adminRevoke([rev.getAttribute('data-adc-revoke')]); return; }
+      // 1.0.6 四号 §2.4.3's 「查看用户」. Handled here, with the other two in-row controls and for the
+      // same reason: it is INSIDE the row, so without this branch the press would fall through to the
+      // row-toggle below and merely expand the row it was meant to leave.
+      var usr = t && t.closest ? t.closest('[data-adc-user]') : null;
+      if (usr) {
+        adJumpToUser(usr.getAttribute('data-adc-user'), usr.getAttribute('data-adc-term') || '');
+        return;
+      }
       // §2.3.3's 「使用相同的折叠/展开样式」 — measured on the ROW, like `toggleUserRow` (the hands
       // above are handled first precisely because they are INSIDE the row).
       var row = t && t.closest ? t.closest('[data-adc]') : null;
@@ -9251,6 +9822,42 @@
     (ADU || []).forEach(function (u) { if (u && u.id === want) ADS.row = u; });
     adminPaintUser();
     adminLoadUserReports(want);
+  }
+
+  /**
+   * §2.4.3's 「查看用户」 — 跳转到用户列表并高亮该用户.
+   *
+   * ⚠ THE JUMP HAS TO GO THROUGH THE SERVER'S SEARCH BOX, AND THAT IS NOT A SHORTCUT. The directory
+   * is PAGED and filtered server-side, and `admin-list-users`'s `filter.query` matches `username` and
+   * `email` — not `id`. There is therefore no request that says 「给我包含这个 uuid 的那一页」. The code
+   * row already has the holder's email and username on screen (§2.4.2 put them there), and asking the
+   * directory for THAT is what guarantees the row is on the page we are about to mark. The
+   * alternative — load page 1 and look — would scroll to nothing on any deployment with more than
+   * fifty accounts, which is most of them.
+   *
+   * `term` prefers the EMAIL: it is the unique column, while a `ilike` substring match on a username
+   * is a match on a display name and can legitimately hit several accounts. The username is the
+   * fallback for a row whose email never arrived.
+   *
+   * ⚠ IT ALSO POINTS THE 用户详情 PANEL AT THEM, through the id field, because that panel is driven by
+   * an id and leaving it on the previous account would make the two halves of the console disagree
+   * about who is selected — while the list below is filtered to somebody else.
+   */
+  function adJumpToUser(id, term) {
+    var want = String(id || '').trim();
+    if (!want) return;
+    ADS.hl = want;
+    if ($('adUserId')) $('adUserId').value = want;
+    adminPickUser(want);
+    var q = String(term || '').trim();
+    if ($('adQuery')) $('adQuery').value = q;
+    ADC.query = q;
+    // `adminLoadUsers` returns the promise its own await produces, so the scroll happens against the
+    // rows this jump just asked for rather than against the ones being replaced.
+    adminLoadUsers(1).then(function () {
+      var row = document.querySelector('#adRows [data-user="' + want + '"]');
+      if (row && row.scrollIntoView) row.scrollIntoView({ block: 'center' });
+    });
   }
 
   function adminPaintUser() {
@@ -9390,6 +9997,12 @@
           (cmAdminCountryLabel(u.country_code)
             ? '<span class="hint adm-cc">' + esc(cmAdminCountryLabel(u.country_code)) + '</span>'
             : '') +
+          // 1.0.6 四号 §一.5.2 — the platform tag, right where §2.3.2's sketch draws it
+          // （「▶ 开发者  dev@example.com  🇨🇳  [两者]  [管理]」）: after the 地区 cell and before the
+          // `sp` that pushes the buttons to the right. `adPlatformChip` returns `''` for a row the
+          // server sent no tag for, and an empty string is invisible in a flex row — so the cell is
+          // simply absent rather than blank-boxed.
+          adPlatformChip(u) +
           '<span class="sp"></span>' +
           '<span class="hint">' + esc(banned ? T('viewer|已封禁') : (muted ? T('viewer|已禁言') : T('viewer|正常'))) + '</span>' +
           // 1.0.4 §P0 — 用户详情. A per-row button rather than a global search box, because the
@@ -9402,6 +10015,18 @@
         '<div class="uexp">' +
           uDetailRow(T('viewer|注册时间'), adWhen(u.created_at)) +
           uDetailRow(T('viewer|最后登录'), u.last_seen_at ? adWhen(u.last_seen_at) : '') +
+          // 1.0.6 四号 §2.3.2 — 「最后平台：网页（2026-10-04 15:32）」, then the per-platform history
+          // right below it, in the sketch's own order.
+          // ⚠ `last_platform` and `platforms` are the STATE (023's header): they survive a log that
+          // has been pruned or a login whose INSERT failed. The history underneath is the LOG, and it
+          // can therefore be EMPTY while 最后平台 is filled — an account that reported once, whose
+          // login row is outside whatever the aggregate looked at. The two lines are drawn from two
+          // different sources on purpose, so a disagreement between them is information rather than
+          // a bug to paper over.
+          uDetailRow(T('viewer|最后平台'), u.last_platform
+            ? adPlatformLabel(u.last_platform) + '（' + adWhen(u.last_platform_at) + '）'
+            : '') +
+          adPlatformHistoryHtml(u) +
           uDetailRow(T('viewer|状态'), banned
             ? T('viewer|已封禁')
             : (muted ? T('viewer|已禁言') : T('viewer|正常'))) +
@@ -9421,6 +10046,15 @@
         '</div>';
     });
     rows.innerHTML = h;
+    // §2.4.3's highlight, applied AFTER the paint because the rows do not exist before it. Matched by
+    // the row's own `data-user`, not by an index or a remembered node: `innerHTML` above destroyed
+    // every previous row, so anything remembered from the last paint would mark nothing.
+    if (ADS.hl) {
+      var hl = rows.querySelector('[data-user="' + ADS.hl + '"]');
+      if (hl) hl.classList.add('hl');
+    }
+    // §2.3.4 — re-apply the stored all-rows state; see `applyUserListPref`.
+    applyUserListPref();
   }
 
   /** One 「名称：值」 line of §2.3.2's expanded block. `—` for a missing value rather than an empty
@@ -9466,6 +10100,68 @@
   function setAllUserRows(open) {
     var rows = document.querySelectorAll('#adRows [data-user]');
     for (var i = 0; i < rows.length; i++) rows[i].classList.toggle('expanded', !!open);
+  }
+
+  /** 1.0.6 四号 §2.3.1 — the code list's half of the same operation. `[data-adc]` is the code rows'
+   *  own marker (the user list's is `[data-user]`), and the container is different, so this is a
+   *  second walker rather than a parameter: a selector built from two halves is a selector nobody can
+   *  read, and the suite pins each list separately anyway. */
+  function setAllCodeRows(open) {
+    var rows = document.querySelectorAll('#adCodeRows [data-adc]');
+    for (var i = 0; i < rows.length; i++) rows[i].classList.toggle('expanded', !!open);
+  }
+
+  /** 1.0.6 四号 §2.3.4 — apply the STORED all-rows state to whatever is on screen. Called by each
+   *  paint (so a filter change or a page change re-applies it) and once more when the stored values
+   *  arrive, which can be after the first paint. Idempotent by construction. */
+  function applyUserListPref() { setAllUserRows(!ADL.userListCollapsed); }
+  function applyCodeListPref() { setAllCodeRows(!ADL.codeListCollapsed); }
+  function applyListPrefs() { applyUserListPref(); applyCodeListPref(); }
+
+  /**
+   * §2.3.5's toggle, for both lists.
+   *
+   * ⚠ THE PAINT AND THE WRITE ARE TWO CALLS ON PURPOSE. `setAllUserRows` / `setAllCodeRows` touch
+   * only the DOM, and `adPersistPref` only records; a version that did both would be unusable by the
+   * one caller that has to paint WITHOUT recording — the boot-time application of the stored values,
+   * which would otherwise write back what it just read (harmless, but it would also touch the store
+   * on every section entry, and a language switch that repaints the section would then write to
+   * `chrome.storage.local` merely because the operator changed language).
+   *
+   * `which` is `'user'` or `'code'`; anything else is a programming error and does nothing rather
+   * than silently expanding a list nobody named.
+   */
+  function adToggleAllRows(which, open) {
+    if (which === 'user') { setAllUserRows(open); adPersistPref('userListCollapsed', !open); }
+    else if (which === 'code') { setAllCodeRows(open); adPersistPref('codeListCollapsed', !open); }
+  }
+
+  /**
+   * Remember one pref. ⚠ THE KEY IS CHECKED AGAINST THE STORE'S OWN DEFAULTS, not against a second
+   * list of two strings here: `adminListPrefsDefaults()` is what `loadAdminListPrefs` normalises
+   * against, so a typo in a caller is refused instead of quietly adding a key nothing reads.
+   *
+   * The in-memory copy moves FIRST and the write is not awaited: the operator's feedback is the class
+   * on the rows, and a repaint triggered by the write's own completion would be a repaint that undoes
+   * nothing but costs a frame. A failed write leaves the session behaving correctly and the next
+   * launch on the default — which is the shipped state anyway.
+   */
+  function adPersistPref(key, value) {
+    if (!(key in GMStorage.adminListPrefsDefaults())) return;
+    ADL[key] = !!value;
+    ADL.loaded = true;
+    var patch = {}; patch[key] = !!value;
+    GMStorage.saveAdminListPrefs(patch).catch(function () {});
+  }
+
+  /** Read `adminListPrefs` once. Resolves to the same object `ADL` now holds. */
+  function adminPrefsLoad() {
+    return GMStorage.loadAdminListPrefs().then(function (p) {
+      ADL.userListCollapsed = p.userListCollapsed !== false;
+      ADL.codeListCollapsed = p.codeListCollapsed !== false;
+      ADL.loaded = true;
+      return ADL;
+    }).catch(function () { ADL.loaded = true; return ADL; });
   }
 
   // The three delegated lists of §P0. Same reason as above, and one listener each rather than a
@@ -9842,6 +10538,39 @@
   }
 
   /**
+   * 1.0.6 四号 §一.4.1 — the ONE place the VIEWER reports its platform, and the only place in this
+   * file that does.
+   *
+   * ⚠ WHY HERE AND NOT IN `auth.js`'s `adoptSession()` — THE TRAP THIS COMMENT EXISTS FOR. That funnel is
+   * where all four session-minting flows meet (activate / register / login / switchAccount), so it is
+   * the obvious home; but `auth.js` is SHARED WITH THE WEB CLIENT (`web/tools/sync-lib.cjs` copies it
+   * verbatim and `web/app/boot.js` drives it), so a report written there would announce the 网页版 as
+   * `'extension'`. Each realm reports ITSELF, from its own layer — the web end in `app/boot.js`, the
+   * service worker in `background.js`'s `onStartup`, the viewer here.
+   *
+   * ⚠ TWO CALLERS, COVERING §1.4.1's TWO VIEWER TRIGGERS:
+   *   · `cloudBoot()` calls it with `force = false` — 「每天首次活跃时」, i.e. the viewer was opened;
+   *   · `GMAuth.onChange` calls it with `force = true` — 「登录成功后」, and also 切换账号, because both
+   *     are a session arriving. Forcing is what keeps the five-minute memo from swallowing a switch.
+   *
+   * ⚠ NOT GATED ON ACTIVATION. §1.1 counts the accounts that SIGN IN from each client; 1.0.2's
+   * 「未激活只读」 means an account that has not activated yet is still somebody using the product, and
+   * excluding it would undercount exactly the users whose next step is to activate.
+   *
+   * ⚠ `typeof` RATHER THAN A BARE CALL, AND NO `g.` PREFIX: this file is an IIFE with NO `g` parameter
+   * (1.0.0 lost a day to `g.GMAuth` being a `ReferenceError` here), and `platform.js` is a separate
+   * `<script>` — a build that dropped it should leave the viewer working rather than throw at boot.
+   */
+  function reportPlatform(force) {
+    if (typeof GMPlatform === 'undefined' || !GMPlatform) return;
+    // The token is passed in rather than re-read from the store: this file already holds the live
+    // session, and `reportExtension` only falls back to `GMStorage` for the consumers that do not.
+    var s = GMAuth.session && GMAuth.session();
+    GMPlatform.reportExtension({ jwt: (s && s.jwt) || '', force: force === true })
+      .catch(function () { /* best-effort: see platform.js's header */ });
+  }
+
+  /**
    * The boot half of the cloud feature. Called once, at the very end of `boot()`.
    *
    * Order matters twice here:
@@ -9862,12 +10591,13 @@
     // thing on the page. The rejection is caught because `boot()` above shows what happens when a
     // promise on this path has nobody to answer to.
     GMAuth.syncCountry(false).catch(function () { /* decorative: the flag falls back to 白旗 */ });
+    reportPlatform(false);
     applyActivationGate();
     await buildCloudPanel();
     await profileLoad();
     buildAccountPanel();
     renderAdmin();
-    GMAuth.onChange(function () { afterAuthChange(); });
+    GMAuth.onChange(function () { afterAuthChange(); reportPlatform(true); });
     // 1.0.6 §1.3.4 — AND ONCE HERE, because `onChange` only fires on a CHANGE: an operator who
     // reloads the page with a live session is a session that never changed, so the schedule would
     // have no first tick and the tab title would stay bare until they logged out and back in.

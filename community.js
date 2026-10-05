@@ -1436,6 +1436,55 @@
   }
 
   // =====================================================================
+  // 1.0.6 四号 §2.1.1 — 消息分区的读水位
+  // =====================================================================
+  /**
+   * Write one or more of the five `users.<category>_read_at` watermarks.
+   *
+   * §2.1.1's own snippet sends `{ [category + '_read_at']: now }` for a single partition. This takes
+   * a MAP so that 「全部标记已读」 is one request against one row rather than five — and so that the
+   * per-category column name is derived in exactly one place (`readAtColumn()`, the shared block's own
+   * function, which is also what 024's five `alter table` lines were written from).
+   *
+   * ⚠ THE VALUE IS A TIMESTAMP THE CALLER GOT FROM A ROW, NOT `new Date()` — see the view's
+   * `cmMsgReadMap` for the long form. In short: everything the watermark is compared against is a
+   * SERVER clock, so a watermark taken from the operator's clock can be permanently behind (a dot
+   * that never clears) or permanently ahead (a dot that never appears).
+   *
+   * ⚠ ONLY THE SHARED BLOCK'S CATEGORIES ARE ACCEPTED. A key outside `MESSAGE_CATEGORIES` is DROPPED
+   * rather than turned into `<junk>_read_at`: 024 grants `update` on exactly those five columns, so a
+   * misspelling would come back as a 403 that looks like a dead session rather than a typo. A map
+   * that survives with nothing in it is a local `BAD_REQUEST` and no round trip.
+   *
+   * Returns `{ ok, user }` — the row PostgREST returned, which the view merges into the session so
+   * the dots are repainted from what the DATABASE holds rather than from what was sent.
+   */
+  function messageMarkRead(map) {
+    var me = uid();
+    if (!me) return Promise.resolve(noSession());
+    if (!map || typeof map !== 'object') return Promise.resolve({ ok: false, error: 'BAD_REQUEST' });
+    var S = shared() || {};
+    if (typeof S.readAtColumn !== 'function') return Promise.resolve({ ok: false, error: 'INTERNAL' });
+    var body = {};
+    (S.MESSAGE_CATEGORIES || []).forEach(function (cat) {
+      var at = map[cat];
+      if (typeof at === 'string' && at) body[S.readAtColumn(cat)] = at;
+    });
+    if (Object.keys(body).length === 0) return Promise.resolve({ ok: false, error: 'BAD_REQUEST' });
+    return cloud().rest('users', {
+      query: 'id=eq.' + encodeURIComponent(me),
+      jwt: jwt(),
+      method: 'PATCH',
+      body: body,
+      prefer: 'return=representation',
+    }).then(function (r) {
+      if (!r.ok) return r;
+      var row = (Array.isArray(r.data) && r.data[0]) || null;
+      return { ok: true, status: r.status, user: row };
+    });
+  }
+
+  // =====================================================================
   // §3.2 状态系统 — the Realtime presence channel
   // =====================================================================
   // §3.2.2's snippet is supabase-js, which this extension cannot load (see this file's header), so
@@ -1825,6 +1874,10 @@
                 socket: presenceStateOf, forUser: presenceStateFor,
                 isLive: presenceIsLive, manualStatus: myManualStatus },
     settings: { patch: settingsPatch },
+    // 1.0.6 四号 §2.1.1 — one write path for the five 分区 watermarks. A group of its own rather than
+    // a member of `notices`: the watermark lives on `users`, it covers four tables, and filing it
+    // under the notifications read-flag would be the 「两个问题一个名字」 this release is undoing.
+    messages: { markRead: messageMarkRead },
 
     // Pure protocol pieces. Exported for the suite: they are the only part of the socket that can
     // be exercised without a server, and the join frame's shape is the part that fails silently.

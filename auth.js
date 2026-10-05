@@ -616,7 +616,14 @@
     await load();
     if (!_session || !_session.user || !fields) return null;
     var allowed = ['username', 'bio', 'avatar_url', 'hide_country', 'manual_status',
-                   'country_code', 'last_seen_at', 'muted_until', 'activated_at'];
+                   'country_code', 'last_seen_at', 'muted_until', 'activated_at',
+                   // 1.0.6 四号 §2.1.1 — the five message watermarks. They belong on this list for
+                   // exactly the reason the comment above gives: the DOTS are derived from the
+                   // session's user object (`cmReadAt`), so a write that did not land here would
+                   // leave the row updated and the dots painted from a stale watermark — i.e. the
+                   // operator sees 「红点没消失」 on a write that actually succeeded.
+                   'friends_read_at', 'shares_read_at', 'mentions_read_at',
+                   'system_read_at', 'reports_read_at'];
     for (var i = 0; i < allowed.length; i++) {
       var k = allowed[i];
       if (Object.prototype.hasOwnProperty.call(fields, k)) _session.user[k] = fields[k];
@@ -656,6 +663,16 @@
     // Failures are swallowed on purpose: not remembering an account costs the operator a password
     // next time, while throwing here would undo a login that already succeeded.
     try { await rememberAccount(_session); } catch (e) { /* the session is what matters, not the memo */ }
+    // ⚠ 1.0.6 四号 §一.4.1's 「登录成功后」 上报 DOES NOT GO HERE, and the reason is worth keeping:
+    // THIS FILE IS SHARED WITH THE WEB CLIENT (`web/tools/sync-lib.cjs` copies `auth.js` verbatim, and
+    // `web/app/boot.js` drives it). Four flows mint a session through this funnel — activate / register
+    // / login / switchAccount — and the WEB's login walks the same one, so a report written here would
+    // announce the 网页版 as `'extension'`: a census that is wrong in the direction nobody checks.
+    //
+    // ⇒ Each realm reports ITSELF, from its own layer, on the session-change event it already
+    // subscribes to: the viewer in `viewer.js` (`cloudBoot` + `GMAuth.onChange`), the web end in
+    // `web/app/boot.js`, and the service worker in `background.js`'s `onStartup`. `platform.js` is the
+    // one implementation all three call.
     emit();
     return _session;
   }

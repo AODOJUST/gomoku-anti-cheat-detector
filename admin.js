@@ -80,7 +80,19 @@
     return { ok: true, codes: (res.data && res.data.codes) || [] };
   }
 
-  /** 查看用户列表（分页） (§6.2). */
+  /**
+   * 查看用户列表（分页） (§6.2).
+   *
+   * ⚠ THE ROWS ARE PASSED THROUGH WHOLE, AND THAT IS THE POINT RATHER THAN LAZINESS. 1.0.6 四号 §一
+   * widened each row with five fields the server assembles in one place — `platforms`, `platform_tag`,
+   * `last_platform`, `last_platform_at` and `platform_history` (see `admin-list-users/index.ts`).
+   * Rebuilding a row field by field here would be a SECOND spelling of that projection, and the day a
+   * field is added the console would silently drop it; the six earlier bugs this project paid for had
+   * exactly that shape. So the client normalises the ENVELOPE (`users` / `total`) and nothing else.
+   *
+   * The one rule that does live here: `filter` is attached only when the caller supplied one, because
+   * the server reads a missing `filter` and an empty `filter` differently.
+   */
   async function listUsers(opts) {
     var gu = guard();
     if (!gu.ok) return gu;
@@ -121,6 +133,22 @@
    * `status` is clamped here as well as server-side so a typo cannot turn 「未使用」 into 「全部」:
    * an unknown value falls back to `'all'` and is NEVER passed through, because the failure mode of
    * guessing is an operator revoking from a list they did not ask for.
+   *
+   * ⚠ 1.0.6 四号 §2.4 WIDENED EACH ROW WITH THREE PEOPLE, and they also travel whole (see `listUsers`
+   * for why the envelope is normalised and the rows are not): `issued_by` → `issuer`,
+   * `redeemed_by` → `redeemed_username` / `redeemed_email`, `revoked_by` → `revoker`, plus
+   * `revoked_at`. A row whose `redeemed` is true but whose `redeemed_username` is null is a code that
+   * outlived the account that spent it (`on delete set null`); the view draws 「账号已注销」 for it and
+   * must read `redeemed` — not the missing name — to decide which state the row is in.
+   *
+   * ⚠ §2.4.4's 搜索使用者, AND THE ONE HALF OF THE BOUNDARY THAT CAN ONLY BE DRAWN HERE.
+   * The server sanitises the term and treats a term that sanitises to `""` as 「empty page」 rather
+   * than 「no filter」, deliberately — otherwise a box full of PostgREST metacharacters becomes a way
+   * to ask for every code. That rule makes `filter: { query: '' }` mean 「nothing matches」, so the
+   * client must NOT send the field when the operator has typed nothing or only spaces: 「box is
+   * empty」 and 「box is full of junk」 arrive at the server as the same string, and only the caller
+   * knows which one happened. `o.query` is therefore trimmed before it is attached, and an empty
+   * result is simply omitted — never sent as `''`.
    */
   async function listCodes(opts) {
     var gu = guard();
@@ -135,6 +163,8 @@
       // allowing 500 rows would make 「每页条数」 mean two things in one console.
       limit: Math.min(200, Math.max(1, Math.floor(Number(o.limit) || 50))),
     };
+    var q = o.query == null ? '' : String(o.query).trim();
+    if (q) body.filter = { query: q };
     var res = await invoke('admin-list-codes', body, gu.jwt);
     if (!res.ok) return res;
     var d = res.data || {};
@@ -144,7 +174,41 @@
       total: Number(d.total) || 0,
       page: body.page,
       limit: body.limit,
+      // Echoed back so the view can keep the box in step with the request that produced the page —
+      // otherwise a repaint after paging could show a term the rows were not filtered by.
+      query: q,
     };
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  // 1.0.6 四号 §一.5.3 — 平台统计, the console's census
+  // ---------------------------------------------------------------------------------------------
+
+  /**
+   * The 平台统计 panel's one read: 仅扩展 / 仅网页 / 两者 / 未上报 的人数, plus the last seven days'
+   * login counts.
+   *
+   * ⚠ THE RESPONSE IS NESTED, `{ ok: true, stats: {…} }`, AND THIS FUNCTION UNWRAPS EXACTLY ONE
+   * LEVEL. `admin-platform-stats` states the shape in its own header precisely because the harness's
+   * stub has to copy it, and this is where the two could drift: a flat stub (`{ ok, users, logins7d }`)
+   * would make `res.data.stats` undefined and the panel would paint zeros over a working product.
+   * That is 1.0.6 三号's `admin-global-chat` lesson, and the unwrap below is the whole client half of
+   * it — `stats` is passed on as the object the SQL built, never re-assembled field by field.
+   *
+   * ⚠ WHY THIS IS A SECOND CALL RATHER THAN FIELDS ON `listUsers`. `listUsers` answers about a PAGE
+   * OF FIFTY; §1.5.3's numbers are about every account there is. Deriving them from a page would
+   * produce a census that changes when the operator clicks 「下一页」.
+   */
+  async function platformStats() {
+    var gu = guard();
+    if (!gu.ok) return gu;
+    var res = await invoke('admin-platform-stats', {}, gu.jwt);
+    if (!res.ok) return res;
+    var d = res.data || {};
+    // `{}` rather than `undefined` for a server that answered without `stats`: the view's four
+    // buckets and its date line all guard their own reads, so an empty object paints 「—」 instead of
+    // throwing on `.users.extension`.
+    return { ok: true, stats: (d.stats && typeof d.stats === 'object') ? d.stats : {} };
   }
 
   /** §6.2: 「封禁用户 `{ user_id, reason }` → `{ ok }`」. */
@@ -379,6 +443,8 @@
     listUsers: listUsers,
     // 1.0.6 三号 §2.3 — the list behind the revoke panel's rows.
     listCodes: listCodes,
+    // 1.0.6 四号 §一.5.3 — the platform census behind the 平台统计 sub-panel.
+    platformStats: platformStats,
     banUser: banUser,
     unbanUser: unbanUser,
     revokeCodes: revokeCodes,

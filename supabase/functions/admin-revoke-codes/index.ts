@@ -32,6 +32,14 @@ serve(async (req: Request): Promise<Response> => {
     const auth = await requireAdmin(req, sb);
     if (auth.response) return auth.response;
 
+    // 1.0.6 四号 §2.4.3 — 「撤销时间 / 撤销者」 travel with the flip, in the SAME UPDATE that sets
+    // `revoked = true`, so the three columns cannot disagree about who retired a code and when. ⚠ ONE
+    // of the two UPDATEs below (the console's per-row 「撤销」) is why this exists at all: before 025 the
+    // action recorded only that the code was dead, and an operator reading a revoked code could not
+    // tell their own revocation from one somebody else did months ago.
+    const revokedAt = new Date().toISOString();
+    const revokedBy = auth.caller.id;
+
     const body = await req.json().catch(() => null) as Record<string, unknown> | null;
     if (!body || typeof body !== "object") return badRequest("Invalid JSON body");
 
@@ -44,7 +52,7 @@ serve(async (req: Request): Promise<Response> => {
     if (wantsAll) {
       const { data: updated, error } = await sb
         .from("activation_codes")
-        .update({ revoked: true })
+        .update({ revoked: true, revoked_at: revokedAt, revoked_by: revokedBy })
         .eq("revoked", false)
         // ⚠ 1.0.5 审计 P2 — 「还没被用」 is `redeemed`, not `redeemed_by is null`. The two were one
         // column until 020, and they still agree for every code that has an owner; they stop agreeing
@@ -71,7 +79,7 @@ serve(async (req: Request): Promise<Response> => {
 
     const { data: updated, error } = await sb
       .from("activation_codes")
-      .update({ revoked: true })
+      .update({ revoked: true, revoked_at: revokedAt, revoked_by: revokedBy })
       .in("code", codes)
       .eq("revoked", false)
       .select("code");

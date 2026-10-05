@@ -154,3 +154,12 @@ verify_jwt = false
 
 [functions.admin-list-codes]
 verify_jwt = false
+
+# 1.0.6 四号 §一 — 平台痕迹. Same two entries as config.toml: a client call that verifies its own JWT
+# (`platform-report`), and the console's whole-product census (`admin-platform-stats`), which exists
+# as its own endpoint because the counting has to happen in SQL.
+[functions.platform-report]
+verify_jwt = false
+
+[functions.admin-platform-stats]
+verify_jwt = false

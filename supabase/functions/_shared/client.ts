@@ -92,6 +92,23 @@ export interface UserRow {
   /** 'user' | 'admin' | 'super_admin'. THE AUTHORITY — `is_admin` above is trigger-derived from it
    *  (017 explains), so nothing here may decide admin-ness by writing `is_admin` directly. */
   role: string | null;
+  // --- 1.0.6 四号 (023_platforms.sql) ------------------------------------------------------------
+  /** §一.2's accumulated set, e.g. `['extension','web']`. ⚠ NEVER a stored `'both'` — that value is
+   *  DERIVED by `platformTag()` / `public.platform_tag()`, and `users_platforms_known` refuses it.
+   *  Written only by `platform-report`; absent (read as 「还没报过」) on a database without 023. */
+  platforms: string[] | null;
+  last_platform: string | null;
+  last_platform_at: string | null;
+  // --- 1.0.6 四号 (024_message_read.sql) ---------------------------------------------------------
+  /** §2.1.1's five read watermarks — 「自上次进入该分区以来」, NOT 「这条处理完了吗」. Read by the
+   *  client so it can count each partition's badge; written by the client (`grant update` on these
+   *  five columns only). `null` means 「从未进入过这个分区」. See 024's header for the distinction
+   *  from `notifications.read`. */
+  friends_read_at: string | null;
+  shares_read_at: string | null;
+  mentions_read_at: string | null;
+  system_read_at: string | null;
+  reports_read_at: string | null;
 }
 
 /** The only user projection the client ever receives. */
@@ -123,6 +140,16 @@ export interface PublicUser {
    *  super-only buttons without a second round trip — and `role` is NOT on the column-level SELECT
    *  grant over PostgREST (017 §4), so nobody can read anybody else's. */
   role: string;
+  // --- 1.0.6 四号 §二.1.1 ------------------------------------------------------------------------
+  /** The five read watermarks (024_message_read.sql). ⚠ ON THE OWN-PROFILE PROJECTION AND DELIBERATELY
+   *  NOT ON `ForeignUser`: a watermark is the account's own business, and the whole reason the client
+   *  receives them at all is that computing §2.1.2's five badges needs 「自上次进这个分区以来」 — which
+   *  is a fact only the caller's own row carries. */
+  friends_read_at: string | null;
+  shares_read_at: string | null;
+  mentions_read_at: string | null;
+  system_read_at: string | null;
+  reports_read_at: string | null;
 }
 
 /**
@@ -218,6 +245,15 @@ export function toPublicUser(row: UserRow): PublicUser {
     // branches on this string, and an unexpected fourth value would take the 「not a super admin」
     // arm by falling through, which is the safe direction but should be the EXPLICIT one.
     role: toRole(row.role),
+    // 1.0.6 四号 §二.1.1 — the five partition watermarks, passed through unchanged. ⚠ `null` IS THE
+    // VALUE, not a missing field: 「从未进入过这个分区」 is what makes the client draw 「全部算新的」
+    // (`unreadSince`'s epoch fallback) and the 「还没有…」 empty state. Coercing a null to an epoch
+    // here would erase the distinction between 「没进过」 and 「1970 年进过」 for the empty state.
+    friends_read_at: row.friends_read_at ?? null,
+    shares_read_at: row.shares_read_at ?? null,
+    mentions_read_at: row.mentions_read_at ?? null,
+    system_read_at: row.system_read_at ?? null,
+    reports_read_at: row.reports_read_at ?? null,
   };
 }
 
@@ -845,4 +881,28 @@ export async function verifyJwtAllowExpired(
     },
     expired,
   };
+}
+
+/**
+ * Make a free-text search term safe to drop into a PostgREST filter.
+ *
+ * PostgREST's filter values are a mini-grammar rather than a string: `,` separates terms, `()` groups,
+ * `*` is the like/ilike wildcard, and `\` / `"` escape. A term interpolated raw into
+ * `email.ilike.*<term>*` can therefore close the expression and add terms of its own — which on an
+ * admin endpoint means an operator (or anyone who can reach one) can turn 「搜索这个用户名」 into
+ * 「给我看这个表的所有行」. Stripping the metacharacters is the whole defence: the value that survives
+ * can only ever be a substring match.
+ *
+ * ⚠ IN `_shared` RATHER THAN IN EITHER CALLER. It was private to `admin-list-users` until §2.4.4 gave
+ * `admin-list-codes` a 「搜索使用者」 box, and a security predicate with two copies is this project's
+ * most expensive shape — the copies stay self-consistent and simply stop agreeing, so no test goes red
+ * when one of them forgets a character. (Compare `quotaColumnFor`, which moved into the shared block
+ * for the same reason.)
+ *
+ * ⚠ AN EMPTY RESULT IS MEANINGFUL, NOT AN ERROR: a term made entirely of punctuation sanitises to `""`,
+ * and the caller must treat that as 「搜不到」 rather than as 「没有筛选」 — otherwise `*%*` becomes a
+ * request for every row.
+ */
+export function sanitizeSearchQuery(raw: string, maxLen: number = 100): string {
+  return String(raw == null ? "" : raw).replace(/[%*,()\\_"']/g, " ").trim().slice(0, maxLen);
 }

@@ -127,6 +127,23 @@
     --ui-detail-small:13px;       /* 原 11px ×1.2，去掉 0.85 收缩 */
     --ui-detail-large:17px;       /* 原 17px ×1.2 ×0.85 */
     --ui-detail-padding:9px;      /* 原 8px  ×1.2 ×0.85 */
+
+    /* 1.0.6 四号 §2.2.3 — `.wrap`'s own max-width, lifted here because the fixed side rails have to
+       name the same number to sit on the content's left edge. It is ONE value used TWICE (`.wrap`
+       below, `.set-nav` / `.cm-nav` in the §2.2 block) rather than two copies of 1560px: a rail
+       anchored to a stale copy of this figure would drift off the column the moment the page width
+       changed, and nothing would report it. See the §2.2 comment for the geometry. */
+    --ui-wrap-max:1560px;
+    /* ⚠ THE GUTTER IS A NAME TOO, for the same reason as the line above. §2.2 takes the rail OUT of
+       flow, so the page has to reserve its width — and 「240px」 written at both rails is one number
+       in two places: change one and the community page's content sits 30px off the settings page's.
+       Both media-query resets drop the property entirely and stay literal: that is not this number,
+       it is the absence of it. ⚠ The reserved edge is written as the LOGICAL start (`inset-inline-*`
+       / `margin-inline-start`, §2.2 block below), not the physical one the spec names: §7 of
+       verify-046 forbids physical direction properties in this stylesheet outright — they do not
+       mirror under `dir="rtl"`, so the Arabic rail would hang off the wrong edge. In LTR the two
+       spellings are the same pixel, which is why nothing else in the page can tell them apart. */
+    --ui-rail-w:240px;
     --ui-detail-radius:7px;       /* 原 6px  ×1.2 ×0.85 */
   }
   /* §三.1 — the explicit dark override. Same six surface colours, restated; the data ink
@@ -364,7 +381,7 @@
   header h1{font-size:var(--ui-detail-large);margin:0;font-weight:600;white-space:nowrap}
   header h1 .sub{font-size:var(--ui-detail-small);color:var(--mut);font-weight:400}
   #status{font-size:var(--ui-detail-small);color:var(--mut);margin-inline-start:auto}
-  .wrap{padding:var(--ui-shell-gap) var(--ui-shell-padding);max-width:1560px;margin:0 auto}
+  .wrap{padding:var(--ui-shell-gap) var(--ui-shell-padding);max-width:var(--ui-wrap-max);margin:0 auto}
   .main-row{display:flex;gap:var(--ui-shell-gap);align-items:flex-start;flex-wrap:wrap}
   .left-col{flex:0 0 auto;max-width:100%;display:flex;flex-direction:column;gap:var(--ui-shell-gap)}
   .right-col{flex:1 1 320px;min-width:320px;display:flex;flex-direction:column;gap:var(--ui-shell-gap)}
@@ -622,12 +639,46 @@
      removes the rail's hidden horizontal scrollbar: `overflow-y:auto` alone computes `overflow-x` to
      `auto`, so ONE long label was enough to put a scrollbar inside the nav. */
   .set-cols{display:flex;gap:18px;align-items:flex-start}
-  .set-main{flex:1 1 auto;min-width:0}
-  /* `top:80px` is §1.2.2's own number — it clears the 56px header plus the update banner's row.
-     `min-width:176px` is the old 160 plus the 2×8px the surface now adds, so the COLUMN OF TEXT is
-     the width it always was and the card is the only thing that changed. */
-  .set-nav{position:sticky;top:80px;flex:0 0 auto;display:flex;flex-direction:column;gap:2px;
-           min-width:176px;max-width:200px;max-height:calc(100vh - 104px);overflow-y:auto;
+  /* 1.0.6 四号 §2.2.3 — 「侧边栏 fixed 后，内容区需要左边距」. The rail left the flex row, so
+     `.set-main` is now the only in-flow child and would otherwise start at the column's edge and run
+     under the rail. 240px is §2.2.3's own figure.
+     ⚠ THE FIGURE IS THE OFFSET, NOT A 220+20 SUM. §2.2.3 derives it from a 220px sketch sidebar;
+     the rail here is 176–200px (it is sized by its longest label, see `sectionNav`), so the gutter
+     that results is 40–64px rather than the sketch's 20px. Taking the number the spec computed rather
+     than re-deriving one from a width this page does not use keeps the two in step if the rail is
+     ever widened: the CONTENT stays where §2.2.3 puts it either way. */
+  .set-main{flex:1 1 auto;min-width:0;margin-inline-start:var(--ui-rail-w)}
+  /* ---- 1.0.6 四号 §2.2 — 侧边导航栏纵向居中固定 ---------------------------------------------
+     §2.2.2 offers two readings and names the second as the recommendation: the rail is
+     `position:fixed`, vertically centred on the VIEWPORT, and does not travel with the page.
+
+     ⚠ WHY THE FIRST SKETCH (`align-self:stretch` + `justify-content:center`) IS NOT ENOUGH. It
+     centres the LABELS inside a box exactly as tall as the panels beside them. On 设置 that box is
+     several screens tall, so 「居中」 puts the twelve labels tens of screen-heights down a page
+     nobody has scrolled to yet, and the rail is off the viewport for most of the visit. The
+     requirement's own words are 「固定在网页纵向方位的居中位置」, and only a viewport-anchored box
+     can be centred in the viewport.
+
+     ⚠ THE HORIZONTAL ANCHOR IS COMPUTED FROM THE SAME TWO VALUES `.wrap` USES, not written out as a
+     figure. A fixed box is placed against the viewport, so the start inset has to reproduce where
+     the page column begins:
+         (100% - min(100%, var(--ui-wrap-max))) / 2   ← `.wrap`'s `margin:0 auto` half-gap; 0 while
+                                                        the window is narrower than the column
+       + var(--ui-shell-padding)                     ← `.wrap`'s own left padding
+     `100%` resolves against the viewport for a fixed box, which is exactly what `.wrap` measures
+     itself against, and the global `*{box-sizing:border-box}` is what makes the two add up: the
+     column's `max-width` includes its padding. Writing 1560px here instead would be a second copy of
+     `--ui-wrap-max` that fails silently the day the page width moves.
+
+     ⚠ `max-height:80vh` REPLACES `calc(100vh - 104px)`. That number cleared a header pinned at
+     `top:80px`; a centred rail has 10vh of clearance above and below instead, which is the figure
+     §2.2.2's own sketch uses. It has to be the RAIL that scrolls past that point rather than the
+     page — a list of twelve labels is taller than a short window, and an overflowing fixed box with
+     no scrollport simply loses its bottom rows. */
+  .set-nav{position:fixed;inset-inline-start:calc((100% - min(100%, var(--ui-wrap-max))) / 2 + var(--ui-shell-padding));
+           top:50%;transform:translateY(-50%);z-index:30;
+           flex:0 0 auto;display:flex;flex-direction:column;gap:2px;
+           min-width:176px;max-width:200px;max-height:80vh;overflow-y:auto;
            background:var(--panel);border:1px solid var(--line);
            border-radius:calc(var(--ui-shell-radius) + 4px);padding:8px}
   /* 1.0.6 三号 §4.1 — 字号 ×1.5. ⚠ 定稿示例写的「原」是 `var(--ui-detail-font)`,而交付时的这一行其实
@@ -656,10 +707,30 @@
      opaque by DEFAULT for exactly the same reason the panels are — alpha 1. */
   @media (max-width:899px){
     .set-cols{display:block}
-    .set-nav{position:sticky;top:0;z-index:20;flex-direction:row;max-width:none;min-width:0;
-             max-height:none;overflow-x:auto;overflow-y:hidden;gap:6px;padding:6px 0;
+    /* 1.0.6 四号 §2.2.3 — 「窗口宽度 < 900px 时，侧边导航回到顶部横向标签栏，取消 fixed」.
+       ⚠ `transform` AND THE START INSET HAVE TO BE RESET, not merely out-voted by
+       `position:sticky`. A sticky box still honours `transform`, so `translateY(-50%)` alone would
+       lift the strip half its own height out from under the header — the fold would look almost
+       right at a glance and be wrong by exactly the amount the old centring needed. The `auto` inset
+       is the same trap one property over: it is ignored by a static/sticky box, but leaving it in
+       the rule above is what makes the NEXT reader wonder which branch is live. */
+    .set-nav{position:sticky;top:0;inset-inline-start:auto;transform:none;z-index:20;flex-direction:row;max-width:none;
+             min-width:0;max-height:none;overflow-x:auto;overflow-y:hidden;gap:6px;padding:6px 0;
              border:0;border-bottom:1px solid var(--line);border-radius:0}
     .set-nav-item{padding:5px 10px;white-space:nowrap}
+    /* The rail is back in the flow on this branch, so the避让 has to go with it. */
+    .set-main{margin-inline-start:0}
+    /* 1.0.6 四号 §2.2.3 — 社区页's rail folds back too, and on this page 「取消 fixed」 means
+       「exactly the layout it already had」: `position:static` puts it back in `.cm`'s flex row at
+       its own content height, which is where the five tabs have always been on a phone.
+       ⚠ The community rail is NOT turned into a horizontal strip, and that is a deliberate reading
+       of the requirement rather than an omission. §2.2.3 asks for 「回到顶部横向标签栏，取消 fixed」;
+       the strip is how the SETTINGS rail folds, because twelve wrapped labels genuinely do not fit
+       a phone any other way. These are five short labels in a 164px column that already fit — and
+       1.0.6 三号's 手机版 work pinned this page's narrow geometry (chat bleed, 泊位), so a new
+       strip here would be a re-layout of a page nobody asked to re-lay-out. */
+    .cm-nav{position:static;inset-inline-start:auto;transform:none;max-height:none;overflow-y:visible}
+    .cm-body{margin-inline-start:0}
   }
   .set-item{display:flex;flex-direction:column;gap:5px;min-width:0}
   .set-item>label{margin:0;font-size:var(--ui-detail-small);color:var(--mut)}
@@ -1187,6 +1258,32 @@
   .urow .uexp{max-height:0;overflow:hidden;padding:0 0 0 22px}
   .urow.expanded .uexp{max-height:none;padding-bottom:8px}
   .urow .udet{padding:2px 0;font-size:var(--ui-detail-small)}
+  /* ---- 1.0.6 四号 §一.5.2 平台标签 / §2.4.3 「查看用户」高亮 ------------------------------------
+     The chip's three states have three fills, and they come from the shared block's own tag values
+     (`platform_tag`: extension / web / both / none) rather than from a second list of platform
+     names — `GMPlatform` refuses anything else, so a chip class exists for each tag there is.
+
+     ⚠ `none` IS A CHIP TOO, drawn as an outline: every account that has not reported yet is `none`,
+     i.e. 「未上报」, and rendering it as an empty cell would make 「测过但两边都没认出来」 and
+     「从来没上报过」 look identical. `var(--mut)` on `var(--line)` keeps it visible in both themes
+     without competing with the three filled states for attention.
+
+     ⚠ 紫 IS A LITERAL AND THE OTHER TWO ARE NOT。蓝 is `var(--blue)` because it is the page's own
+     accent and must follow the theme; green is a literal because there is no green token in this
+     stylesheet, and inventing one for a single chip would be a variable with one reader. A future
+     restyle that adds a real green should move this line, not copy the hex.
+
+     `.urow.hl` is §2.4.3's 「跳转到用户列表并高亮该用户」. It is a CLASS rather than a `style`
+     assignment because the colour has to survive a theme switch and a repaint — `adminLoadUsers`
+     rebuilds the rows from data and re-applies the class from `ADS.hl`, which is the one place that
+     remembers which row the jump landed on. */
+  .pftag{display:inline-block;flex:0 0 auto;padding:0 7px;border-radius:999px;line-height:1.65;
+         font-size:var(--ui-detail-small);color:#fff;background:var(--mut)}
+  .pftag-extension{background:var(--blue)}
+  .pftag-web{background:#2e9e5b}
+  .pftag-both{background:#8a5cd6}
+  .pftag-none{background:transparent;border:1px solid var(--line);color:var(--mut)}
+  .urow.hl{background:var(--hover);box-shadow:inset 3px 0 0 var(--blue)}
   .codebox{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;background:var(--inset);border:1px solid var(--line);border-radius:6px;padding:8px 10px;margin-top:8px;white-space:pre-wrap;word-break:break-all}
   /* §9.3's link. `color:inherit` rather than a literal: the row it sits in already carries the
      theme's text colour, and 0.5.3's lesson was that a hard-coded colour goes unreadable the moment
@@ -1246,8 +1343,18 @@
   #view-community.active{display:flex;flex-direction:column;
     height:calc(100vh - var(--wrap-top,0px) - 2 * var(--ui-shell-gap))}
   #view-community > .cm{flex:1 1 auto;min-height:0}
-  /* The sidebar carries `.panel` in the markup, so this is only its own layout. */
-  .cm-nav{display:flex;flex-direction:column;gap:4px;flex:0 0 auto;min-width:164px;padding:6px}
+  /* The sidebar carries `.panel` in the markup, so this is only its own layout.
+     ⚠ 1.0.6 四号 §2.2 — 社区页 also gets the fixed, vertically centred rail (§2.2.2's table names
+     all three pages). `left` / `top` / `max-height` are the SAME three declarations as `.set-nav`'s,
+     copy for copy, because they are the same box in a different view: two spellings of the anchor
+     would be two things to keep in step with `--ui-wrap-max`.
+     ⚠ This page is the one where 「不跟随滚动」 is nearly free: `#view-community.active` is already
+     `calc(100vh - …)` tall and it is `.cm-body` that scrolls, so the page itself never moves. What
+     `fixed` actually buys here is the CENTRING — `.cm` is `align-items:flex-start`, so as a flow item
+     this rail sat at the top of the row rather than in the middle of it. */
+  .cm-nav{position:fixed;inset-inline-start:calc((100% - min(100%, var(--ui-wrap-max))) / 2 + var(--ui-shell-padding));
+          top:50%;transform:translateY(-50%);z-index:30;display:flex;flex-direction:column;gap:4px;
+          flex:0 0 auto;min-width:164px;max-width:200px;max-height:80vh;overflow-y:auto;padding:6px}
   .cm-nav .cm-tab{display:flex;align-items:center;gap:8px;width:100%;text-align:start;
     padding:9px 12px;border:1px solid transparent;border-radius:var(--ui-detail-radius);
     background:transparent;color:var(--mut);font-size:var(--ui-detail-font);cursor:pointer}
@@ -1264,7 +1371,7 @@
      body would be CONTENT height, `flex:1` on every box below it would resolve against an auto
      height, and the whole chain would collapse back to 「as tall as the messages」 — the log would
      grow without bound and nothing would scroll. */
-  .cm-body{flex:1 1 auto;min-width:0;min-height:0;align-self:stretch;
+  .cm-body{flex:1 1 auto;min-width:0;min-height:0;align-self:stretch;margin-inline-start:var(--ui-rail-w);
     display:flex;flex-direction:column;gap:var(--ui-shell-gap)}
   .cm-pane{display:none}
   .cm-pane.active{display:flex;flex-direction:column;gap:var(--ui-shell-gap);flex:1 1 auto;min-height:0}
@@ -1465,6 +1572,17 @@
   .cm-badge{display:inline-block;min-width:17px;padding:0 5px;border-radius:999px;
     background:var(--red);color:#fff;font-size:11px;line-height:17px;text-align:center;
     flex:0 0 auto}
+  /* 1.0.6 四号 §2.1.2 — the per-分区 count inside a 消息 tab.
+     ⚠ IT IS NOT `.cm-badge`. That pill is a red dot on a plain surface; these sit inside `.tw-cat`,
+     which turns SOLID BLUE when selected — a red pill on blue is unreadable, and a pill that changed
+     colour with its parent's state would be a second style for one number. So this is plain text at
+     the parent's own colour: white on the selected tab (inherited from `.tw-cat.on`) and the muted
+     body colour on the rest. `margin-inline-start` rather than a space character, so `@提及` and
+     「3」 cannot end up glued together in an RTL layout.
+     ⚠ EMPTY IS THE NORMAL CASE, and it must take up NO space: the count is written by
+     `cmPaintMsgTabs()` as a bare number or as `''`, and an always-present gap would make every
+     unselected tab 6px wider than the selected one. */
+  .msg-n{margin-inline-start:5px;opacity:.85;font-variant-numeric:tabular-nums}
   /* §1.7.3's quoted card, inside a message. `cursor:pointer` because the whole card navigates. */
   .cm-quote{margin-bottom:5px;padding:5px 9px;border-inline-start:3px solid var(--blue);
     border-radius:6px;background:rgba(var(--blue-rgb),.10);font-size:var(--ui-detail-small);
@@ -2648,27 +2766,56 @@
               <button class="sec" id="cmMsgsReadAll">全部标记已读</button>
               <button class="sec" id="cmMsgsReload">刷新</button>
             </div>
+            <!-- 1.0.6 四号 §2.1.2 — 横向导航栏. Until this release the pane was FIVE SECTIONS STACKED
+                 VERTICALLY (好友请求 / 分享 / @提及 / 系统通知 / 我的举报), so 「去系统通知看看」 meant
+                 scrolling past three lists that are usually empty. §2.1.2 asks for a tab strip and for
+                 each 分区 to have 「单独占有一个窗口」.
+
+                 ⚠ THE PANES ARE TOGGLED WITH THE GLOBAL `hidden` CLASS, NOT WITH A NEW `.active`
+                 PAIR. `.cm-pane` / `.cm-pane.active` above are the page's own switcher and they are
+                 `display:flex` with `.cm-pane.active:not(#cmPane-chat){overflow-y:auto}` attached —
+                 borrowing them would have given each 分区 its own scrollport inside the pane's, which
+                 is a nested scroll region nobody asked for. `hidden` is one already-existing rule.
+
+                 ⚠ THE LABEL AND THE COUNT ARE TWO NODES. `i18n.js`'s static pass derives its key from
+                 a text node's WHOLE trimmed content, so a button whose text node read 「好友请求 3」
+                 would become the (unmatchable) key `html|好友请求 3` and stay Chinese in fourteen
+                 languages while looking perfectly correct in this file. `#cmMsgN-*` is written by
+                 `cmPaintMsgTabs()` and is a text node of its own. -->
+            <div class="tw-cats" id="cmMsgTabs" style="margin-top:8px">
+              <button class="tw-cat on" data-mcat="friends">好友请求<span class="msg-n" id="cmMsgN-friends"></span></button>
+              <button class="tw-cat" data-mcat="shares">分享<span class="msg-n" id="cmMsgN-shares"></span></button>
+              <button class="tw-cat" data-mcat="mentions">@提及<span class="msg-n" id="cmMsgN-mentions"></span></button>
+              <button class="tw-cat" data-mcat="system">系统通知<span class="msg-n" id="cmMsgN-system"></span></button>
+              <button class="tw-cat" data-mcat="reports">我的举报<span class="msg-n" id="cmMsgN-reports"></span></button>
+            </div>
             <div class="hint" id="cmMsgsState" style="margin-top:8px">—</div>
             <!-- 1.0.4 §P1 — the preview host of the 消息 pane. Same builder, same markup shape as
                  `#cmChatPreview`: whichever pane the operator pressed 「打开」 in shows the answer,
-                 and both are painted together by `cmPaintCloudPreview`. -->
+                 and both are painted together by `cmPaintCloudPreview`. It sits OUTSIDE the 分区 panes
+                 on purpose: a preview opened from 分享 must not be hidden by switching to @提及. -->
             <div class="cm-preview-host hidden" id="cmMsgsPreview"></div>
-            <!-- §1.5.3's four sections. Each is one container the view fills; the ORDER is the
-                 sketch's, and it is the order a reader scans: what needs an answer, what arrived,
-                 what mentions me, what the system said. -->
-            <div class="cm-sec" style="margin-top:12px" id="cmMsgsReqHead">好友请求</div>
-            <div class="cm-list" id="cmMsgsReq"></div>
-            <div class="cm-sec" style="margin-top:12px" id="cmMsgsShareHead">分享</div>
-            <div class="cm-list" id="cmMsgsShare"></div>
-            <div class="cm-sec" style="margin-top:12px" id="cmMsgsAtHead">@提及</div>
-            <div class="cm-list" id="cmMsgsAt"></div>
-            <div class="cm-sec" style="margin-top:12px" id="cmMsgsSysHead">系统通知</div>
-            <div class="cm-list" id="cmMsgsSys"></div>
+            <!-- §2.1.2's five 分区, one window each. The per-分区 empty state is not markup here: it
+                 is `cmFillList`'s third argument (「暂无好友请求」 etc.), which is where it has always
+                 been, so a 分区 that has nothing to show still explains itself. -->
+            <div class="msg-sec" data-mcat="friends" style="margin-top:12px">
+              <div class="cm-list" id="cmMsgsReq"></div>
+            </div>
+            <div class="msg-sec hidden" data-mcat="shares" style="margin-top:12px">
+              <div class="cm-list" id="cmMsgsShare"></div>
+            </div>
+            <div class="msg-sec hidden" data-mcat="mentions" style="margin-top:12px">
+              <div class="cm-list" id="cmMsgsAt"></div>
+            </div>
+            <div class="msg-sec hidden" data-mcat="system" style="margin-top:12px">
+              <div class="cm-list" id="cmMsgsSys"></div>
+            </div>
             <!-- 1.0.4 §P1 — 「我提交的举报」. `reports.mine` has existed since 009 and had no
                  screen: an operator could file a report and then never learn whether it was looked
                  at. Same place 「我发出的」 shares already live, for the same reason. -->
-            <div class="cm-sec" style="margin-top:12px" id="cmMsgsRepHead">我的举报</div>
-            <div class="cm-list" id="cmMsgsRep"></div>
+            <div class="msg-sec hidden" data-mcat="reports" style="margin-top:12px">
+              <div class="cm-list" id="cmMsgsRep"></div>
+            </div>
           </div>
         </div>
 
@@ -2958,12 +3105,16 @@
         <label><span id="adQueryLabel">—</span> <input type="text" id="adQuery" style="width:180px"></label>
         <button class="sec" id="adSearch">—</button>
         <span class="sp"></span>
-        <!-- 1.0.5 §2.3.2 — 「[展开全部] [折叠全部]」, in the list's own header where the sketch puts
+        <!-- 1.0.5 §2.3.2 — 「[折叠全部] [展开全部]」, in the list's own header where the sketch puts
              them. Two buttons rather than one toggle because the sketch draws two, and because a
              toggle whose label depends on state is a control the operator has to read before they
-             can use it. -->
-        <button class="sec" id="adExpandAll">—</button>
+             can use it.
+             ⚠ 1.0.6 四号 §2.3.2 DRAWS THEM 折叠 FIRST and this file had them the other way round.
+             The order is swapped here to match, and it is the more useful order for the same reason
+             the DEFAULT is collapsed: this console opens folded, so the press an operator makes on
+             arrival is 展开全部 — the one nearer the right-hand edge, where the eye already is. -->
         <button class="sec" id="adCollapseAll">—</button>
+        <button class="sec" id="adExpandAll">—</button>
         <span class="hint" id="adTotal">—</span>
       </div>
       <div id="adRows"></div>
@@ -2971,6 +3122,29 @@
         <button class="sec" id="adPrev">—</button>
         <button class="sec" id="adNext">—</button>
       </div>
+    </div>
+
+    <!-- 1.0.6 四号 §一.5.3 — 平台统计. A census of the WHOLE product: 仅扩展 / 仅网页 / 两者 / 未上报
+         plus the last seven days' logins, and a CSV export.
+         ⚠ IT IS ITS OWN PANEL AND ITS OWN ENDPOINT (`admin-platform-stats`), not two fields on the
+         user list above. The list answers about a PAGE OF FIFTY; these numbers are about every
+         account there is, and the counting is a SQL aggregate over a DERIVED tag (`platform_tag`)
+         plus a window over a second table — neither of which PostgREST can do. Deriving them from
+         the page would produce a census that changes when the operator clicks 「下一页」.
+         ⚠ 「未上报」 IS DRAWN, not hidden. Every existing account has an empty `platforms` array on
+         the day this ships, so without a fourth line the three §一.5.3 names visibly fail to add up
+         to 账号总数 — and the first person to notice will "fix" it by counting something else. -->
+    <div class="panel" data-section="platforms">
+      <div class="filters-bar">
+        <h2 style="margin:0" id="adPfTitle">—</h2>
+        <button class="sec" id="adPfReload">—</button>
+        <button class="sec" id="adPfExport">—</button>
+        <span class="sp"></span>
+        <span class="hint" id="adPfAt">—</span>
+      </div>
+      <div class="hint" id="adPfState" style="margin-top:6px">—</div>
+      <div id="adPfRows" style="margin-top:8px"></div>
+      <div class="hint" id="adPfLogins" style="margin-top:6px">—</div>
     </div>
 
     <!-- 1.0.4 §P0 — the operations half of the console.
@@ -3078,6 +3252,32 @@
         <button class="tw-cat" data-adc-flt="unused">未使用</button>
         <button class="tw-cat" data-adc-flt="used">已使用</button>
         <button class="tw-cat" data-adc-flt="revoked">已撤销</button>
+      </div>
+      <!-- 1.0.6 四号 §2.4.4 — 「[筛选] [搜索使用者：_______]」. The term is matched against the account
+           that SPENT the code (`redeemed_by`), not the one that revoked it: an operator hunting a
+           revoked code searches it by the code itself, which the list already shows.
+           ⚠ The box is submitted by its button rather than on every keystroke, like the user list's
+           search above it. Each submission is a Function call that resolves the term against
+           `users` and then pages `activation_codes`; a per-keystroke version would fire that chain
+           once per character, against an admin API this project treats as rate-sensitive. -->
+      <div class="filters-bar" style="margin-top:8px">
+        <label style="flex:1 1 240px"><span id="adCodeQueryLab">—</span>
+          <input type="text" id="adCodeQuery" style="flex:1 1 200px"></label>
+        <button class="sec" id="adCodeSearch">—</button>
+        <span class="sp"></span>
+        <!-- 1.0.6 四号 §2.3.2 — the SAME pair as the user list's header, for the 激活码 list, and drawn
+             in the same order (折叠 first). They live here rather than in the batch row below because
+             that row is §2.3.4's SELECTION controls: 「展开全部」 is not a thing done to a selection,
+             and a button that folds rows sitting between 清空选择 and 批量撤销 would read as one.
+             ⚠⚠ THESE TWO WERE MISSING FROM THIS FILE UNTIL THE SUITE ASKED. `viewer.js` had labelled
+             and wired `#adCodeExpandAll` / `#adCodeCollapseAll` since the first draft, so the code
+             list had no such control and NOTHING reported it: `adSay` on a missing id is a no-op (by
+             design — it is how a panel is built for whichever page is loaded), and a handler for an
+             element that is not in the document is never attached. The 折叠 side silently inherited
+             the default `codeListCollapsed: true` from the pref, which is exactly why it looked
+             right. §31 of `verify-068` now requires every `adSay`/`onclick` id to exist in this file. -->
+        <button class="sec" id="adCodeCollapseAll">—</button>
+        <button class="sec" id="adCodeExpandAll">—</button>
       </div>
       <!-- §2.3.4's batch row. The ORDER is copied from the archive library's (`#aBulkBar`): the count
            first, then the three selection buttons, then the actions — §2.3.3 asks for 「相同的批量
@@ -3846,6 +4046,11 @@
      carries no user-visible text at all, the same rule auth.js / sync.js / admin.js follow. -->
 <script src="community-shared.js"></script>
 <script src="community.js"></script>
+<!-- 1.0.6 四号 §一.4 — 平台痕迹的客户端半边。⚠ IT IS ITS OWN FILE BECAUSE THE SERVICE WORKER CALLS THE
+     SAME VERB (`background.js` `onStartup`), and a worker cannot reach `GMAuth`. Loaded here AFTER
+     `community-shared.js` because the two platform values come from that block, and after `cloud.js`
+     because the POST goes through `GMCloud.call`. -->
+<script src="platform.js"></script>
 <!-- 1.0.6 三号 §1.2 — 聊天室的本机缓存（IndexedDB `baishen-cache`）。⚠ AFTER `community.js` AND
      BEFORE `viewer.js`, and both halves of that matter:
        · its only caller is `viewer.js` (the room's view), NOT the transport — which is what keeps

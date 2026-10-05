@@ -612,6 +612,117 @@ function serverDate(nowMs) {
   return new Date(now).toISOString().slice(0, 10);
 }
 
+// =============================================================================================
+// 1.0.6 四号 — §一 平台痕迹 + §二.1.1 消息分区的读水位.
+// =============================================================================================
+// Same arrangement, same reason as everything above: each item below is a fact the client and an Edge
+// Function (or the admin console) must agree about, and a second copy would stay self-consistent and
+// quietly stop agreeing.
+
+// ---- §1.2 平台 --------------------------------------------------------------------------------
+/**
+ * §1.2's `PLATFORM` object, verbatim, PLUS the fourth value the panel needs.
+ *
+ * ⚠ `BOTH` IS DERIVED AND NEVER STORED (§1.2 says so in as many words): the database holds the two
+ * real values in `users.platforms`, and 「两者都用」 is `platformTag()`'s answer. A stored `'both'`
+ * would make `['both']` and `['extension','web']` two spellings of one state and every reader would
+ * have to handle both — and `users_platforms_known` (023) refuses anything but the two real ones.
+ *
+ * ⚠ `NONE` IS NOT IN §1.2'S OBJECT AND IS NOT DECORATION. Every account that existed before this
+ * release has `platforms = '{}'`, as does one whose client has not updated yet, so a third of the
+ * operator's list would render a blank tag column. It is also the bucket that makes §1.5.3's panel add
+ * up: 仅扩展 + 仅网页 + 两者 is the population that has REPORTED, and without a fourth line the three
+ * numbers do not sum to the account total and the first person to notice "fixes" it by counting
+ * something else. Rendered as a muted 「—」 rather than as a platform name.
+ */
+var PLATFORM = {
+  EXTENSION: 'extension',
+  WEB: 'web',
+  BOTH: 'both',
+  NONE: 'none'
+};
+/** The two values that may be REPORTED and STORED. §1.2's object has a third key and a fourth above;
+ *  neither is a wire value — `platform-report` refuses anything outside this list, and
+ *  `users_platforms_known` stamps the same list in the database. */
+var PLATFORM_VALUES = ['extension', 'web'];
+
+/**
+ * §1.2's 「两者都用」 derived from the stored array — THE derivation, asked by both realms.
+ *
+ * ⚠⚠ THIS FUNCTION AND `public.platform_tag()` (023_platforms.sql) ARE THE SAME RULE WRITTEN TWICE,
+ * AND THAT PAIR IS PINNED. The duplication is forced by a realm boundary rather than chosen: §1.5.3's
+ * panel counts ACROSS ALL USERS, so it must run in SQL (`count(*) filter (…)` — PostgREST cannot
+ * GROUP and `admin-list-users` returns a page of fifty), while the per-row tag on that same page is
+ * computed in TypeScript from the row's own array. `verify-068` reads both files and asserts the four
+ * arms match, the same arrangement `018_user_directory.sql` has with `toForeignUser` and for the same
+ * reason: a rule one realm cannot import is a rule a test has to hold together.
+ *
+ * ⚠ `indexOf` RATHER THAN `@>`-style logic because this side receives a JSON array, and it is
+ * deliberately order- and duplicate-insensitive (the writer sorts and de-duplicates, but a reader that
+ * depended on that would be one hand-edited row away from mis-classifying an account).
+ */
+function platformTag(platforms) {
+  var p = platforms || [];
+  var hasExt = p.indexOf(PLATFORM.EXTENSION) !== -1;
+  var hasWeb = p.indexOf(PLATFORM.WEB) !== -1;
+  if (hasExt && hasWeb) return PLATFORM.BOTH;
+  if (hasExt) return PLATFORM.EXTENSION;
+  if (hasWeb) return PLATFORM.WEB;
+  return PLATFORM.NONE;
+}
+
+// ---- §2.1.2 五个分区 ---------------------------------------------------------------------------
+/**
+ * §2.1.2's five partitions, IN THE ORDER THE TAB BAR DRAWS THEM. Ids only.
+ *
+ * ⚠ THE LABELS AND ICONS ARE **NOT** HERE, and that is deliberate. §2.1.2's sketch carries
+ * 「好友请求 / 分享 / @提及 / 系统通知 / 我的举报」, but a label rendered from a shared constant is a
+ * string no translator ever sees: this block is plain JavaScript, and the product's `T()` is driven by
+ * literal keys the extractor can find. So the block owns the IDS (the membership and the order — what
+ * both realms must agree about) and the view owns the five labels, one literal `T('…')` each, where
+ * every other label in the product lives.
+ *
+ * ⚠ THE LIST IS ALSO THE BADGE'S ITERATION ORDER, so adding a sixth partition means adding its
+ * watermark column (024) and its source table, and NOTHING else: `readAtColumn()` below derives the
+ * column name and the view derives the tab. The one thing to get right is that every source row lands
+ * in exactly one partition — see 024's header for the `notifications.kind` split.
+ */
+var MESSAGE_CATEGORIES = ['friends', 'shares', 'mentions', 'system', 'reports'];
+
+/**
+ * The `users` column that holds a partition's read watermark — §2.1.1's `category + '_read_at'`.
+ *
+ * A named function rather than the concatenation, because the string appears in the OWNER's profile
+ * projection (`toPublicUser`), in the PATCH the view sends when a tab opens, and in the count each tab
+ * runs — three spellings of one column name is precisely how 「读过的那个列」 becomes two columns.
+ */
+function readAtColumn(category) {
+  return String(category == null ? '' : category) + '_read_at';
+}
+
+/**
+ * §2.1.1's 「自上次进入该分区以来」, as the ISO instant a PostgREST `created_at=gt.…` needs.
+ *
+ * ⚠ THE EPOCH IS LOAD-BEARING, NOT A PLACEHOLDER. `created_at > null` is NULL rather than true, so a
+ * count that compared against the raw watermark would report ZERO unread for every account that has
+ * never opened the partition — i.e. every account, right up until its first visit. §2.1.1's own
+ * snippet writes `coalesce($me.friends_read_at, '1970-01-01')` and this is that expression on the
+ * client side; the database-side equivalent is spelled in 023/024's headers.
+ *
+ * `null` / `undefined` / an unparsable value all read as 「从来没有进过」 (everything is new), which is
+ * the safe direction: a badge that over-counts is a dot the user can clear, and one that under-counts
+ * is a message they never learn about.
+ */
+function unreadSince(readAt, fallbackIso) {
+  var iso = typeof fallbackIso === 'string' && fallbackIso
+    ? fallbackIso
+    : '1970-01-01T00:00:00.000Z';
+  if (readAt == null || readAt === '') return iso;
+  var t = Date.parse(String(readAt));
+  if (!isFinite(t)) return iso;
+  return new Date(t).toISOString();
+}
+
 /**
  * 1.0.4 §P1 — every table the community subscribes to, and the events it wants from each.
  *
@@ -680,12 +791,11 @@ function realtimeChanges() {
     CENSOR_WORDS: CENSOR_WORDS,
     CHAT_MAX_LEN: CHAT_MAX_LEN,
     CHAT_PAGE_SIZE: CHAT_PAGE_SIZE,
-    CHAT_RETENTION_DAYS: CHAT_RETENTION_DAYS,
     CHAT_RATE_MAX: CHAT_RATE_MAX,
     CHAT_RATE_WINDOW_MS: CHAT_RATE_WINDOW_MS,
+    CHAT_RETENTION_DAYS: CHAT_RETENTION_DAYS,
     CHINA_REGIONS: CHINA_REGIONS,
     COUNTRY_CODE_RE: COUNTRY_CODE_RE,
-    FLAG_FALLBACK: FLAG_FALLBACK,
     FEEDBACK_CATEGORIES: FEEDBACK_CATEGORIES,
     FEEDBACK_CONTACT_MAX: FEEDBACK_CONTACT_MAX,
     FEEDBACK_CONTENT_MAX: FEEDBACK_CONTENT_MAX,
@@ -693,25 +803,29 @@ function realtimeChanges() {
     FEEDBACK_RATE_WINDOW_MS: FEEDBACK_RATE_WINDOW_MS,
     FEEDBACK_STATUSES: FEEDBACK_STATUSES,
     FEEDBACK_TITLE_MAX: FEEDBACK_TITLE_MAX,
+    FLAG_FALLBACK: FLAG_FALLBACK,
     FRIEND_REMARK_MAX: FRIEND_REMARK_MAX,
     FRIEND_STATUSES: FRIEND_STATUSES,
     MANUAL_STATUSES: MANUAL_STATUSES,
     MENTION_MAX: MENTION_MAX,
     MENTION_RE: MENTION_RE,
+    MESSAGE_CATEGORIES: MESSAGE_CATEGORIES,
     MUTE_DURATIONS_MS: MUTE_DURATIONS_MS,
     NEWS_CATEGORIES: NEWS_CATEGORIES,
     NEWS_CONTENT_MAX: NEWS_CONTENT_MAX,
     NEWS_DEFAULT_LANG: NEWS_DEFAULT_LANG,
     NEWS_TITLE_MAX: NEWS_TITLE_MAX,
+    PLATFORM: PLATFORM,
+    PLATFORM_VALUES: PLATFORM_VALUES,
     PRESENCE_BEAT_MS: PRESENCE_BEAT_MS,
     PRESENCE_OFFLINE_MS: PRESENCE_OFFLINE_MS,
     PRESENCE_ONLINE_MS: PRESENCE_ONLINE_MS,
-    REPLY_PREVIEW_MAX: REPLY_PREVIEW_MAX,
     REPORT_CATEGORIES: REPORT_CATEGORIES,
     REPORT_DETAIL_MAX: REPORT_DETAIL_MAX,
     REPORT_NOTE_MAX: REPORT_NOTE_MAX,
     REPORT_RATE_MAX: REPORT_RATE_MAX,
     REPORT_RATE_WINDOW_MS: REPORT_RATE_WINDOW_MS,
+    REPLY_PREVIEW_MAX: REPLY_PREVIEW_MAX,
     REPORT_STATUSES: REPORT_STATUSES,
     REALTIME_TABLES: REALTIME_TABLES,
     RECALL_REASON_MAX: RECALL_REASON_MAX,
@@ -719,34 +833,37 @@ function realtimeChanges() {
     SHARE_DAILY_ARCHIVE_MAX: SHARE_DAILY_ARCHIVE_MAX,
     SHARE_DAILY_CONFIG_MAX: SHARE_DAILY_CONFIG_MAX,
     SHARE_INLINE_MAX_BYTES: SHARE_INLINE_MAX_BYTES,
-    SHARE_KINDS: SHARE_KINDS,
     SHARE_NAME_MAX: SHARE_NAME_MAX,
+    SHARE_KINDS: SHARE_KINDS,
+    VOTE_TARGET_KINDS: VOTE_TARGET_KINDS,
+    isVotableKind: isVotableKind,
     SHARE_TTL_MS: SHARE_TTL_MS,
     VOTE_CHOICES: VOTE_CHOICES,
-    VOTE_TARGET_KINDS: VOTE_TARGET_KINDS,
     VOTE_TTL_MS: VOTE_TTL_MS,
     censorHit: censorHit,
     censorNormalize: censorNormalize,
+    canRecall: canRecall,
     chatClock: chatClock,
     chatRetentionCutoff: chatRetentionCutoff,
-    canRecall: canRecall,
     countryFlag: countryFlag,
     countryFlagChinaUnified: countryFlagChinaUnified,
     isMuted: isMuted,
     isShareLive: isShareLive,
-    isVotableKind: isVotableKind,
     isVoteOpen: isVoteOpen,
     mentionToken: mentionToken,
     messageType: messageType,
     newsText: newsText,
     parseMentions: parseMentions,
+    platformTag: platformTag,
     presenceState: presenceState,
     previewLine: previewLine,
     quotaColumnFor: quotaColumnFor,
     quotaMaxFor: quotaMaxFor,
+    readAtColumn: readAtColumn,
     realtimeChanges: realtimeChanges,
     serverDate: serverDate,
     shareExpiresAt: shareExpiresAt,
+    unreadSince: unreadSince,
     voteTally: voteTally,
   };
 

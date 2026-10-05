@@ -36,6 +36,12 @@ importScripts('custom-engine.js');
 // gm-check-update handler below).
 importScripts('update.js');
 
+// 1.0.6 四号 §一.4.1 — 平台痕迹. `cloud.js` and `platform.js` are what the report verb needs (the
+// shared block for the platform values, the cloud seam for the POST, the verb itself), and
+// `community-shared.js` must precede `platform.js` — see `platform.js`'s header on why a missing
+// shared block is a loud failure rather than a guessed literal. None of the three touches a DOM.
+importScripts('community-shared.js', 'cloud.js', 'platform.js');
+
 // 0.4.8 §2 — chrome.storage.session defaults to TRUSTED_CONTEXTS only, so a content script
 // cannot see it at all. Opening it to content scripts is what makes the §2 migration real;
 // without this call content.js's sessionArea() finds no `session` area, and since 1.0.5
@@ -105,7 +111,33 @@ chrome.runtime.onStartup.addListener(function () {
     function () { buildLangMenu('auto'); }
   );
   scheduleUpdateCheck();
+  reportPlatform();
 });
+
+// ---- 1.0.6 四号 §一.4.1 「每次启动扩展」 ---------------------------------------------------------
+// The report itself is ONE implementation, in `platform.js` — loaded here rather than re-written,
+// because a worker that POSTed its own hand-built body would be the second spelling of a wire
+// contract, and the failure would be invisible (a census that is quietly short).
+//
+// ⚠ THE WORKER IS A SEPARATE GLOBAL SCOPE, which is the whole reason `platform.js` exists as a file:
+// `GMAuth`, `GMCommunity`, the viewer's DOM — none of it is reachable from here. `importScripts` is
+// the only way in, and these three modules are what the verb needs: the shared block (the platform
+// values), the cloud seam (the POST), and the verb. `storage.js` is already imported above, so the
+// session read inside `reportExtension()` works here.
+//
+// ⚠ FIRE-AND-FORGET, AND THAT IS THE DESIGN. `onStartup` fires on a cold profile start, often before
+// the network is up; `report()` never rejects and its answer is not consulted. The same 30-minute
+// server-side throttle that makes a reload harmless makes a failed startup report harmless too —
+// the next boot, login or viewer open reports again.
+function reportPlatform() {
+  // The guard is belt and braces: `importScripts` is synchronous, so `GMPlatform` exists by the time
+  // this runs. It is here so that a module that failed to load leaves the worker working rather than
+  // throwing inside a startup listener — the one failure mode that would look like 「扩展坏了」.
+  if (typeof GMPlatform === 'undefined' || !GMPlatform) return;
+  try {
+    GMPlatform.reportExtension().catch(function () {});
+  } catch (e) { /* a census must never break the worker's startup */ }
+}
 
 chrome.contextMenus.onClicked.addListener(function (info) {
   var id = String((info && info.menuItemId) || '');
