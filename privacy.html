@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>隐私政策 · 白身 Baishen</title>
+<style>
+  body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif;max-width:760px;margin:0 auto;padding:40px 20px;line-height:1.7;color:#222;background:#fafafa}
+  h1{font-size:28px;border-bottom:2px solid #7aa2ff;padding-bottom:10px}
+  h2{font-size:20px;margin-top:32px;color:#1a3a6b}
+  h3{font-size:16px;margin-top:20px}
+  table{border-collapse:collapse;width:100%;margin:12px 0}
+  th,td{border:1px solid #ddd;padding:8px 12px;text-align:left;font-size:14px}
+  th{background:#f0f4ff}
+  code{background:#eef;padding:2px 6px;border-radius:4px;font-size:13px}
+  .last{color:#888;font-size:13px}
+  blockquote{border-left:4px solid #7aa2ff;margin:12px 0;padding:8px 16px;background:#f0f4ff;color:#333}
+</style>
+</head>
+<body>
+<h1>白身 (Baishen) 隐私政策</h1>
+<p class="last">最后更新：2026-10-04（随 v1.0.5 发布）</p>
+
+<blockquote>
+<strong>一句话：核心检测完全在本地运行，不需要账号，不上传任何数据。</strong>
+只有当你主动填入激活码并主动开启云同步之后，才会有数据离开你的电脑。
+</blockquote>
+
+<h2>1. 不需要账号时：什么都不会上传</h2>
+<p>以下功能在完全离线状态下工作，不产生任何网络请求：</p>
+<ul>
+  <li>读取棋盘落子序列、跑引擎复盘、计算风险分</li>
+  <li>本地存档与样本库</li>
+  <li>学习机制（阈值自动搜索）与黑名单</li>
+  <li>自定义模型（权重包存在本机 IndexedDB）</li>
+</ul>
+
+<h2>2. 激活并登录后，会上传什么</h2>
+<table>
+  <tr><th>项目</th><th>内容</th><th>目的</th></tr>
+  <tr><td>用户标识</td><td>username、email</td><td>账户本身</td></tr>
+  <tr><td>头像</td><td>avatar（压缩到 256×256）</td><td>主页显示</td></tr>
+  <tr><td>账户状态</td><td>激活状态、设备 ID、最后活跃时间</td><td>一码一账户、跨设备上限 3 台</td></tr>
+  <tr><td>样本统计</td><td>条数、AI 比例等聚合数字</td><td>主页数字</td></tr>
+  <tr><td>徽章</td><td>已授予的徽章类型</td><td>成就系统</td></tr>
+</table>
+
+<h2>3. 不会上传什么</h2>
+<ul>
+  <li><strong>不会上传棋谱原始数据</strong>——逐手记录留在本机</li>
+  <li><strong>不会上传检测结果</strong>——风险分、每步判定只在本机计算</li>
+  <li><strong>不会上传本地设置</strong>——除非你自己打开云同步</li>
+  <li><strong>不会上传黑名单</strong>——默认不同步，需手动勾选</li>
+</ul>
+
+<h3>3.1 关于对手的数据</h3>
+<p>样本、回放存档与黑名单里带着对手的显示名。开启云同步并勾选对应类别后，这些名字会随之上传——它们是你自己采集的内容，不是我们从服务端读来的。</p>
+
+<h2>4. 数据存放在哪里</h2>
+<p>Supabase（PostgreSQL + Storage）托管，区域为新加坡（ap-northeast-2 邻近节点）。</p>
+
+<h2>5. 保留期</h2>
+<ul>
+  <li><strong>活跃账户</strong>：数据一直保留，直到你删除</li>
+  <li><strong>注销账户</strong>：本地数据保留原位，云端数据 30 天后彻底删除</li>
+  <li><strong>激活码泄露</strong>：管理员可批量撤销，撤销不影响本地数据</li>
+</ul>
+
+<h2>6. 你的权利</h2>
+<ul>
+  <li><strong>导出</strong>：扩展的「导入与导出」面板导出全部本地数据</li>
+  <li><strong>删除</strong>：「我的 → 注销账户」申请删除云端数据（30 天后生效）</li>
+  <li><strong>更正</strong>：「我的 → 修改资料」改用户名、邮箱、头像</li>
+</ul>
+
+<h2>7. 未成年人</h2>
+<p>本扩展面向在线五子棋的成年玩家。若可能包含未成年人，请在使用前取得监护人同意。</p>
+
+<h2>8. 第三方</h2>
+<p>除 Supabase 外，扩展不向任何第三方发送数据。检测引擎（Rapfi / KataGomo）在本机或你自己配置的地址运行；「自动提问」功能使用你自己填写的 LLM 接口与密钥。</p>
+
+<h2>9. 联系方式</h2>
+<p>管理员邮箱：mod0207613@qq.com</p>
+
+<h2>10. 在你自己的电脑上：哪些是明文</h2>
+<p><code>chrome.storage.local</code> 本身不加密。以下内容以明文存在浏览器配置目录：</p>
+<ul>
+  <li>「自动提问」用的 LLM API Key（导出备份会剥离）</li>
+  <li>云账户登录令牌（JWT，30 天有效）——它被放在 settings 之外，导出/同步都不会带上</li>
+</ul>
+<p>如果你不信任本机上的其他程序，请不要启用「自动提问」，也不要登录云账户——<strong>核心检测功能两者都不需要</strong>。</p>
+
+<h2>11. 在线状态与国籍的可见范围</h2>
+<p>「最后活跃时间」对其他账户一律返回空值（显示离线），这是数据层约束。国籍同理，勾选「隐藏国籍」后其他用户读到空值。</p>
+<p>⚠ 例外：Realtime presence 频道让好友列表即时更新，任何已登录账户订阅它都能看到"现在谁在线"，但看不到历史时间戳。「隐身」让别人看到你离线，但不会把你从频道成员列表移除。</p>
+
+<hr>
+<p class="last">© Baishen · Gomoku anti-cheat detector · <a href="https://github.com/AODOJUST/gomoku-anti-cheat-detector">GitHub</a></p>
+</body>
+</html>
