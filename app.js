@@ -2284,6 +2284,33 @@ const BASE_WEIGHTS = {
   goodPool: 0.19,
   // §1.2's 活三 pool, back at 0.5.3's 0.03.
   liveThree: 0.03,
+  // ⚠⚠ 1.0.7 §1.2 — **PARKED AT 0**, and the reason is a measurement rather than a preference.
+  // The mechanism §1.2.3 specifies (deep low points, and deep low points between good ones) is
+  // implemented and reported — `lowDepth` / `evasiveDepthScore` / `evasiveRhythm` / the two metric
+  // rows / `classifySide`'s in-band branch. What is NOT shipped is the SCORING term, because on
+  // the operator's own 65 archives the activation is **inverted**:
+  //
+  //     group      n     deep avg   aEvasive avg   fires on   points avg
+  //     HUMAN     72       1.93         0.381          89%         +3.81
+  //     MACHINE   55       0.25         0.068          11%         +0.68
+  //
+  // i.e. it pays the sides the detector calls human more than the sides it calls AI, because
+  // `deep` counts hands outside the engine's top-8 and a weaker player has MORE of those, not
+  // fewer. At §1.2.3.4's weight it moved 127 sides' average 49.6 → 52.0 and pushed 9 of them up a
+  // band, every one of them upward, none of them the two samples §1.2 is about. A term that lifts
+  // everyone is a constant, and this detector's whole operating point is a pair of cuts.
+  //
+  // This is `time` / `noBlunder` / `probeMatch` again: the key STAYS (so the panel has its row,
+  // the archive has its fields, and a future operator can pin a weight on it and be honoured
+  // exactly as every other signal is), and the CURVE stays (`evasiveActivation`), but the shipped
+  // weight is 0. See the 1.0.7 release note for the full table and `_tools/_diag21-107-evasive.cjs`
+  // for the measurement itself.
+  // ⚠ The table above is the SECOND reason, not the first. The first is that half the mechanism is
+  // unreachable: `deep` here means "outside the Top 8", and the Top-8 tier only exists on a hand
+  // whose RECORDED thinking time exceeded 6s — see the note at `LOW_DEPTH_SHALLOW`. On a record
+  // with no timing (both samples §1.2 was written for) `deep` is simply "hands outside the Top 5",
+  // which is why it rises for the weaker side. `_tools/_diag22-top8-reach.cjs` prints that split.
+  evasiveBehavior: 0,
   // 0.5.7 §1.3 — the three low-end-AI signals. **0.5.7-Alpha zeroes two of them** (`noBlunder`,
   // `probeMatch`) because both measured ≈0 for humans and machines alike on the operator's corpus;
   // only `steadyLost` keeps a weight. Both keys are KEPT rather than deleted, for the same reason
@@ -2813,6 +2840,101 @@ function stepProximity(s) {
   if (s.top8) return PROX.top8;   // Top6-8, only ever set on a >6s hand (§1.4)
   return 0;
 }
+// 1.0.7 §1.1 — the Top2-5 tier is ONE value, and this is the assertion of it: Top3 and Top5 are
+// the same evidence at two resolutions (see PROX above, where both are 0.80), so 「下 Top2 还是
+// 下 Top5 得分增长相同」 is a property of this table rather than of the classifier. §1.1's
+// acceptance #1/#3 pins the two consumers — `aTop1`'s ramp and `sharpHit` — to `stepProximity`
+// in `sideAggregate`; both read the same `PROX.top5`, so they cannot drift apart.
+
+// ---------- 1.0.7 §1.2 规避型 AI：深度与节奏 ----------
+// §1.2.2's diagnosis of the two samples was that `segmentSide` binarises: a hand either reached
+// Top5 or it did not, and 「没到 Top5 但还在 Top8 以内」 and 「连 Top8 都不在」 were the same event.
+// These two functions restore the lost distinction and hand the classifier and the score a pair
+// of numbers about it. Both walk the side's OWN sequence — the same population `segmentSide`
+// draws (scored, non-opening, non-exempt), in table order, so 「相邻」 means adjacent HANDS OF
+// THAT PLAYER and the opponent's intervening hands do not break a run.
+//
+// ⚠ The 冲四豁免 test is `isExemptUnique(s)`, NOT `s.forcedDefense`: app.js has ONE spelling of
+// that rule and `verify-053` counts the other spellings in code to keep it that way.
+const LOW_DEPTH_NONE = 0;
+// ⚠⚠ **SHALLOW is mostly unreachable, and that is a fact about `top8`, not about this function.**
+// `nbestFor()` is called with the hand's RECORDED thinking time (`nbestFor(record.times[i])`, see
+// analyseStepwise), not with the engine budget, and it only asks for eight candidates above 6s
+// (THINK_MS_EXTENDED). Below that the engine returns five, so `scoreStep`'s `cands.slice(0, 8)` is
+// the same five and `top8` is identically `top5`. Measured on this project's corpus (65 archives ×
+// 2 sides plus this release's two samples): **909 scored hands at ≤6s or with no timing at all
+// carry 0 shallow hands; the 236 hands above 6s carry all 15 of them.** So on any record without
+// timing — and both samples this branch was written for are exactly that — `lowDepth` returns only
+// NONE or DEEP, and `deep` degenerates into "hands outside the Top 5", a plain strength proxy: the
+// weaker side has MORE of them. This is why the signal below measured backwards. Pinned by
+// `_tools/verify-069.cjs` (the three tiers) and `_tools/_diag22-top8-reach.cjs` (the corpus split).
+const LOW_DEPTH_SHALLOW = 1;   // top6-8: a shallow dip — only ever set on a >6s hand
+const LOW_DEPTH_DEEP = 2;      // outside top8 entirely: a move no candidate list contained
+const EVASIVE_HAND_W = 0.15;   // per deep hand
+const EVASIVE_RHYTHM_W = 0.20; // …and again per deep hand that is surrounded by good ones
+const EVASIVE_MIN_DEEP = 1;
+const EVASIVE_RHYTHM_HIGH = 0.6;
+const EVASIVE_RHYTHM_LOW = 0.5;
+const EVASIVE_MAX_DEEP_SINGLE = 5;   // at or below: 规避型AI; above: 强规避AI
+
+function lowDepth(s) {
+  if (!s || !s.analyzed) return LOW_DEPTH_NONE;
+  if (s.top5) return LOW_DEPTH_NONE;
+  if (s.top8) return LOW_DEPTH_SHALLOW;
+  return LOW_DEPTH_DEEP;
+}
+
+function evasiveOwnHands(steps, side) {
+  const own = [];
+  for (let i = 0; i < steps.length; i++) {
+    const s = steps[i];
+    if (s.side === side && s.analyzed && !s.isOpening && !isExemptUnique(s)) own.push(s);
+  }
+  return own;
+}
+
+// Signal A (§1.2.3.2). `deep` is the count of hands `stepProximity` scores 0 that the side
+// actually chose; `shallow` is the count that landed in Top6-8. `score` is the weighted sum per
+// hand, reported so a reader can see the two counts collapsed — the SCORE reads `deep` through
+// `evasiveActivation`, not through this number.
+function evasiveDepthScore(steps, side) {
+  const own = evasiveOwnHands(steps, side);
+  let shallow = 0, deep = 0;
+  for (let i = 0; i < own.length; i++) {
+    const d = lowDepth(own[i]);
+    if (d === LOW_DEPTH_SHALLOW) shallow++;
+    else if (d === LOW_DEPTH_DEEP) deep++;
+  }
+  const total = own.length || 1;
+  const score = (shallow * 0.5 + deep * 1.5) / total;
+  return { shallow, deep, total: own.length, score };
+}
+
+// Signal B (§1.2.3.2). Of the side's deep hands, how many sit between two GOOD ones (a neighbour
+// whose `stepProximity` is at least the Top2-5 tier). The ends of the sequence are excluded —
+// 「surrounded」 is a claim about a hand with two neighbours, and a first or last hand has one.
+function evasiveRhythm(steps, side) {
+  const own = evasiveOwnHands(steps, side);
+  let deepCount = 0, surroundedByHigh = 0;
+  for (let i = 1; i < own.length - 1; i++) {
+    if (lowDepth(own[i]) !== LOW_DEPTH_DEEP) continue;
+    deepCount++;
+    const prevHigh = stepProximity(own[i - 1]) >= PROX.top5;
+    const nextHigh = stepProximity(own[i + 1]) >= PROX.top5;
+    if (prevHigh && nextHigh) surroundedByHigh++;
+  }
+  return { deepCount, surroundedByHigh,
+           rhythmScore: deepCount > 0 ? surroundedByHigh / deepCount : 0 };
+}
+
+// The activation, in ONE place because both `sideAggregate` (the score) and `classifySide` (the
+// label) read it. §1.2.3.4's formula is implemented as written — and then NOT wired into the score,
+// because the measurement said no: see `evasiveBehavior` in BASE_WEIGHTS. Keeping the curve here
+// rather than deleting it is what lets a future operator pin a weight on the key and have it
+// honoured exactly as every other signal is (the same arrangement `time` has had since 0.5.7).
+function evasiveActivation(depth, rhythm) {
+  return clamp(depth.deep * EVASIVE_HAND_W + rhythm.rhythmScore * depth.deep * EVASIVE_RHYTHM_W, 0, 1);
+}
 
 // ---------- 0.5.0 §1.2 唯一手豁免的边界 ----------
 // The ONLY hand kept out of the main statistics is a 冲四强制应对手 — a hand whose entire
@@ -3261,6 +3383,18 @@ function sideAggregate(steps, side, hasTime, params, opts) {
   const aLiveThree = liveThreeMax >= LIVE_POOL_MIN
     ? clamp((Math.pow(1.3, liveThreeMax - 1) - 1) / 4, 0, 1)
     : 0;
+  // 1.0.7 §1.2 — 规避行为. Population: the side's scored, non-opening, non-exempt hands — the
+  // same list `segmentSide()` draws and the same one `goodPool`'s ratio walk uses, deliberately
+  // NOT `s` above (which also drops the evasion hands). 「这一步落在哪里」 is a fact about the
+  // move, and an evasion hand is precisely the hand this term is about; filtering it out would
+  // remove the evidence it exists to read.
+  //
+  // ⚠ The shipped weight is 0 (see BASE_WEIGHTS), so `aEvasive` pays nothing — but it is computed
+  // and carried anyway, because the classifier's in-band branch reads it and because the two metric
+  // rows print it. A term whose score is off and whose reading is on is the `time` arrangement.
+  const evasiveDepth = evasiveDepthScore(steps, side);
+  const evasiveRhythmStats = evasiveRhythm(steps, side);
+  const aEvasive = evasiveActivation(evasiveDepth, evasiveRhythmStats);
   // 0.5.7-Alpha §二 防四三杀 — the first term in this table that is NOT a function of the engine's
   // candidate list. It is a fact about the BOARD: the opponent held a 四三杀 threat (a four AND a
   // 活三 at once, so answering one does not save you) and this side found an answer. A full-strength
@@ -3346,6 +3480,8 @@ function sideAggregate(steps, side, hasTime, params, opts) {
                     + wEff.uselessFour * aUselessFour
                     + wEff.sharpStreak * aSharpStreak + wEff.sharpTotal * aSharpTotal
                     + wEff.goodPool * aGoodPool + wEff.liveThree * aLiveThree
+                    // 1.0.7 §1.2 — 规避行为（深 low 点 + 高分环绕的节奏）。
+                    + wEff.evasiveBehavior * aEvasive
                     // 0.5.7 §1.3 — the three low-end-AI terms. `wEff.time` is still in the sum above
                     // and still multiplied by `aTime`; the shipped weight is 0, so the product is 0.
                     // That is deliberate over deleting the term: the field, the computation and the
@@ -3376,6 +3512,16 @@ function sideAggregate(steps, side, hasTime, params, opts) {
     goodRatio: gp.ratio, goodCount: gp.count, goodTotal: gp.total, goodStreak: gp.streak,
     // §1.2. Unchanged: the 活三 pool's own run length.
     liveThreeMax,
+    // 1.0.7 §1.2. The four raw figures behind the 规避行为 term, reported so the detail table can
+    // print 「深 low 点 N 手（其中 M 手两侧都是好点）」 without recomputing either walk — the same
+    // reason `goodRatio`/`liveThreeMax` above are carried. `evasiveShallow` is 0 on every game
+    // whose hands were all under the six-second width (§1.4), which is most of them.
+    evasiveShallow: evasiveDepth.shallow,
+    evasiveDeep: evasiveDepth.deep,
+    evasiveTotal: evasiveDepth.total,
+    evasiveDepthScore: evasiveDepth.score,
+    evasiveSurrounded: evasiveRhythmStats.surroundedByHigh,
+    evasiveRhythm: evasiveRhythmStats.rhythmScore,
     // 0.5.7 §1.3①②. The raw figures behind the two board/composure terms, reported so the detail
     // table can print 「被迫防守 N 次 / 漏防 M 次」 and 「败势手 N 手 / 平均损失 x」 without recomputing
     // either — the same reason sharpStreakMax/goodRatio are carried. `losingLoss` is null when the
@@ -3390,6 +3536,9 @@ function sideAggregate(steps, side, hasTime, params, opts) {
     // learner's mirror needs to compare like with like; a reader that divides is a second
     // implementation of the weight table, which is the thing this file keeps refusing to have.
     aNoBlunder, aSteadyLost, aProbeMatch,
+    // 1.0.7 §1.2 — the 规避行为 activation, carried for the same reason (the classifier reads it
+    // off the aggregate rather than re-deriving it from `contributions`).
+    aEvasive,
     contributions: {
       top1: wEff.top1 * aTop1 * 100, acpl: wEff.acpl * aAcpl * 100, sharp: wEff.sharp * aSharp * 100,
       out: wEff.out * aOut * 100, desperate: wEff.desperate * aDesperate * 100, time: wEff.time * aTime * 100,
@@ -3398,6 +3547,7 @@ function sideAggregate(steps, side, hasTime, params, opts) {
       uselessFour: wEff.uselessFour * aUselessFour * 100,
       sharpStreak: wEff.sharpStreak * aSharpStreak * 100, sharpTotal: wEff.sharpTotal * aSharpTotal * 100,
       goodPool: wEff.goodPool * aGoodPool * 100, liveThree: wEff.liveThree * aLiveThree * 100,
+      evasiveBehavior: wEff.evasiveBehavior * aEvasive * 100,
       noBlunder: wEff.noBlunder * aNoBlunder * 100, steadyLost: wEff.steadyLost * aSteadyLost * 100,
       probeMatch: wEff.probeMatch * aProbeMatch * 100,
     },
@@ -3569,6 +3719,40 @@ function classifySide(risk, segments, steps, side, thresholds, acts) {
   });
   const lowMax = lowRuns.length ? Math.max.apply(null, lowRuns) : 0;
 
+  // 1.0.7 §1.2.3.3 — the depth/rhythm reading runs BEFORE the run-shape table, and only inside
+  // the ai band (the gate above returns first, so a 50-point side is never promoted by it — the
+  // same promise §1.3's own table makes and 0.4.3's band gate enforces).
+  //
+  // Why it was added: §1.3's table classifies the SHAPE OF THE DIPS, and a two-hand dip is 「one
+  // short dip」 whether it was two hands the engine ranked 6th and 7th or two hands it never
+  // considered. The branch is meant to make that distinction explicit, and to let a side with no
+  // dip at all still be read as evasive if its low hands have the isolated-bad-hand signature.
+  //
+  // ⚠⚠ **Measured: it does not fire on the records it was written for.** The two facts behind that
+  // are stated once, at `LOW_DEPTH_SHALLOW` (the shallow tier is unreachable without a >6s hand, so
+  // `deep` is a strength proxy) and once in `BASE_WEIGHTS` (its activation therefore separates
+  // humans from machines the wrong way round: 0.381 vs 0.068). The consequence HERE is narrower:
+  // the gate above returns first, so the branch only runs on a side already at ≥70 points — and on
+  // the two samples neither white reaches that band (they score 52.6 and 31.6), so the branch never
+  // runs for them at all. Kept because the operator asked for the mechanism and its evidence to be
+  // recorded even where the evidence is negative; `_tools/verify-069.cjs` pins the numeric
+  // behaviour and `_tools/behave-069-evasive.cjs` pins the corpus figures, so a future attempt to
+  // re-point this signal starts from the measurement rather than from the premise.
+  const evDepth = evasiveDepthScore(steps, side);
+  const evRhythm = evasiveRhythm(steps, side);
+  if (evDepth.deep >= EVASIVE_MIN_DEEP && evRhythm.rhythmScore >= EVASIVE_RHYTHM_HIGH &&
+      evDepth.deep <= EVASIVE_MAX_DEEP_SINGLE) {
+    return { suspect: 'ai', type: 'evasiveAi', auto: true,
+             lowSteps: lowTotal, lowRuns: lowRuns.length, lowMax,
+             evasiveDeep: evDepth.deep, evasiveRhythm: evRhythm.rhythmScore };
+  }
+  if (evDepth.deep > EVASIVE_MAX_DEEP_SINGLE ||
+      (evRhythm.rhythmScore < EVASIVE_RHYTHM_LOW && evDepth.deep > 3)) {
+    return { suspect: 'ai', type: 'strongEvasiveAi', auto: true,
+             lowSteps: lowTotal, lowRuns: lowRuns.length, lowMax,
+             evasiveDeep: evDepth.deep, evasiveRhythm: evRhythm.rhythmScore };
+  }
+
   let type;
   if (lowRuns.length === 0) type = 'lowAi';
   else if (lowRuns.length >= 2 || lowMax >= 3) type = 'strongEvasiveAi';
@@ -3692,6 +3876,15 @@ if (typeof module !== 'undefined' && module.exports) {
     // for the same reason — a test that had to re-implement segmentSide() to check it would
     // be testing its own copy, and the two could drift.
     stepProximity, segmentSide, riskBand, classifySide, MIN_SEGMENT,
+    // 1.0.7 §1.1/§1.2 — the Top2-5 tier table and the evasive-reading pass. Exported for the same
+    // reason as the line above: `verify-069` drives `lowDepth` / `evasiveDepthScore` /
+    // `evasiveRhythm` / `evasiveActivation` on hand-built step lists rather than re-implementing
+    // them, and `PROX` is exported so §1.1's acceptance ("Top2 and Top5 grade the same") can be
+    // read off the shipped table instead of off a copy of it in the suite.
+    PROX, lowDepth, evasiveDepthScore, evasiveRhythm, evasiveActivation,
+    LOW_DEPTH_NONE, LOW_DEPTH_SHALLOW, LOW_DEPTH_DEEP,
+    EVASIVE_HAND_W, EVASIVE_RHYTHM_W, EVASIVE_MIN_DEEP, EVASIVE_RHYTHM_HIGH,
+    EVASIVE_RHYTHM_LOW, EVASIVE_MAX_DEEP_SINGLE,
     // 0.5.7 §1.5 — the two cuts the 低端AI downgrade reads, exported so the suite can drive the rule
     // at its boundary rather than having to find a game that lands on it.
     LOWEND_NO_BLUNDER_MIN, LOWEND_STEADY_MIN,

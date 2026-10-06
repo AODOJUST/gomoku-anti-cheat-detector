@@ -2633,6 +2633,13 @@
         <button class="cm-tab" data-cm="msgs"><span class="cm-ico">📨</span><span class="cm-lbl">消息</span><span class="cm-badge hidden" id="cmMsgsBadge"></span></button>
         <button class="cm-tab" data-cm="news"><span class="cm-ico">📰</span><span class="cm-lbl">新闻</span></button>
         <button class="cm-tab" data-cm="feedback"><span class="cm-ico">🐛</span><span class="cm-lbl">Bug与建议</span></button>
+        <!-- 1.0.7 §2.1.3 「社区次级导航（更新）：聊天室 / 新闻 / Bug与建议 / 缉捕墙 ← 新增」.
+             Appended LAST, which is where that listing puts it — the four that were already here keep
+             their positions, so a returning operator's muscle memory survives the release.
+             ⚠ The glyph and the label are two spans, exactly like the five above: the implicit pass
+             derives its key from a text node's whole trimmed content, so `🚨 缉捕墙` in one node would
+             become the key `html|🚨 缉捕墙`, which no dictionary row carries. -->
+        <button class="cm-tab" data-cm="wanted"><span class="cm-ico">🚨</span><span class="cm-lbl">缉捕墙</span></button>
       </nav>
 
       <div class="cm-body">
@@ -2904,6 +2911,33 @@
           </div>
         </div>
 
+        <!-- ---- 缉捕墙 (§2.1, 1.0.7) ---- -->
+        <!-- §2.1.3's page. ⚠ THE CHIPS AND THE CARDS ARE DRAWN BY JS, and the chips are drawn from
+             `WANTED_STATUSES` rather than written here — the four labels §2.1.3 lists (全部 / 待审核 /
+             已通过 / 已解决) are exactly the server's four statuses plus "no filter", and a hand-written
+             row would be a second list that can drift from the one `wanted-approve` validates against.
+             ⚠ 全部 is `data-wstatus=""`: one predicate with "no filter" spelled as the empty string, the
+             same shape the 新闻 pane's `data-cmcat=""` uses. -->
+        <div class="cm-pane" id="cmPane-wanted">
+          <div class="panel">
+            <div class="filters-bar">
+              <h2 style="margin:0">缉捕墙</h2>
+              <span class="sp"></span>
+              <button id="cmWantedSubmit">提交嫌疑人</button>
+              <button class="sec" id="cmWantedReload">刷新</button>
+            </div>
+            <div class="btn-row" id="cmWantedChips" style="margin-top:8px"></div>
+            <!-- §2.1.6's 待审队列 is a member-visible queue too, and only for their OWN rows: 026's
+                 read predicate is `status = 'approved' or submitter_id = auth.uid() or is_admin()`, so
+                 「待审核」 shows a member their own submissions and an admin the whole queue. The hint
+                 says which, because 「为什么待审核是空的」 is otherwise a fair question with no answer
+                 on screen. -->
+            <div class="hint" id="cmWantedHint" style="margin-top:6px">—</div>
+            <div class="hint" id="cmWantedState" style="margin-top:6px">—</div>
+            <div class="cm-list" id="cmWantedList" style="margin-top:8px"></div>
+          </div>
+        </div>
+
       </div>
     </div>
   </section>
@@ -2979,6 +3013,95 @@
         <button id="cmShareSendGo">发送</button>
         <button class="sec" id="cmShareCancel">取消</button>
         <span class="hint" id="cmShareState">—</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ======================= 1.0.7 §2.1 缉捕墙的两块浮层 =======================
+       Both live OUTSIDE `#view-community` for the reason the two above do, plus one of their own:
+       §2.1.5's 嫌疑人 card is posted into the ROOM, so 「查看详情」 must be able to open the wall's
+       detail from the chat pane — the very pane a `cmShowTab('wanted')` would navigate away from.
+
+       ⚠ THE SUBMIT FORM IS A MODAL, NOT A PANEL, and §2.1.3 draws it either way. The deciding fact
+       is §2.1.5: the same form is reachable from the wall's header AND (as 「我要提交」) from a chat
+       room with no wall in it, so a panel inside `#cmPane-wanted` would be a door that only works
+       while that pane is up. Same reasoning §2.1's report form already follows. -->
+  <div class="cm-mask hidden" id="cmWantedMask">
+    <div class="cm-modal" role="dialog" aria-modal="true">
+      <h2 id="cmWantedHead">提交嫌疑人</h2>
+      <div class="hint" id="cmWantedFormHint" style="margin-top:4px">—</div>
+      <!-- §2.1.4's two helpers run on this box as it is TYPED: the username is auto-filled from the
+           link and the consistency check's verdict is printed beside the name field, so
+           「不一致」 is said before 提交 rather than after a round trip. Both readers are the shared
+           block's (`extractUsernameFromProfileUrl` / `wantedUrlMatches`) — one regex, one answer,
+           and the server runs the same two. -->
+      <div class="cm-fb-row">
+        <label for="cmWantedUrl" style="flex:0 0 auto">主页链接（必填）</label>
+        <input type="text" id="cmWantedUrl" style="flex:1 1 320px"
+          placeholder="https://gomoku.com/zh-cn/profile/PlayerA">
+      </div>
+      <div class="cm-fb-row">
+        <label for="cmWantedName" style="flex:0 0 auto">用户名（必填）</label>
+        <input type="text" id="cmWantedName" style="flex:1 1 200px" placeholder="@PlayerA">
+        <span class="hint" id="cmWantedUrlState" style="flex:2 1 260px">—</span>
+      </div>
+      <div class="cm-fb-row">
+        <label for="cmWantedDisplay" style="flex:0 0 auto">显示名（可选）</label>
+        <input type="text" id="cmWantedDisplay" style="flex:1 1 260px">
+      </div>
+      <div class="cm-fb-row" style="display:block">
+        <label for="cmWantedReason">提交理由</label>
+        <textarea id="cmWantedReason" style="height:96px;margin-top:6px"></textarea>
+      </div>
+      <!-- §2.1.3's 「附加证据（可选）: [选择本地存档] [选择本地样本]」. The two buttons fill the pick list
+           below them from THIS machine's archives/samples, and what is submitted is the LABEL those
+           files carry — not the files. See `wanted-add-evidence` for why §2.1.9's 「公开的信息只有 …
+           证据摘要」 makes an upload the wrong reading of 「上传本地存档」. -->
+      <div class="cm-fb-row" style="display:block">
+        <label id="cmWantedEvLab">附加证据（可选）</label>
+        <div class="btn-row" style="margin-top:6px">
+          <button class="sec" id="cmWantedPickArc">选择本地存档</button>
+          <button class="sec" id="cmWantedPickSample">选择本地样本</button>
+          <span class="hint" id="cmWantedEvCount">—</span>
+        </div>
+        <div id="cmWantedEvList" style="margin-top:6px;max-height:150px;overflow-y:auto"></div>
+      </div>
+      <div class="hint" id="cmWantedFormState" style="margin-top:6px">—</div>
+      <div class="btn-row" style="margin-top:10px">
+        <button id="cmWantedGo">提交</button>
+        <button class="sec" id="cmWantedCancel">取消</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- §2.1.3's 「查看详情」. One modal for every entry the wall OR the room can open, filled by
+       `cmWantedOpen` — the card in 聊天室 and the card on the wall draw the same person, and two
+       detail screens would be two places for §2.1.9's 「公开的信息只有」 list to be got wrong. -->
+  <div class="cm-mask hidden" id="cmWantedDetail">
+    <div class="cm-modal" role="dialog" aria-modal="true">
+      <h2 id="cmWantedDetailHead">—</h2>
+      <div class="hint" id="cmWantedDetailMeta" style="margin-top:4px">—</div>
+      <div class="hint" id="cmWantedDetailReason" style="margin-top:6px">—</div>
+      <div class="hint" id="cmWantedDetailState" style="margin-top:6px">—</div>
+      <div class="cm-list" id="cmWantedDetailList" style="margin-top:8px"></div>
+      <div class="btn-row" style="margin-top:10px">
+        <button class="sec" id="cmWantedFollow">跟踪</button>
+        <button class="sec" id="cmWantedEvArc">选择本地存档</button>
+        <button class="sec" id="cmWantedEvSample">选择本地样本</button>
+      </div>
+      <!-- §2.1.7's 「上传本地存档/样本」, as a ONE-CLICK label picker: the two buttons above fill this
+           host from THIS machine's lists, and pressing a row attaches its name as the evidence. There
+           is no second 「确定」 step because there is nothing to send but the label — see
+           `wanted-add-evidence` for why an actual file is the wrong reading of 「上传」. -->
+      <div id="cmWantedPickHost" style="margin-top:6px"></div>
+      <div class="cm-fb-row" style="display:block">
+        <label for="cmWantedComment">补充评论</label>
+        <textarea id="cmWantedComment" style="height:72px;margin-top:6px"></textarea>
+      </div>
+      <div class="btn-row" style="margin-top:10px">
+        <button id="cmWantedEvSend">提交证据</button>
+        <button class="sec" id="cmWantedClose">关闭</button>
+        <span class="hint" id="cmWantedEvState">—</span>
       </div>
     </div>
   </div>
@@ -3182,6 +3305,28 @@
       </div>
       <div class="hint" id="adFbState" style="margin-top:6px">—</div>
       <div id="adFbRows"></div>
+    </div>
+
+    <!-- §2.1.6 step 4 「管理员信箱新增『缉捕墙审核』分区」 — this panel IS that section. No nav entry is
+         written for it: `sectionNav` reads every `.panel[data-section]`'s `<h2>`, so the row appears
+         the moment this block does and cannot drift from its own title.
+         ⚠ `#adWanStatus` is 待审核 by DEFAULT and not 全部, unlike the 举报 panel's. §2.1.6 makes
+         pending the queue a moderator has work in, and an admin opening this section with 「全部」 up
+         would be reading the public wall — which §2.1.3 already gives them one tab away. -->
+    <div class="panel" data-section="wanted">
+      <div class="filters-bar">
+        <h2 style="margin:0" id="adWanTitle">—</h2>
+        <label><span id="adWanStatusLab">—</span> <select id="adWanStatus"></select></label>
+        <button class="sec" id="adWanReload">—</button>
+        <span class="sp"></span>
+        <span class="hint" id="adWanCount">—</span>
+      </div>
+      <div class="rowline" style="margin-top:8px">
+        <label style="flex:1 1 320px"><span id="adWanNoteLab">—</span>
+          <input type="text" id="adWanNote" style="flex:1 1 260px"></label>
+      </div>
+      <div class="hint" id="adWanState" style="margin-top:6px">—</div>
+      <div id="adWanRows"></div>
     </div>
 
     <div class="panel" data-section="news">

@@ -234,6 +234,12 @@ GMI18n.register('zh-CN', {
   'learn.weight.noBlunder': '不漏防',
   'learn.weight.steadyLost': '败势不崩',
   'learn.weight.probeMatch': '探针匹配',
+  // 1.0.7 §1.2 — 规避行为。它是第十七项，出厂权重 0（理由见 app.js 的 BASE_WEIGHTS 注释：
+  // 它在操作者自己的语料上方向相反），但**面板照常打印它那一行**，所以这一行必须在这里。
+  // ⚠ 这一行是手写的：zh-CN 是基线表、gen-locale 不生成它，所以运行期键漏登记时只有
+  // verify-069 会说话（它就是这么抓到的），界面上的症状是「十二种语言都有、中文反而回落成
+  // 键名」。
+  'learn.weight.evasiveBehavior': '规避行为',
 
   'learn.threshold.top1Lo': 'Top1 下界',
   'learn.threshold.top1Hi': 'Top1 上界',
@@ -394,5 +400,28 @@ GMI18n.register('zh-CN', {
   'cm.act.mute-24h': '禁言 24 小时',
   'cm.act.mute-7d': '禁言 7 天',
   'cm.act.ban': '封禁',
+
+  // ---- 1.0.7 §2.1 缉捕墙 — 三种值族 + 分享的第四个 chip -------------------------------------------
+  // `cmNamed(prefix, code)` is `T(prefix + code)`, i.e. a runtime key, so this hand-written baseline is
+  // the ONLY place Chinese gets a row for them — `gen-locale.cjs` writes the other twelve tables from
+  // `_tools/i18n-extra.js` and does not touch this file (see `verify-053`, which pins this split).
+  //
+  // ⚠ `cm.wst.*` IS A FOURTH STATUS FAMILY. 「已驳回」/「已解决」 collide with `cm.rst.*`'s words, and
+  // that is precisely why they are separate keys: a report that is 已驳回 is a moderator declining to
+  // ACT on a report, and a 缉捕墙 entry that is 已驳回 is a moderator declining to PUBLISH an
+  // accusation. Rewording one must not move the other.
+  // ⚠ `cm.wact.*` holds VERBS（通过 / 驳回 / 标记已解决）— the button's label — while `cm.wst.*` holds
+  // the STATES those verbs produce. One family for both would put 「通过」 on a status chip.
+  'cm.share.wanted': '嫌疑人',
+  'cm.wst.pending': '待审核',
+  'cm.wst.approved': '已通过',
+  'cm.wst.rejected': '已驳回',
+  'cm.wst.resolved': '已解决',
+  'cm.wact.approve': '通过',
+  'cm.wact.reject': '驳回',
+  'cm.wact.resolve': '标记已解决',
+  'cm.wev.archive': '存档',
+  'cm.wev.sample': '样本',
+  'cm.wev.comment': '评论',
 
 });

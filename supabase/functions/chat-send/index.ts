@@ -8,7 +8,8 @@
 //   -> 403 { error: 'NOT_ACTIVATED' }       §1.8.1 「发送消息 ❌ 未激活」
 //   -> 403 { error: 'MUTED' }               §2.4 「你已被禁言至 …」
 //   -> 403 { error: 'BANNED' }              §6.2
-//   -> 404 { error: 'TARGET_NOT_FOUND' }    §1.7.4's `reply_to` names no message in the window
+//   -> 404 { error: 'TARGET_NOT_FOUND' }    §1.7.4's `reply_to` names no message in the window,
+//                                            or §2.1.5's `attachment.wanted_id` names no PUBLIC entry
 //   -> 409 { error: 'CHAT_DISABLED' }       §2.3.2 「关闭聊天室 / 全体禁言」
 //   -> 409 { error: 'RATE_LIMITED' }        §2.3.5 「每分钟最多 20 条」
 //   -> 500 { error: 'INTERNAL' }
@@ -71,6 +72,7 @@ import {
   SHARE_INLINE_MAX_BYTES,
   SHARE_KINDS,
   SHARE_NAME_MAX,
+  WANTED_ATTACHMENT_KIND,
 } from "../_shared/community.ts";
 
 const BUCKET = "temp-shares";
@@ -217,9 +219,63 @@ serve(async (req: Request): Promise<Response> => {
       const att = rawAttachment as Record<string, unknown>;
 
       const kind = typeof att.kind === "string" ? att.kind : "";
-      if (ATTACHMENT_KINDS.indexOf(kind) === -1) {
-        return badRequest(`attachment.kind must be one of: ${ATTACHMENT_KINDS.join(", ")}`);
+      // =========================================================================================
+      // ⚠⚠ 1.0.7 §2.1.5 — THE FOURTH KIND, AND IT IS NOT A FILE
+      // =========================================================================================
+      // 「「文件」菜单扩展：发送回放 / 发送样本 / 发送嫌疑人」. The first three are `SHARE_KINDS`: each
+      // becomes a `cloud_shares` row with a payload, an `expires_at` and a poll. A 嫌疑人 is a LABEL
+      // POINTING AT A ROW THAT ALREADY EXISTS — there is nothing to upload, nothing to expire, and
+      // the only thing the card needs is the entry's id.
+      //
+      // ⚠ SO IT DOES NOT JOIN `ATTACHMENT_KINDS`, and this branch is where it passes the check
+      // instead. Adding it to the list would send it down the `cloud_shares` path thirty lines below
+      // and fail on `cloud_shares_kind_known` (015 relaxed that CHECK to the same three) — a 500 for
+      // choosing something the picker offers, which is precisely the defect 1.0.4 removed from the
+      // picker/`SHARE_KINDS` pair. The shared block states the split; `WANTED_ATTACHMENT_KIND`'s own
+      // note is the long form.
+      const isWanted = kind === WANTED_ATTACHMENT_KIND;
+      if (!isWanted && ATTACHMENT_KINDS.indexOf(kind) === -1) {
+        return badRequest(`attachment.kind must be one of: ${
+          ATTACHMENT_KINDS.concat([WANTED_ATTACHMENT_KIND]).join(", ")}`);
       }
+
+      if (isWanted) {
+        const wantedId = typeof att.wanted_id === "string" ? att.wanted_id.trim() : "";
+        if (!wantedId) return badRequest("attachment.wanted_id is required");
+        // ⚠ THE NAME AND THE SUBMITTER COME OUT OF THE ROW, NEVER OUT OF THE REQUEST. A card that
+        // took its own title from the client would let any member post 「🚨 张三（@zhangsan）』 s
+        // heading over an entry about somebody else — the wall's one job is that the name on a card
+        // is the name in the row.
+        const { data: entryRow, error: wantedError } = await sb
+          .from("wanted_players")
+          .select("id, status, suspect_username, suspect_display_name, submitter_name")
+          .eq("id", wantedId)
+          .maybeSingle();
+        if (wantedError) throw wantedError;
+        // ⚠ ONLY `approved` MAY BE POSTED, and the refusal is 404 rather than 403 for the same reason
+        // `wanted-follow` gives: a pending entry is not 「something you may not have」, it is something
+        // the room may not know EXISTS. A distinguishable answer would turn this into an oracle for
+        // 「has anybody filed this account」.
+        const entry = entryRow as {
+          id: string; status: string; suspect_username: string;
+          suspect_display_name: string | null; submitter_name: string | null;
+        } | null;
+        if (!entry || entry.status !== "approved") {
+          return fail("TARGET_NOT_FOUND", HttpStatus.NOT_FOUND, "No such public entry");
+        }
+        const display = String(entry.suspect_display_name || "").trim();
+        const handle = `@${entry.suspect_username}`;
+        attachment = {
+          kind,
+          wanted_id: entry.id,
+          name: display ? `${display}（${handle}）` : handle,
+          // A SNAPSHOT, like the other three kinds' `name` / `summary`: `submitter_name` is written
+          // once and §2.2's 注销 sets it null, and a card that went blank for that reason would be a
+          // card whose 提交者 line changed under a reader who is not looking.
+          submitter_name: entry.submitter_name ?? null,
+        };
+      } else {
+
       const rawName = att.name;
       if (typeof rawName !== "string" || rawName.trim() === "") {
         return badRequest("attachment.name is required");
@@ -279,6 +335,7 @@ serve(async (req: Request): Promise<Response> => {
         summary: att.summary ?? null,
         expires_at: expiresAt,
       };
+      } // end §1.1.2's three file kinds
     }
 
     // =========================================================================================

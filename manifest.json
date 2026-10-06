@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "白身 (Baishen)",
-  "version": "1.0.6",
+  "version": "1.0.7",
   "minimum_chrome_version": "109",
   "description": "白身 (Baishen): archives gomoku.com / papergames.io games, detects AI play with Rapfi; cloud account, community & sync, 15 languages.",
   "permissions": [

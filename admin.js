@@ -403,6 +403,43 @@
       'select=*&order=created_at.desc&limit=' + Math.min(200, Math.max(1, Number(limit) || 50)));
   }
 
+  /**
+   * 1.0.7 §2.1.6 — the 缉捕墙审核 queue.
+   *
+   * ⚠⚠ IT READS `wanted_admin`, NOT `wanted_players`, AND THAT IS NOT A PREFERENCE. 026 grants
+   * `authenticated` a COLUMN list on the table which deliberately excludes `admin_note` / `approved_by`
+   * — so `select=*` against `wanted_players` comes back 42501, and the console would show 「没有权限」
+   * for the one role that has any. The view carries the same rows plus the two columns, gated by
+   * `is_admin()` INSIDE it (026 §5b), which is why a non-admin reading this view gets zero rows rather
+   * than an error — visibility here is never a claim, and `isAdmin()` above only decides whether the
+   * tab is drawn.
+   */
+  function listWanted(opts) {
+    var o = opts || {};
+    var query = 'select=*&order=updated_at.desc&limit=' +
+      Math.min(200, Math.max(1, Number(o.limit) || 50));
+    if (o.status) query += '&status=eq.' + encodeURIComponent(String(o.status));
+    return readTable('wanted_admin', query);
+  }
+
+  /** §2.1.6's 通过 / 驳回 / 已解决. `action` is passed through unvalidated for the same reason
+   *  `handleReport` passes its own: `WANTED_ACTIONS` lives in the shared block and `wanted-approve`
+   *  refuses anything outside it with a 400 naming the set, so a second list here could only be
+   *  wrong. ⚠ `note` IS sent — it is the moderator's own words, and it is what the submitter's
+   *  notification body carries. */
+  async function handleWanted(wantedId, action, note) {
+    var gu = guard();
+    if (!gu.ok) return gu;
+    if (!wantedId || !action) return { ok: false, error: 'BAD_REQUEST' };
+    var res = await invoke('wanted-approve', {
+      wanted_id: String(wantedId),
+      action: String(action),
+      note: note == null ? '' : String(note),
+    }, gu.jwt);
+    if (!res.ok) return res;
+    return { ok: true, wanted: res.data && res.data.wanted };
+  }
+
   /** 1.0.6 三号 §二.2 — the ONE switch, for the panel's initial state. Straight off PostgREST: the
    *  policy 011/012 wrote for this table is 「已登录可读」, so the console needs no endpoint for it,
    *  and the room's own banner reads the same row through the same policy. */
@@ -462,6 +499,9 @@
     readTable: readTable,
     listReports: listReports,
     listFeedback: listFeedback,
+    // 1.0.7 §2.1.6 — the 缉捕墙 queue and its three verbs.
+    listWanted: listWanted,
+    handleWanted: handleWanted,
     readGlobal: readGlobal,
     listNews: listNews,
   };

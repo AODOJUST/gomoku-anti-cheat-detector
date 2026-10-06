@@ -2334,6 +2334,14 @@
     sharpTotal: 0.06,
     goodPool: 0.19,
     liveThree: 0.03,
+    // ⚠⚠ 1.0.7 §1.2 — **0**, deliberately. The mechanism is implemented and reported (see
+    // app.js BASE_WEIGHTS and `evasiveActivation()`), but on the operator's 65 archives the
+    // activation measured INVERTED — it fired on 89% of human sides and 11% of AI ones, so
+    // shipping it hot would lift the whole corpus rather than separate it. Same treatment as
+    // `time` / `noBlunder` / `probeMatch`: the key is present, the curve is present, the panel
+    // row is present, the weight is 0 — which keeps the total at exactly 1.50 and the 1.0.6
+    // operating point untouched.
+    evasiveBehavior: 0,
     noBlunder: 0, steadyLost: 0.08, probeMatch: 0,
   };
   // 0.5.6 补增 §三 — the two ceilings on the operator's own weight table (see DEFAULTS above).
@@ -3125,6 +3133,15 @@
         // described itself differently depending on which pane it was open in. 0.5.5 persists
         // both; the row's own formatter still prints `—` for the archives that predate them.
         liveThreeMax: a.liveThreeMax == null ? null : a.liveThreeMax,
+        // 1.0.7 §1.2 — the four figures behind 规避行为, for the same reason and with the same
+        // "no default" rule as the block above: an archive written before this build never walked
+        // these hands, so the viewer prints `—` rather than claiming a scan that never ran.
+        // `evasiveRhythm` is a real 0 when the side has no deep hand at all — the two fields
+        // together are what let the detail table say which of the two cases it is looking at.
+        evasiveShallow: a.evasiveShallow == null ? null : a.evasiveShallow,
+        evasiveDeep: a.evasiveDeep == null ? null : a.evasiveDeep,
+        evasiveSurrounded: a.evasiveSurrounded == null ? null : a.evasiveSurrounded,
+        evasiveRhythm: a.evasiveRhythm == null ? null : a.evasiveRhythm,
         // 0.3.3 C: how many of this side's steps fingerprint-matched a known AI move.
         simCount: a.simCount || 0,
         time: a.time || null,

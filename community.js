@@ -1301,6 +1301,163 @@
   }
 
   // =====================================================================
+  // §二.1 缉捕墙 (1.0.7)
+  // =====================================================================
+
+  /**
+   * The wall's column list, spelled out rather than `select=*`.
+   *
+   * ⚠⚠ IT IS NOT A STYLE CHOICE — `admin_note` AND `approved_by` WOULD ANSWER 401. 026_wanted.sql
+   * grants `authenticated` a COLUMN list (§2.1.9's public list), and PostgREST resolves `select=*` to
+   * every column the table has, so a wildcard asks for two columns the role may not read and the whole
+   * query is refused with 42501 — the same defect 1.0.6 六号 found on `users` (「写列级授权的表必须带
+   * select=<自己读得回的列>」), one release later, on a read. The list below is the grant's list,
+   * exactly, and `verify-069` pins the two against each other.
+   */
+  var WANTED_COLS =
+    'id,submitter_id,submitter_name,suspect_username,suspect_profile_url,suspect_display_name,' +
+    'reason,evidence,status,approved_at,created_at,updated_at,follower_count';
+
+  /** The 补充证据 rows of one entry. `payload` is `{text}` for a comment and `{name, summary?}` for a
+   *  label — see `wanted-add-evidence` for why a label is what ships rather than the file. */
+  var WANTED_EVIDENCE_COLS = 'id,wanted_id,user_id,kind,payload,created_at';
+
+  /**
+   * §2.1.3's list: the wall itself.
+   *
+   * ⚠ THE FOLLOW STATE COMES WITH IT, IN ONE EXTRA READ AND NOT ONE PER ROW. The card draws 「跟踪」 or
+   * 「已跟踪」, so every row needs to know; asking per row is fifty queries for a list that is already
+   * drawn in one. `wanted_id=in.(…)` over the ids just returned is the same shape `cmLoadVote` uses
+   * for the room's polls.
+   *
+   * ⚠ A FAILED SECOND READ DOES NOT FAIL THE LIST. `followed: []` renders every button as 「跟踪」,
+   * which is wrong for the people who had already followed and harmless: pressing it again is a no-op
+   * (`unique (wanted_id, user_id)` + `ignoreDuplicates`). Losing the wall because a helper query
+   * timed out would be the worse trade.
+   */
+  function wantedWall(opts) {
+    var me = uid();
+    if (!me) return Promise.resolve(noSession());
+    var o = opts || {};
+    var q = 'select=' + WANTED_COLS + '&order=updated_at.desc&limit=' +
+      Math.min(100, Math.max(1, Number(o.limit) || 50));
+    if (o.status) q += '&status=eq.' + encodeURIComponent(String(o.status));
+    return restRead('wanted_players', q).then(function (r) {
+      if (!r.ok) return r;
+      var rows = Array.isArray(r.data) ? r.data : [];
+      if (!rows.length) return { ok: true, status: r.status, rows: [], followed: [] };
+      var ids = rows.map(function (x) { return String(x.id); }).join(',');
+      return restRead('wanted_followers',
+        'select=wanted_id&user_id=eq.' + encodeURIComponent(me) +
+        '&wanted_id=in.(' + ids + ')&limit=' + rows.length).then(function (f) {
+        var followed = (f && f.ok && Array.isArray(f.data))
+          ? f.data.map(function (x) { return String(x.wanted_id); }) : [];
+        return { ok: true, status: r.status, rows: rows, followed: followed };
+      });
+    });
+  }
+
+  /** §2.1.7's 「补充证据」, for the detail modal. Read in one call because it is drawn as one list. */
+  function wantedEvidence(wantedId) {
+    var me = uid();
+    if (!me) return Promise.resolve(noSession());
+    if (!wantedId) return Promise.resolve({ ok: false, error: 'BAD_REQUEST' });
+    return restRead('wanted_evidence',
+      'select=' + WANTED_EVIDENCE_COLS + '&wanted_id=eq.' +
+      encodeURIComponent(String(wantedId)) + '&order=created_at.asc&limit=200').then(function (r) {
+      if (!r.ok) return r;
+      return { ok: true, status: r.status, rows: Array.isArray(r.data) ? r.data : [] };
+    });
+  }
+
+  /**
+   * 「我提交过的」 — §2.1.5's picker (「列出自己提交过且已通过的嫌疑人」) and the 我的提交 view.
+   *
+   * `approvedOnly` is the picker's flag, and it exists because the two callers need different rows:
+   * the picker may only offer entries that are PUBLIC (a `wanted-share` card pointing at a pending
+   * entry would show the room a link 404s for — RLS returns nothing for a reader who may not see it),
+   * while a 「我提交的」 list wants the pending ones too, which the read predicate allows
+   * (`submitter_id = auth.uid()`).
+   */
+  function wantedMine(approvedOnly) {
+    var me = uid();
+    if (!me) return Promise.resolve(noSession());
+    var q = 'select=' + WANTED_COLS + '&submitter_id=eq.' + encodeURIComponent(me) +
+      '&order=created_at.desc&limit=100';
+    if (approvedOnly) q += '&status=eq.approved';
+    return restRead('wanted_players', q).then(function (r) {
+      if (!r.ok) return r;
+      return { ok: true, status: r.status, rows: Array.isArray(r.data) ? r.data : [] };
+    });
+  }
+
+  /** §2.1.3's form. The URL/username consistency check is NOT repeated here: it lives in the shared
+   *  block (`wantedUrlMatches`) and the view calls that same function before enabling 提交, so the
+   *  sentence the operator reads and the check the server runs are one answer. */
+  function wantedSubmit(input) {
+    var i = input || {};
+    return fnCall('wanted-submit', {
+      suspect_profile_url: String(i.suspect_profile_url == null ? '' : i.suspect_profile_url),
+      suspect_username: String(i.suspect_username == null ? '' : i.suspect_username),
+      suspect_display_name: i.suspect_display_name === undefined ? '' : i.suspect_display_name,
+      reason: i.reason === undefined ? '' : i.reason,
+      evidence: i.evidence === undefined ? null : i.evidence,
+    }).then(function (r) {
+      if (!r.ok) return r;
+      return {
+        ok: true, status: r.status,
+        merged: !!(r.data && r.data.merged),
+        wanted: (r.data && r.data.wanted) || null,
+      };
+    });
+  }
+
+  function wantedFollow(wantedId, follow) {
+    if (!wantedId) return Promise.resolve({ ok: false, error: 'BAD_REQUEST' });
+    return fnCall('wanted-follow', {
+      wanted_id: String(wantedId), follow: follow !== false,
+    }).then(function (r) {
+      if (!r.ok) return r;
+      return {
+        ok: true, status: r.status,
+        following: !!(r.data && r.data.following),
+        followerCount: Number((r.data && r.data.follower_count) || 0),
+      };
+    });
+  }
+
+  function wantedAddEvidence(input) {
+    var i = input || {};
+    if (!i.wanted_id || !i.kind) return Promise.resolve({ ok: false, error: 'BAD_REQUEST' });
+    return fnCall('wanted-add-evidence', {
+      wanted_id: String(i.wanted_id),
+      kind: String(i.kind),
+      payload: i.payload === undefined ? null : i.payload,
+    }).then(function (r) {
+      if (!r.ok) return r;
+      return {
+        ok: true, status: r.status,
+        evidence: (r.data && r.data.evidence) || null,
+        notified: Number((r.data && r.data.notified) || 0),
+      };
+    });
+  }
+
+  /** 「更新一下这条」 after a follow or a contribution: the counts on a card are drawn from the LIST's
+   *  own row, and re-reading one entry is cheaper and more honest than patching a number in place. */
+  function wantedOne(wantedId) {
+    var me = uid();
+    if (!me || !wantedId) return Promise.resolve(noSession());
+    return restRead('wanted_players',
+      'select=' + WANTED_COLS + '&id=eq.' + encodeURIComponent(String(wantedId)) + '&limit=1')
+      .then(function (r) {
+        if (!r.ok) return r;
+        var rows = Array.isArray(r.data) ? r.data : [];
+        return { ok: true, status: r.status, row: rows[0] || null };
+      });
+  }
+
+  // =====================================================================
   // §1.5.3 消息 / §1.6.3 提醒
   // =====================================================================
 
@@ -1385,6 +1542,71 @@
   }
 
   // =====================================================================
+  // 1.0.6 六号 — 往「我自己那一行」写：客户端唯一的 users 写入口
+  // =====================================================================
+  /**
+   * PATCH the caller's own `users` row, and nothing else. EVERY client write to `users` goes
+   * through here — §3.1.6's 「隐藏国籍」, §3.2.3's 「在线状态」 and §2.1.1's five 读水位 alike —
+   * because the wire shape below is not a detail of any one of them: get it wrong and the write is
+   * refused, silently, for all of them at once.
+   *
+   * ⚠⚠ `select=id` IS THE DIFFERENCE BETWEEN A WRITE AND A 403, and this is the whole reason the
+   * helper exists. `users` is granted to `authenticated` by COLUMN, not by table: `002_rls.sql` does
+   * `revoke update …` + `grant update (username, bio, avatar_url)`, `011 §3` does `revoke select …` +
+   * `grant select (id, username, …)` — twelve columns, `email` and the five watermarks deliberately
+   * outside. PostgREST turns `Prefer: return=representation` with NO `select` into
+   * `RETURNING "public"."users".*`, and that statement needs SELECT on EVERY column of the row.
+   *
+   * MEASURED against the shipped backend (2026-10-05, a real JWT, the real PostgREST):
+   *
+   *   PATCH /rest/v1/users?id=eq.<me>              → 403 {"code":"42501",
+   *     "message":"permission denied for table users"}          ← the row was NOT written
+   *   PATCH /rest/v1/users?id=eq.<me>&select=id    → 200 [{"id":"<me>"}]
+   *
+   * ⇒ THE OLD SHAPE COULD NEVER WORK, AND ITS FAILURE LOOKED LIKE A UI BUG. 「进入分区即标记为已读」
+   * was 「红点清不掉」; 「隐藏国籍」 was a switch that forgot. Both were 42501s, both were swallowed by
+   * a `.catch(function () {})`, and BOTH were invisible to the behaviour harnesses — whose stubs
+   * answered a whole row back, a shape this backend cannot produce for this role. See `behave-068`
+   * B19, which now answers `[{id}]` the way a `select=id` request really does, and refuses the old
+   * shape with the same 42501 so that the harness itself can never again be the looser one.
+   *
+   * ⚠ AND IT IS WHY THE RETURN VALUE IS `fields`, NOT A ROW. The columns this account may read back
+   * are the ones the grants allow, so `select=` must name a column the role can select — asking for
+   * the watermarks we just wrote is the very 42501 above. What comes back is therefore only proof
+   * that the row was MATCHED (`[]` = the UPDATE hit nothing, which is a failure and is reported as
+   * one); the values themselves are the ones we sent, and they are what the caller merges into the
+   * session. `patchUser` takes exactly a map of column names, so the shape lines up.
+   *
+   * ⚠ ONE COLUMN LIST PER CALLER. Which columns are writable is a fact about the SQL grants, stated
+   * there once; a second list here would be the copy that drifts. Each caller builds its own body
+   * from its own closed set (§3.1.6's two flags; the five from the shared block's `readAtColumn`).
+   */
+  function selfPatch(fields) {
+    var me = uid();
+    if (!me) return Promise.resolve(noSession());
+    if (!fields || typeof fields !== 'object') return Promise.resolve({ ok: false, error: 'BAD_REQUEST' });
+    var body = {};
+    Object.keys(fields).forEach(function (k) { body[k] = fields[k]; });
+    if (Object.keys(body).length === 0) return Promise.resolve({ ok: false, error: 'BAD_REQUEST' });
+    return cloud().rest('users', {
+      query: 'id=eq.' + encodeURIComponent(me) + '&select=id',
+      jwt: jwt(),
+      method: 'PATCH',
+      body: body,
+      prefer: 'return=representation',
+    }).then(function (r) {
+      if (!r.ok) return r;
+      // `[]` is PostgREST's answer to an UPDATE that matched no row. It cannot happen for a live
+      // session (the filter is our own id and `users_update_self` is `auth.uid() = id`), which is
+      // exactly why it must not be reported as success: the caller would move a watermark — or a
+      // 「已保存」 — for a row that does not exist.
+      var row = (Array.isArray(r.data) && r.data[0]) || null;
+      if (!row) return { ok: false, error: 'NOT_FOUND', status: r.status };
+      return { ok: true, status: r.status, fields: body };
+    });
+  }
+
+  // =====================================================================
   // §3.1.6 / §3.2.3 — the two user-owned settings
   // =====================================================================
 
@@ -1403,14 +1625,17 @@
    *
    * ⚠ 1.0.5 — THE WRITE STAYS ON `users` WHILE THE READ MOVED TO `user_directory`. `018` makes the
    * view a projection with two computed columns, so it is not auto-updatable and must not be; the
-   * two columns this writes are exactly the two 011 §4 grants update on. And the narrowed SELECT
-   * grant is why the `return=representation` row below no longer carries `country_code` /
-   * `last_seen_at` — `GMAuth.patchUser` merges field by field, so an absent column is simply not
-   * merged rather than merged as `undefined`.
+   * two columns this writes are exactly the two 011 §4 grants update on.
+   *
+   * ⚠⚠ 1.0.6 六号 — THE RETURNED ROW IS GONE, AND IT WAS NEVER ONE. This used to hand back the
+   * `return=representation` row and argue that a narrowed SELECT grant would simply leave columns
+   * out of it. Measured against the shipped backend it does not work that way: PostgREST asks for
+   * `RETURNING "public"."users".*`, `authenticated` cannot select `email` or the watermarks, and the
+   * whole statement comes back 42501 ⇒ **this switch had never once been saved**, since 011 in
+   * 1.0.0. The write now goes through `selfPatch` (see its header for the two measured shapes) and
+   * answers with the columns that were written.
    */
   function settingsPatch(patch) {
-    var me = uid();
-    if (!me) return Promise.resolve(noSession());
     var body = {};
     if (patch && patch.hide_country !== undefined) body.hide_country = !!patch.hide_country;
     if (patch && patch.manual_status !== undefined) {
@@ -1422,17 +1647,7 @@
       body.manual_status = patch.manual_status;
     }
     if (Object.keys(body).length === 0) return Promise.resolve({ ok: false, error: 'BAD_REQUEST' });
-    return cloud().rest('users', {
-      query: 'id=eq.' + encodeURIComponent(me),
-      jwt: jwt(),
-      method: 'PATCH',
-      body: body,
-      prefer: 'return=representation',
-    }).then(function (r) {
-      if (!r.ok) return r;
-      var row = (Array.isArray(r.data) && r.data[0]) || null;
-      return { ok: true, status: r.status, user: row };
-    });
+    return selfPatch(body);
   }
 
   // =====================================================================
@@ -1456,32 +1671,25 @@
    * misspelling would come back as a 403 that looks like a dead session rather than a typo. A map
    * that survives with nothing in it is a local `BAD_REQUEST` and no round trip.
    *
-   * Returns `{ ok, user }` — the row PostgREST returned, which the view merges into the session so
-   * the dots are repainted from what the DATABASE holds rather than from what was sent.
+   * ⚠⚠ 1.0.6 六号 — `return=representation` ON `users` WAS A 42501 FOR EVERY CALL, so this whole
+   * route was dead from the day it shipped: the watermark was never written, and §2.1.1's P0
+   * acceptance criterion (「点击分区立即标记为已读，红点消失」) failed on every account while the pane
+   * looked perfectly correct. The shape is now the one `selfPatch` measures — see its header.
+   *
+   * Returns `{ ok, status, fields }` — the column→value map the response PROVES was written. The
+   * view merges those fields into the session, so the dots are painted from the watermarks the
+   * database now holds rather than from the ones that were merely sent.
    */
   function messageMarkRead(map) {
-    var me = uid();
-    if (!me) return Promise.resolve(noSession());
-    if (!map || typeof map !== 'object') return Promise.resolve({ ok: false, error: 'BAD_REQUEST' });
     var S = shared() || {};
     if (typeof S.readAtColumn !== 'function') return Promise.resolve({ ok: false, error: 'INTERNAL' });
     var body = {};
     (S.MESSAGE_CATEGORIES || []).forEach(function (cat) {
-      var at = map[cat];
+      var at = map && map[cat];
       if (typeof at === 'string' && at) body[S.readAtColumn(cat)] = at;
     });
     if (Object.keys(body).length === 0) return Promise.resolve({ ok: false, error: 'BAD_REQUEST' });
-    return cloud().rest('users', {
-      query: 'id=eq.' + encodeURIComponent(me),
-      jwt: jwt(),
-      method: 'PATCH',
-      body: body,
-      prefer: 'return=representation',
-    }).then(function (r) {
-      if (!r.ok) return r;
-      var row = (Array.isArray(r.data) && r.data[0]) || null;
-      return { ok: true, status: r.status, user: row };
-    });
+    return selfPatch(body);
   }
 
   // =====================================================================
@@ -1865,6 +2073,14 @@
     votes: { forTarget: voteForTarget, create: voteCreate, cast: voteCast,
              close: voteClose, isOpen: voteIsOpen, POLL_MS: VOTE_TALLY_POLL_MS },
     reports: { submit: reportSubmit, mine: reportMine },
+    // 1.0.7 §2.1 — 缉捕墙. Read straight off PostgREST under 026's policies (`wanted_visible` + the
+    // column grant); every write is an Edge Function. `wall` is the list + its follow state in two
+    // reads, `mine` is §2.1.5's picker source, and `one` is the refresh a card needs after a press.
+    wanted: {
+      wall: wantedWall, evidence: wantedEvidence, mine: wantedMine,
+      submit: wantedSubmit, follow: wantedFollow, addEvidence: wantedAddEvidence, one: wantedOne,
+      COLS: WANTED_COLS,
+    },
     notices: { list: noticesList, unread: noticesUnread, markRead: noticeMarkRead,
                markAllRead: noticesMarkAllRead },
     // ⚠ TWO DIFFERENT ANSWERS, TWO NAMES. `socket` is 「这个页面连着实时吗」 (for the dot column's

@@ -163,3 +163,18 @@ verify_jwt = false
 
 [functions.admin-platform-stats]
 verify_jwt = false
+
+# 1.0.7 §2.1 缉捕墙 — the four endpoints, same four entries as config.toml and for the same reason:
+# every function here verifies its own JWT, and `wanted-approve` verifies the CALLER'S ROLE on top of
+# it (via `requireAdmin`), which the gateway's signature check cannot do.
+[functions.wanted-submit]
+verify_jwt = false
+
+[functions.wanted-approve]
+verify_jwt = false
+
+[functions.wanted-follow]
+verify_jwt = false
+
+[functions.wanted-add-evidence]
+verify_jwt = false

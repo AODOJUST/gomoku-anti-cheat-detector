@@ -72,6 +72,12 @@
     // (they are 0 on the operator's corpus), not a fit — see app.js BASE_WEIGHTS note 3.
     goodPool: 0.19,
     liveThree: 0.03,
+    // ⚠⚠ 1.0.7 §1.2 — **0**, deliberately. THE MIRROR RULE: equal to app.js BASE_WEIGHTS /
+    // storage.js DEFAULT_WEIGHTS. The mechanism is implemented and mirrored in `subscoresForSide`
+    // below, but the activation measured INVERTED on the operator's 65 archives (89% of human
+    // sides against 11% of AI ones), so the shipped weight is 0 — the same "kept, never scored"
+    // arrangement as `time`/`noBlunder`/`probeMatch`. See app.js BASE_WEIGHTS for the table.
+    evasiveBehavior: 0,
     // 0.5.7 §1.3 — the three low-end-AI signals. 0.5.7-Alpha zeroes two of them: both measured ≈0
     // for humans and machines alike on the 65-archive corpus, so they can only add noise.
     // ⚠ `noBlunder` and `probeMatch` are KEPT at 0 rather than deleted, exactly like `time` — and
@@ -125,7 +131,17 @@
   var EVASION_KEYS = ['evasion', 'winBlunder', 'uselessFour', 'sharpStreak', 'sharpTotal',
                       // 0.5.2 §1.1.4/§1.2.4 — the group budget is read off the defaults by
                       // `group()` below, so listing the two keys here is the whole wiring.
-                      'goodPool', 'liveThree'];
+                      'goodPool', 'liveThree',
+                      // 1.0.7 §1.2 — 规避行为. An EIGHTH key in this group rather than a fourth
+                      // list: it is the same kind of key (exactly 0 on a side with no hand outside
+                      // the engine's top-8), and the panel already has three headings — a fourth
+                      // would be a fourth thing to tune with nothing measured to tune it against.
+                      // `BEHAVIOUR_KEYS` below therefore carries it without a second edit.
+                      // ⚠⚠ Its DEFAULT is 0 (see FALLBACK_WEIGHTS), so it contributes 0 to the
+                      // group's budget and — because `group()`'s 0.02 AUC floor reads the default —
+                      // it stays at 0 through a training run too. A key in a group whose budget it
+                      // does not move is exactly what `time` already is in BASE_KEYS.
+                      'evasiveBehavior'];
   // 0.5.7 §1.3 — the three low-end-AI signals. A separate LIST from EVASION_KEYS for one reason
   // only: the settings panel gives them their own heading (§1.4's third 类别), and a reader asking
   // "which keys are the new ones" should not have to diff two releases to find out. They are NOT a
@@ -155,6 +171,14 @@
   var GOOD_W_RATIO = 0.7;
   var GOOD_W_STREAK = 0.3;
 
+  // 1.0.7 §1.2 — 规避行为, mirrored from app.js (LOW_DEPTH_*, EVASIVE_HAND_W, EVASIVE_RHYTHM_W and
+  // the Top2-5 proximity tier). Same reason as every line above: learn.js is a separate module and
+  // cannot import app.js, and the learner has to fit weights against the curve the detector
+  // actually runs — two copies that drift would each stay internally consistent.
+  var PROX_TOP5 = 0.80;
+  var EVASIVE_HAND_W = 0.15;
+  var EVASIVE_RHYTHM_W = 0.20;
+
   // 0.5.7 §1.3①② — the two low-end-AI terms' five curve constants, mirrored from app.js. Same
   // reason as every line above, and the same suite assertion covers them: the learner has to move
   // with the detector, or it fits weights against a curve the detector no longer runs.
@@ -183,6 +207,8 @@
     sharpStreak: '唯一手连续', sharpTotal: '唯一手累计',
     // 0.5.2 §1.1.4/§1.2.4
     goodPool: '好点池', liveThree: '活三好手',
+    // 1.0.7 §1.2
+    evasiveBehavior: '规避行为',
     // 0.5.7 §1.3 — the three low-end-AI signals. The label is the same string the settings panel and
     // 标签百科 print, reached as `learn.weight.<key>`; verify-053 asserts the two sets agree.
     noBlunder: '不漏防', steadyLost: '败势不崩', probeMatch: '探针匹配',
@@ -635,6 +661,12 @@
     var ltMax = maxOf(steps, 'liveThreePool');
     var aLiveThree = ltMax >= LIVE_POOL_MIN
       ? clamp((Math.pow(1.3, ltMax - 1) - 1) / 4, 0, 1) : 0;
+    // 1.0.7 §1.2, mirrored from app.js sideAggregate(): 规避行为（深 low 点 + 被好点环绕的节奏）。
+    // Population `all` — see evasiveDepthFigures() for why it is neither `steps` nor a new list.
+    var evDepth = evasiveDepthFigures(all);
+    var evRhB = evasiveRhythmFigures(all);
+    var aEvasive = clamp(evDepth.deep * EVASIVE_HAND_W +
+                         evRhB.rhythmScore * evDepth.deep * EVASIVE_RHYTHM_W, 0, 1);
     // 0.5.7 §1.3①②③, mirrored from app.js sideAggregate(). The population is NEITHER `steps` (the
     // evasion-excluded six) NOR `all` (which also drops the forced-defence hands): §1.3 measures
     // 「整局」, and the forced-defence hands are exactly the blocks 不漏防 counts. So it is this side's
@@ -671,6 +703,8 @@
       evasion: aEvasion, winBlunder: aWinBlunder, uselessFour: aUselessFour,
       sharpStreak: aSharpStreak, sharpTotal: aSharpTotal,
       goodPool: aGoodPool, liveThree: aLiveThree,
+      // 1.0.7 §1.2
+      evasiveBehavior: aEvasive,
       // 0.5.7 §1.3
       noBlunder: aNoBlunder, steadyLost: aSteadyLost, probeMatch: aProbeMatch,
       // raw, un-ramped aggregates — the ramp anchors are learned from these
@@ -692,6 +726,12 @@
       threatCount: threatCount, missedBlocks: missedBlocks,
       losingCount: losing.length, losingLoss: losingLoss,
       probeSeen: probeSeen, probeHits: probeHits, probeMaxRun: probeMaxRun,
+      // 1.0.7 §1.2 — the raw figures behind 规避行为, for the same reason as the two lines above:
+      // the learner's own table prints them beside the subscore they made. `evasiveRhythm` is 0
+      // (not null) when there is no deep hand at all — that is the term's own "nothing to see"
+      // state, and `evasiveDeep` beside it is what distinguishes it from "deep but clustered".
+      evasiveShallow: evDepth.shallow, evasiveDeep: evDepth.deep,
+      evasiveSurrounded: evRhB.surroundedByHigh, evasiveRhythm: evRhB.rhythmScore,
     };
   }
 
@@ -727,6 +767,46 @@
       ratio: ratio, count: count, total: total, streak: streak,
       aRatio: aRatio, aStreak: aStreak,
       aGoodPool: GOOD_W_RATIO * aRatio + GOOD_W_STREAK * aStreak,
+    };
+  }
+
+  // 1.0.7 §1.2, mirrored from app.js `lowDepth()` / `evasiveDepthScore()` / `evasiveRhythm()`.
+  // `seq` is already the population (see `all` in subscoresForSide): this side's scored,
+  // non-opening, non-forced-defence hands, in table order — exactly what app.js's
+  // `evasiveOwnHands()` selects. Only the depth scale and the activation are mirrored here.
+  //
+  // ⚠ The persisted fields win when the archive carries them — an archive written by 1.0.7+ has
+  // `evasiveDeep`/`evasiveRhythm` on the aggregate but NOT on the steps, so the per-hand walk is
+  // the only source either way; an older archive simply has the three flags (`top5`/`top8`/
+  // `analyzed`) the walk reads, which is why deriving rather than defaulting is right.
+  function archivedLowDepth(x) {
+    if (!x.analyzed) return 0;
+    if (x.top5) return 0;
+    if (x.top8) return 1;
+    return 2;
+  }
+  function evasiveDepthFigures(seq) {
+    var shallow = 0, deep = 0;
+    for (var i = 0; i < seq.length; i++) {
+      var d = archivedLowDepth(seq[i]);
+      if (d === 1) shallow++;
+      else if (d === 2) deep++;
+    }
+    return {
+      shallow: shallow, deep: deep, total: seq.length,
+      score: (shallow * 0.5 + deep * 1.5) / (seq.length || 1),
+    };
+  }
+  function evasiveRhythmFigures(seq) {
+    var deepCount = 0, surrounded = 0;
+    for (var i = 1; i < seq.length - 1; i++) {
+      if (archivedLowDepth(seq[i]) !== 2) continue;
+      deepCount++;
+      if (proximity(seq[i - 1]) >= PROX_TOP5 && proximity(seq[i + 1]) >= PROX_TOP5) surrounded++;
+    }
+    return {
+      deepCount: deepCount, surroundedByHigh: surrounded,
+      rhythmScore: deepCount > 0 ? surrounded / deepCount : 0,
     };
   }
 

@@ -323,13 +323,17 @@ var GM_TAG_WIKI = (function () {
       id: 'type-evasive', cat: 'type', nameNs: 'type', nameVal: 'evasiveAi', applied: true,
       bandLo: 'typeAiMin', bandHi: null,
       zh: {
-        meaning: '风险分 ≥ {lo}，且恰好有单个短的 low 段（1–2 步）。',
-        usage: '一次「探个头又缩回去」的破绽：整体是 AI 的棋，但中间故意走了几步差的。',
+        meaning: '风险分 ≥ {lo}，且满足下列任一条：恰好有单个短的 low 段（1–2 步）；或'
+               + '（1.0.7 起）深 low 点 1–5 手、且其中 ≥ 60% 被好点夹住。',
+        usage: '一次「探个头又缩回去」的破绽：整体是 AI 的棋，但中间故意走了几步差的。'
+             + '1.0.7 的深度分支先判：它读的是「掉出前 8 候选」的深度而不是段的形状，'
+             + '所以一条 low 段都没有、但每一手都掉得很深的侧别也能落到这里。'
+             + '⚠ 前提见「规避行为」那一条：浅/深分级只在记录思考时间 > 6 秒的手上存在。',
         impact: '决定归档与界面展示的结论类型。',
       },
       en: {
-        meaning: 'Risk ≥ {lo} with exactly one short low run (1–2 hands).',
-        usage: 'One peek out and back: AI play throughout, with a couple of deliberately bad moves in the middle.',
+        meaning: 'Risk ≥ {lo} with either exactly one short low run (1–2 hands), or (since 1.0.7) 1–5 deep-low hands of which at least 60% are flanked by good points.',
+        usage: 'One peek out and back: AI play throughout, with a couple of deliberately bad moves in the middle. Since 1.0.7 the depth branch is tested first — it reads how far below the top-8 candidates a hand fell rather than the shape of the runs, so a side with no low run at all can still land here if every dip went deep. ⚠ See the 规避行为 entry for the premise: the shallow/deep split only exists on hands whose recorded thinking time exceeded 6 s.',
         impact: 'Sets the verdict shown in the archive and the UI.',
       },
     },
@@ -337,13 +341,16 @@ var GM_TAG_WIKI = (function () {
       id: 'type-strong-evasive', cat: 'type', nameNs: 'type', nameVal: 'strongEvasiveAi', applied: true,
       bandLo: 'typeAiMin', bandHi: null,
       zh: {
-        meaning: '风险分 ≥ {lo}，且要么有多个 low 段，要么有一段长达 3 步以上。',
-        usage: '掩饰得更用力的一类。反复进出前 5 候选，是刻意规避的形态。',
+        meaning: '风险分 ≥ {lo}，且满足下列任一条：有多个 low 段，或有一段长达 3 步以上；或'
+               + '（1.0.7 起）深 low 点超过 5 手，或深 low 点超过 3 手而节奏比例 < 50%。',
+        usage: '掩饰得更用力的一类。反复进出前 5 候选，是刻意规避的形态。'
+             + '1.0.7 的深度分支把「掉出前 8 候选超过 5 手」也算作这一档——'
+             + '按定稿的说法，深 low 点太多即「不可能是偶然」。',
         impact: '决定归档与界面展示的结论类型。',
       },
       en: {
-        meaning: 'Risk ≥ {lo} with either several low runs or one run of 3+ hands.',
-        usage: 'A more deliberate disguise — repeatedly stepping out of the top-5 candidates and back.',
+        meaning: 'Risk ≥ {lo} with either several low runs / one run of 3+ hands, or (since 1.0.7) more than 5 deep-low hands, or more than 3 deep-low hands with a rhythm ratio below 50%.',
+        usage: 'A more deliberate disguise — repeatedly stepping out of the top-5 candidates and back. Since 1.0.7 the depth branch also reads "more than five hands below the top-8 candidates" as this band, on the spec\'s argument that so many deep dips cannot be accidental.',
         impact: 'Sets the verdict shown in the archive and the UI.',
       },
     },
@@ -693,6 +700,31 @@ var GM_TAG_WIKI = (function () {
         meaning: 'Probe match: where a built-in probe position occurs, the share of hands that played the point a shallow search would block; three in a row or an 80% hit rate reaches full value. The library is probes.js (10 canonical shapes × 8 symmetries = 80). Since 0.5.7-Alpha the motif is the 四三杀: a four on one line plus an independent `_XXX_` open three on another, with the four\'s gap still the expected move.',
         usage: 'Added in 0.5.7, matching 冲四 shapes. ⚠ Two problems: the 冲四 probe sat on the SAME measurement as 不漏防 (every 冲四 has exactly one blocking point), so the 0.12 and the 0.15 were spent on one thing; and after 0.5.7-Alpha re-pointed it at the 四三杀 shape, a position where the side itself holds a four and an open three covers only 0.38% of hands, so the probe almost never fires. The other two probe families (双威胁选择, 败势顽抗) depend on a specific web engine\'s behaviour and are not encoded.',
         impact: 'Weight {w}, one of the three low-end-AI signals. ⚠ 0.5.7-Alpha set it to ZERO: after the shape change it matches no hands in the corpus, so the term is a constant 0. The library itself is still correct and still loaded — the panel row and `probeSeen`/`probeHit` are kept, and restoring the weight revives it.',
+      },
+    },
+    {
+      id: 'signal-evasive-behaviour', cat: 'signal', nameNs: 'learn.weight', nameVal: 'evasiveBehavior',
+      applied: true, weightKey: 'evasiveBehavior',
+      zh: {
+        meaning: '规避行为：本方落子掉出前 8 候选（「深 low 点」）的深度，乘以「该点两侧的着手'
+               + '是否都还在前 5 候选内」的节奏比例。深 low 点越多、且越是被好点夹住，得分越高。',
+        usage: '1.0.7 引入。提出它的理由是：普通玩家下差棋是「看得不够远」，而一个刻意规避的 AI 会'
+             + '「故意走一手差的、再立刻回到好点」来稀释指纹。⚠ 两个前提在实测中都不成立。'
+             + '其一，「深 low」与「浅 low（第 6–8 候选）」的区分只在**该手记录思考时间 > 6 秒**时'
+             + '才存在——`nbestFor(该手记录时间)` 决定引擎报几个候选，5 个时 `top8` 恒等于 `top5`，'
+             + '浅档不可达。棋谱没有时间记录时（本轮两个样本就是）分级整体失效，`deep` 退化成'
+             + '「没进前 5 的手数」。其二，该量在操作者自己的语料上方向相反：被档案判为「人类」的'
+             + '侧面平均 0.381（89% 触发），被档案判为「机器」的平均 0.068（11% 触发）——'
+             + '它测的是棋力，不是规避意图。',
+        impact: '权重 {w}。⚠ **出厂即为 0**，与「时间规律」「不漏防」「探针匹配」同一处理：'
+              + '机制、报告字段（深低点 / 规避节奏两行）与分类器分支全部保留，但不参与打分，'
+              + '所以 1.0.6 的操作点一分未动（127 个侧面实测：分档变化 0、类型变化 0）。'
+              + '面板行照常打印，改回一个非零权重或直接在权重表里调即可复活。',
+      },
+      en: {
+        meaning: 'Evasive behaviour: how deep a side\'s hands fall outside the top-8 candidates (a "deep low" hand), scaled by the share of those that are flanked on both sides by hands still inside the top-5. More deep-low hands, and the more of them walled in by good points, the higher the figure.',
+        usage: 'Added in 1.0.7. The premise was that an ordinary weak player plays badly because they cannot see far enough, whereas a deliberately evasive AI interleaves one bad hand with good ones to dilute its fingerprint. ⚠ Both halves of that premise failed on measurement. First, the deep-versus-shallow split (shallow = candidates 6-8) only exists when the recorded thinking time for that hand exceeded 6 s — `nbestFor(recordedMs)` decides how many candidates the engine reports, and at five `top8` is always identical to `top5`, so the shallow tier is unreachable. With no timing at all (as in this release\'s two samples) the split collapses entirely and `deep` degenerates into "hands outside the top 5". Second, the quantity runs backwards on the operator\'s own corpus: sides the archives call human average 0.381 (fires on 89%), sides they call machine average 0.068 (fires on 11%). It measures playing strength, not evasive intent.',
+        impact: 'Weight {w}. ⚠ **Shipped at ZERO**, handled exactly like 时间规律 / 不漏防 / 探针匹配: the mechanism, the two report figures (深低点 / 规避节奏) and the classifier branch are all kept, but nothing is scored, so 1.0.6\'s operating point is untouched (measured on 127 sides: zero band changes, zero type changes). The panel row still prints; restoring a non-zero weight — or editing the table directly — revives it.',
       },
     },
   ];

@@ -302,6 +302,142 @@ var REPORT_NOTE_MAX = 2000;
 var REPORT_RATE_MAX = 5;
 var REPORT_RATE_WINDOW_MS = 10 * 60 * 1000;
 
+// ---- §二.1 缉捕墙 (1.0.7) ----------------------------------------------------------------------
+/** §2.1.2's four states verbatim: 「'pending' | 'approved' | 'rejected' | 'resolved'」.
+ *
+ *  ⚠ THE ORDER IS THE WALL'S FILTER ORDER, and `pending` leads for a reason that only holds on this
+ *  feature: a member can see 待审核 among **their own** submissions (RLS: `submitter_id = auth.uid()`)
+ *  while an admin sees the whole queue, so the chip is never a dead end for either reader. 已解决 is
+ *  last because it is the state an entry reaches after the evidence has been dealt with, and the
+ *  wall's default view is 全部. */
+var WANTED_STATUSES = ['pending', 'approved', 'rejected', 'resolved'];
+/**
+ * §2.1.3's four filter chips minus 「全部」: 待审核 / 已通过 / 已解决.
+ *
+ * ⚠ `'rejected'` IS A STATUS BUT NOT A CHIP, AND THAT IS §2.1.3's OWN LIST (`[全部] [待审核] [已通过]
+ * [已解决]`), not an omission. A 已驳回 entry is off the wall — 026's read predicate hands it to its
+ * submitter and to an admin and to nobody else — so a chip for it would be a filter that answers
+ * 「nothing」 for every reader except the one who submitted it, while 全部 already reaches it. The
+ * admin console's own filter DOES offer it, from `WANTED_STATUSES`, because a moderator deciding the
+ * queue is the reader who needs to see what they turned down.
+ *
+ * ⚠ IT LIVES HERE RATHER THAN IN THE VIEW so the chips and the read predicate stay one answer: the
+ * three values are exactly「the three states a public reader can be handed」.
+ */
+var WANTED_WALL_STATUSES = ['pending', 'approved', 'resolved'];
+/** §2.1.2's `wanted_evidence.kind` verbatim: 「'archive' | 'sample' | 'comment'」. */
+var WANTED_EVIDENCE_KINDS = ['archive', 'sample', 'comment'];
+/** §2.1.2's `evidence` jsonb keys verbatim: 「{ archive_ids: [], sample_ids: [], notes: [] }」. A
+ *  CLOSED set, and the closedness is the point: this object is rendered as the entry's 证据摘要 on a
+ *  public wall, so a client that could paste arbitrary jsonb into it decides what every reader's
+ *  browser draws. Same rule `report-submit`'s `EVIDENCE_KEYS` states for the 信箱. */
+var WANTED_EVIDENCE_KEYS = ['archive_ids', 'sample_ids', 'notes'];
+/**
+ * §2.1.4's two helpers, as ONE regex and two readers.
+ *
+ * ⚠ ONE REGEX, because the spec's two functions are two halves of one decision and writing them as
+ * two patterns makes them disagree the day a locale is added: `isValidProfileUrl` is 「this is a
+ * profile URL」 and `extractUsernameFromProfileUrl` is 「and this is whose」 — the capture group IS
+ * the answer to both. A URL that validates can therefore never fail to yield a name, which is the
+ * invariant §2.1.4's 「一致性检查」 is built on.
+ *
+ * ⚠ `www.` IS OPTIONAL AND THE LOCALE SEGMENT IS REQUIRED, exactly as the spec writes them. The
+ * locale list is not a nicety: `gomoku.com/profile/x` (no locale) is NOT a profile page, and
+ * accepting it would let a submission carry a link that 404s for every reader.
+ */
+var WANTED_PROFILE_RE =
+  /^https?:\/\/(?:www\.)?gomoku\.com\/(?:zh-cn|zh-tw|en|ja|ko)\/profile\/([A-Za-z0-9_]+)/i;
+/** §2.1.4 verbatim — 「验证链接格式」. */
+function isValidProfileUrl(url) {
+  return WANTED_PROFILE_RE.test(String(url == null ? '' : url).trim());
+}
+/** §2.1.4 verbatim — 「从主页链接自动提取用户名」. `null` when the URL is not a profile URL. */
+function extractUsernameFromProfileUrl(url) {
+  var m = WANTED_PROFILE_RE.exec(String(url == null ? '' : url).trim());
+  return m ? m[1] : null;
+}
+/** §2.1.3's form draws 「[@_________]」, so a leading `@` is part of what an operator types. One
+ *  normaliser, used by the client's consistency check, the submit form's prefill and the server's
+ *  own check — a second spelling is how 「@PlayerA」 becomes a different person from 「PlayerA」. */
+function normalizeWantedUsername(value) {
+  var s = String(value == null ? '' : value).trim();
+  while (s.charAt(0) === '@') s = s.slice(1);
+  return s;
+}
+/**
+ * §2.1.4's 「一致性检查：提交的 `username` 必须与 URL 中提取的一致」.
+ *
+ * ⚠ CASE SENSITIVE, and that is §2.1.1's 「gomoku 用户名（唯一 ID）」 taken literally: the wall's whole
+ * job is to let readers look the account up by name, and a case-insensitive comparison would let
+ * 「@PlayerA」 be filed against the profile of 「playerA」 — two accounts, one entry, and the tracked
+ * party is whichever one the submitter did not mean.
+ */
+function wantedUrlMatches(url, username) {
+  var extracted = extractUsernameFromProfileUrl(url);
+  return !!extracted && extracted === normalizeWantedUsername(username);
+}
+/**
+ * §2.1.5's 「发送嫌疑人」 card kind.
+ *
+ * ⚠⚠ DELIBERATELY NOT A MEMBER OF `SHARE_KINDS`, and this is the one place a reader is likely to
+ * "tidy up" wrongly. The other three kinds are FILES: each one becomes a `cloud_shares` row, carries
+ * a payload that may be up to 500KB inline or in a bucket, expires, and can be polled — and the
+ * picker, `friend-share`, `cloud_shares.kind`'s CHECK and `quotaColumnFor` all read that vocabulary.
+ * A 嫌疑人 is a LABEL POINTING AT A ROW THAT ALREADY EXISTS: there is no payload, nothing expires,
+ * nothing is uploaded, and the only thing the card needs is the entry's id. Adding it to
+ * `SHARE_KINDS` would silently hand it a daily quota, an `expires_at` and a poll checkbox.
+ */
+var WANTED_ATTACHMENT_KIND = 'wanted';
+/** §2.1.3's 提交理由 and §2.1.6's `admin_note`. Capped for the reason every free-text field here is:
+ *  an unbounded body is an unbounded row on a list, and this list is read by every member. */
+var WANTED_REASON_MAX = 1000;
+var WANTED_NOTE_MAX = 1000;
+/** §2.1.3's 显示名（可选）— a gomoku display name, which is a short label and not a paragraph. */
+var WANTED_DISPLAY_MAX = 40;
+/** §2.1.3's 「选择本地存档 / 选择本地样本」, twenty of each. Far above any honest submission and far
+ *  below what it takes to make one entry unrenderable — the same arithmetic `report-submit` uses. */
+var WANTED_EVIDENCE_MAX = 20;
+/**
+ * §五.2 「是否需要限制每用户每天的提交数（如最多 3 个）？是否需要「信誉分」机制？」 — the client answers
+ * the first YES and the second NO, and both answers live here:
+ *
+ *   * YES to the cap, at the number the spec suggests. A 缉捕墙 entry names a REAL PERSON on a public
+ *     list, so it is the one form in this product where 「多发几个试试」 costs a stranger their
+ *     reputation; three a day is far above honest use (a person with three suspected cheaters is
+ *     having a bad evening) and far below what it takes to flood the wall or to campaign against one
+ *     account with a handful of throwaway logins.
+ *   * NO to 信誉分 for now, and the reason is that a reputation needs a CONSEQUENCE it can grade —
+ *     rejections here are decided by a human reading evidence, and a score derived from three
+ *     human decisions would be noise pretending to be a judgement. What replaces it is the per-day
+ *     cap plus the duplicate merge below: a coordinated attack on one account cannot file twice for
+ *     the same username (it appends to the entry it is trying to bury).
+ */
+var WANTED_RATE_MAX = 3;
+var WANTED_RATE_WINDOW_MS = 24 * 60 * 60 * 1000;
+/**
+ * §2.1.6's two review verbs, plus §2.1.3's third filter state — and the STATUS each one writes.
+ *
+ * One map rather than a switch in `wanted-approve` and a second list in the console's buttons: the
+ * client draws an action button only for an action the server accepts, and the label it draws
+ * (`cm.wanted.act.<action>`) is keyed by the same id. Three spellings of 「审核能做什么」 is the
+ * shape 1.0.5's audit spent a release untangling.
+ *
+ * ⚠ `resolve` IS NOT `approve`. §2.1.3 draws FOUR filters (全部 / 待审核 / 已通过 / 已解决), and the
+ * last one is reachable only if something can set it: 已解决 means 「证据已经看过了，这一条到此为止」
+ * — it does NOT un-publish the entry, which is why the read predicate tests ONLY `'approved'` and a
+ * resolved entry stays on the wall (§2.1.9's 「公开」 is a decision an admin made once).
+ */
+var WANTED_ACTIONS = ['approve', 'reject', 'resolve'];
+var WANTED_STATUS_FOR_ACTION = { approve: 'approved', reject: 'rejected', resolve: 'resolved' };
+/** §2.1.7's 「补充证据」. Ten pieces per ten minutes is far above an honest reader contributing to one
+ *  entry and far below what it takes to bury a wall entry under comments — the same arithmetic
+ *  `CHAT_RATE_MAX` uses for the room, on a surface that notifies the entry's followers. */
+var WANTED_EVIDENCE_RATE_MAX = 10;
+var WANTED_EVIDENCE_RATE_WINDOW_MS = 10 * 60 * 1000;
+/** §2.1.7's 「或添加评论」. Capped like every other free-text field: this one is rendered inside a
+ *  PUBLIC card, so an unbounded body is an unbounded row on everyone's screen. */
+var WANTED_COMMENT_MAX = 500;
+
 // ---- §3.1 国旗 -------------------------------------------------------------------------------
 /** §3.1.5 「港澳台均使用五星红旗」. STORAGE keeps the real code (HK / MO / TW); only the DISPLAY
  *  maps it, so a policy change is one array. ⚠ The display helper is below and is the only place
@@ -495,10 +631,17 @@ function presenceState(lastSeenAt, manualStatus, nowMs) {
  * and NO card: the reader saw a name and a timestamp and nothing to press. The derivation is over
  * `SHARE_KINDS` — the same three the picker offers, the same three `friend_shares` accepts, the
  * same three `cloud_shares` accepts since 015 — rather than a second list that can drift from it.
+ *
+ * ⚠ 1.0.7 §2.1.5 — `wanted` IS A FIFTH ANSWER, AND IT IS ASKED SEPARATELY ON PURPOSE. A 嫌疑人 card
+ * is an attachment in the ROOM's sense (it is a card, not a bubble) and not in `SHARE_KINDS`'s sense
+ * (no payload, no `cloud_shares` row, no expiry). Testing it in the same loop would mean putting it
+ * in that list; testing it after the loop keeps the two vocabularies apart while giving the room one
+ * place to ask 「这个附件画成什么」 — which is the whole reason this function exists.
  */
 function messageType(row) {
   var a = row && row.attachment;
   if (!a || typeof a !== 'object') return 'text';
+  if (a.kind === WANTED_ATTACHMENT_KIND) return 'wanted-share';
   for (var i = 0; i < SHARE_KINDS.length; i++) {
     if (a.kind === SHARE_KINDS[i]) return SHARE_KINDS[i] + '-share';
   }
@@ -840,6 +983,23 @@ function realtimeChanges() {
     SHARE_TTL_MS: SHARE_TTL_MS,
     VOTE_CHOICES: VOTE_CHOICES,
     VOTE_TTL_MS: VOTE_TTL_MS,
+    WANTED_ACTIONS: WANTED_ACTIONS,
+    WANTED_ATTACHMENT_KIND: WANTED_ATTACHMENT_KIND,
+    WANTED_COMMENT_MAX: WANTED_COMMENT_MAX,
+    WANTED_DISPLAY_MAX: WANTED_DISPLAY_MAX,
+    WANTED_EVIDENCE_KINDS: WANTED_EVIDENCE_KINDS,
+    WANTED_EVIDENCE_KEYS: WANTED_EVIDENCE_KEYS,
+    WANTED_EVIDENCE_MAX: WANTED_EVIDENCE_MAX,
+    WANTED_EVIDENCE_RATE_MAX: WANTED_EVIDENCE_RATE_MAX,
+    WANTED_EVIDENCE_RATE_WINDOW_MS: WANTED_EVIDENCE_RATE_WINDOW_MS,
+    WANTED_NOTE_MAX: WANTED_NOTE_MAX,
+    WANTED_PROFILE_RE: WANTED_PROFILE_RE,
+    WANTED_RATE_MAX: WANTED_RATE_MAX,
+    WANTED_RATE_WINDOW_MS: WANTED_RATE_WINDOW_MS,
+    WANTED_REASON_MAX: WANTED_REASON_MAX,
+    WANTED_STATUSES: WANTED_STATUSES,
+    WANTED_STATUS_FOR_ACTION: WANTED_STATUS_FOR_ACTION,
+    WANTED_WALL_STATUSES: WANTED_WALL_STATUSES,
     censorHit: censorHit,
     censorNormalize: censorNormalize,
     canRecall: canRecall,
@@ -847,12 +1007,15 @@ function realtimeChanges() {
     chatRetentionCutoff: chatRetentionCutoff,
     countryFlag: countryFlag,
     countryFlagChinaUnified: countryFlagChinaUnified,
+    extractUsernameFromProfileUrl: extractUsernameFromProfileUrl,
     isMuted: isMuted,
     isShareLive: isShareLive,
+    isValidProfileUrl: isValidProfileUrl,
     isVoteOpen: isVoteOpen,
     mentionToken: mentionToken,
     messageType: messageType,
     newsText: newsText,
+    normalizeWantedUsername: normalizeWantedUsername,
     parseMentions: parseMentions,
     platformTag: platformTag,
     presenceState: presenceState,
@@ -865,6 +1028,7 @@ function realtimeChanges() {
     shareExpiresAt: shareExpiresAt,
     unreadSince: unreadSince,
     voteTally: voteTally,
+    wantedUrlMatches: wantedUrlMatches,
   };
 
   if (typeof module !== 'undefined' && module.exports) module.exports = g.GMCommunityShared;

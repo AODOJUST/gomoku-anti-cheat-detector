@@ -125,6 +125,10 @@
     top1: 1, acpl: 1, sharp: 1, out: 1, desperate: 1, time: 1,
     evasion: 1, winBlunder: 1, uselessFour: 1,
     sharpStreak: 1, sharpTotal: 1, goodPool: 1, liveThree: 1,
+    // 1.0.7 §1.2 — 规避行为. Adding it here is the whole display wiring: the label comes from
+    // `learn.weight.evasiveBehavior`, the same runtime key the settings panel prints, so there is
+    // no second label table (see the note above).
+    evasiveBehavior: 1,
   };
   // 被怀疑方 is three-valued and the same ternary was spelled out four times.
   function suspectName(v) {
@@ -3740,9 +3744,13 @@
    *  whichever read brought the name — the room's own rows carry `user_id` but no `last_seen_at`. */
   var cmPeople = {};
 
-  /** The five secondary tabs, in the order 1.0.3 draws them. `cmShowTab` refuses anything else, so
-   *  a typo in a `data-cm` attribute is an inert tab rather than a pane nothing can reach. */
-  var CM_TABS = ['chat', 'friends', 'msgs', 'news', 'feedback'];
+  /** The six secondary tabs, in the order they are drawn. `cmShowTab` refuses anything else, so
+   *  a typo in a `data-cm` attribute is an inert tab rather than a pane nothing can reach.
+   *
+   *  ⚠ 1.0.7 §2.1.3 APPENDS `'wanted'` rather than inserting it: the four that were already here keep
+   *  their positions, which is what §2.1.3's own listing does (`聊天室 / 新闻 / Bug与建议 / 缉捕墙 ←
+   *  新增`), and what a returning operator's muscle memory needs. */
+  var CM_TABS = ['chat', 'friends', 'msgs', 'news', 'feedback', 'wanted'];
 
   /** §1.4.4's countdown, ticking once a second while a poll is on screen. Held here so leaving the
    *  pane stops it — an interval that outlives its element writes into a detached node forever. */
@@ -3859,6 +3867,21 @@
       case 'reportEvidence': return T('community|证据必须是合法的 JSON（留空表示没有证据）。');
       case 'reportFailed': return T('community|举报提交失败（{err}）', { err: err });
       case 'reported': return T('community|已提交，管理员会尽快处理。');
+      // ---- 1.0.7 §2.1 缉捕墙. Four verdicts and one pair, each a LITERAL `T('…')` for the reason
+      // stated above this switch: a key held in a descriptor is a key no table ever gets.
+      case 'followed': return T('community|已跟踪，该条目有新证据时会通知你。');
+      case 'unfollowed': return T('community|已取消跟踪。');
+      // ⚠ 1.0.6 三号's lesson, applied on the way in rather than after the fact: a code is added WITH
+      // its client sentence. 「已提交」 and 「已合并」 are told apart because §2.1.6's 去重 makes them
+      // different outcomes of the same button — the operator who filed the same person twice should
+      // learn that their evidence landed on somebody else's entry, not that a second entry exists.
+      case 'wantedSubmitted': return T('community|已提交，管理员审核通过后才会公开。');
+      case 'wantedMerged': return T('community|这个用户名已有条目，你的证据已合并进去。');
+      case 'wantedEvAdded': return T('community|证据已补充，跟踪该条目的人会收到通知。');
+      case 'wantedNeedUrl': return T('community|请填写 gomoku 主页链接。');
+      case 'wantedMismatch': return T('community|用户名与链接不一致，请检查后重试。');
+      case 'wantedNeedReason': return T('community|请至少填写理由，或附加一个本地存档 / 样本。');
+      case 'wantedRoomOnly': return T('community|嫌疑人卡片只能发送到聊天室。');
     }
     return '';
   }
@@ -4136,7 +4159,28 @@
     // all. The card and the share vocabulary are the same three, and `messageType` is where that is
     // decided — asking it once here is what stops this test from drifting from it.
     var kind = (S.messageType ? S.messageType(row) : 'text');
-    if (row.attachment && kind !== 'text') {
+    if (row.attachment && kind === 'wanted-share') {
+      // ⚠⚠ 1.0.7 §2.1.5 — THIS BRANCH COMES FIRST, AND THE REASON IS `cloud_id`. §2.1's card draws
+      // from `attachment.{kind, name, summary, cloud_id, expires_at}` and the block below reaches the
+      // payload through `data-cm-cloud`; a 嫌疑人 has NO payload row and NO `cloud_id`, so it would
+      // have rendered as a card whose every press opened `''`. Same "the specific claim wins" rule the
+      // click router spells for `[data-ca]` — and the shape `messageType()` returns is the ONE place
+      // that decides which of the four kinds a row is.
+      var w = row.attachment;
+      HTML += '<div class="cm-share cm-wanted" data-cw="' + esc(String(w.wanted_id || '')) + '">' +
+        '<span class="cm-shico">🚨</span>' +
+        '<span class="cm-shmain">' +
+          '<span class="cm-shtitle">' + esc(String(w.name || '—')) + '</span>' +
+          // §2.1.5's card carries 提交者 and nothing else — the wall's own card has the reason and the
+          // counts, and repeating them in the room would put a stranger's accusation in front of the
+          // whole room without its context.
+          '<span class="cm-meta">' + esc(T('community|提交者：{name}', {
+            name: String(w.submitter_name || '—'),
+          })) + '</span>' +
+        '</span>' +
+        '<span class="cm-acts"><button class="sec" data-cwa="detail" data-cw="' +
+          esc(String(w.wanted_id || '')) + '">' + esc(T('community|查看详情')) + '</button></span></div>';
+    } else if (row.attachment && kind !== 'text') {
       var a = row.attachment;
       var ak = String(a.kind || '');
       var votable = S.isVotableKind ? S.isVotableKind(ak) : (ak !== 'config');
@@ -4704,6 +4748,11 @@
     // the 30-second badge poll calls `cmLoadMsgs()` directly and never passes through here, so a dot
     // the operator has not looked at keeps its number for as long as they leave it alone.
     if (name === 'msgs') cmShowMsgCat(CM_MSGCAT);
+    // 1.0.7 §2.1.3 — 「缉捕墙」 is the one pane whose content is a NETWORK read on entry rather than a
+    // list kept warm by the room's socket: nobody is pushing a wall row. Entering it therefore
+    // refreshes, and `refreshCommunity` does the same on the first entry, so a tab switch and a
+    // 社区 entry land on the same rows.
+    if (name === 'wanted') cmLoadWanted();
   }
 
   /** §2.5.4's type options, from `FEEDBACK_CATEGORIES` rather than from markup: the server accepts
@@ -4810,6 +4859,548 @@
       });
   }
 
+  // ===========================================================================================
+  // 1.0.7 §2.1 缉捕墙 — the wall, the submit form and the detail modal
+  // ===========================================================================================
+  // ⚠⚠ THE DATA LAYER IS `GMCommunity.wanted.*` AND THE WORDING IS HERE. §四's table lists
+  // 「community.js | 缉捕墙 UI + 提交表单 + 跟踪 + 证据」, i.e. the spec expects ONE file; this project
+  // has two, split by the rule community.js's own header states (that file carries no user-visible
+  // text, because `_tools/keys.cjs` inventories viewer.js and not community.js — a sentence written
+  // there would ship in Chinese in all thirteen locales with nothing to report it). The UI therefore
+  // follows the module it belongs to rather than the file the spec names, exactly as 1.0.2 read
+  // §2.3–§2.5.
+
+  var cmWan = {
+    // ⚠ `''` IS 「全部」 — one predicate with "no filter" spelled as the empty string, the same shape
+    // the 新闻 pane's `data-cmcat=""` uses. `wantedWall`'s `if (o.status)` is the reading half.
+    status: '',
+    rows: [],
+    // The ids in `rows` this account already follows. ONE extra read for the whole page — see
+    // `wantedWall`, which refuses to ask per row.
+    followed: [],
+    msg: null,
+  };
+  // §2.1.5's picker source: my own APPROVED entries. ⚠ `null` IS 「not asked yet」, which is what lets
+  // the pick list tell 「还在读」 from 「一条都没有」 — an empty array would print 「你还没有已通过审核的
+  // 提交」 for half a second to somebody who has three.
+  var cmWanMine = null;
+  var cmWanMineBusy = false;
+  var cmWanForm = null;   // the submit form's state; null while its modal is closed
+  var cmWanDetail = null; // { id, row, evidence, pickKind, msg, evMsg }
+
+  /**
+   * §2.1.3's 状态 chip, from the shared block's vocabulary. The empty string is 「全部」 rather than
+   * `cmNamed('cm.wst.', '')` — the same special case `buildAdminSelects` spells for the 举报 filter,
+   * and for the same reason: 「no filter」 is a value of the FILTER, not of the column.
+   */
+  function cmWanStatusLabel(code) {
+    return code === '' ? T('community|全部') : cmNamed('cm.wst.', code);
+  }
+
+  /** §2.1.3's card title: 「PlayerA（@playera）」, with the display name dropped when there is none
+   *  (「（@playera）」 on its own would be a bracket with nothing before it). */
+  function cmWantedLabel(row) {
+    var dn = String((row && row.suspect_display_name) || '').trim();
+    var un = '@' + String((row && row.suspect_username) || '—');
+    return dn ? dn + '（' + un + '）' : un;
+  }
+
+  /** §2.1.3's 「证据：3 个存档 · 2 个样本」, from the entry's own `evidence` jsonb. ⚠ THE 补充证据
+   *  ROWS ARE NOT COUNTED HERE and that is deliberate: they are listed in the detail modal, and folding
+   *  two different sources into one number would make 「3 个存档」 mean different things on the card and
+   *  on the screen the card opens. */
+  function cmWantedCounts(row) {
+    var ev = (row && row.evidence) || {};
+    var a = Array.isArray(ev.archive_ids) ? ev.archive_ids.length : 0;
+    var b = Array.isArray(ev.sample_ids) ? ev.sample_ids.length : 0;
+    if (!a && !b) return '';
+    return T('community|证据：{a} 个存档 · {b} 个样本', { a: a, b: b });
+  }
+
+  /**
+   * 「3 天前」 for §2.1.3's card.
+   *
+   * ⚠ BEYOND A MONTH IT FALLS BACK TO A DATE. 「47 天前」 is a number a reader has to convert; the
+   * absolute day is the answer they were after. `adWhen`'s argument, applied to the other direction.
+   *
+   * ⚠ IT IS NOT `chatClock` (`HH:MM`, for a message posted minutes ago) and it is NOT in the shared
+   * block: nothing on the server formats a relative time, so a shared copy would be a second
+   * implementation with no second reader.
+   */
+  function cmAgo(iso) {
+    var t = Date.parse(iso);
+    if (isNaN(t)) return '';
+    var s = Math.max(0, Math.floor((Date.now() - t) / 1000));
+    if (s < 60) return T('community|刚刚');
+    var m = Math.floor(s / 60);
+    if (m < 60) return T('community|{n} 分钟前', { n: m });
+    var h = Math.floor(m / 60);
+    if (h < 24) return T('community|{n} 小时前', { n: h });
+    var d = Math.floor(h / 24);
+    if (d < 30) return T('community|{n} 天前', { n: d });
+    return String(iso).slice(0, 10);
+  }
+
+  // ---- the wall -------------------------------------------------------------------------------
+
+  function cmLoadWanted() {
+    cmWan.msg = { code: 'loading' };
+    cmPaintWanted();
+    return GMCommunity.wanted.wall({ status: cmWan.status, limit: 50 }).then(function (r) {
+      if (!r || !r.ok) {
+        cmWan.msg = { code: 'loadFailed', err: (r && r.error) || 'INTERNAL', tone: 'err' };
+        cmPaintWanted();
+        return;
+      }
+      cmWan.rows = r.rows || [];
+      cmWan.followed = r.followed || [];
+      cmWan.msg = null;
+      cmPaintWanted();
+    });
+  }
+
+  function cmPaintWanted() {
+    var S = GMCommunity.shared() || {};
+    var chips = $('cmWantedChips');
+    if (chips) {
+      // ⚠ 全部 FIRST AND SPELLED HERE, the rest from `WANTED_WALL_STATUSES` — §2.1.3's own four
+      // chips. `WANTED_STATUSES` (all four states) is the CONSOLE's filter, not the wall's; see the
+      // constant's own note for why 「已驳回」 is not a chip a public wall offers.
+      var list = [''].concat(S.WANTED_WALL_STATUSES || ['pending', 'approved', 'resolved']);
+      chips.innerHTML = list.map(function (s) {
+        return '<button class="tw-cat' + (s === cmWan.status ? ' on' : '') +
+          '" data-wstatus="' + esc(s) + '">' + esc(cmWanStatusLabel(s)) + '</button>';
+      }).join('');
+    }
+    var hint = $('cmWantedHint');
+    if (hint) {
+      hint.textContent = T('community|「待审核」只显示你自己提交的条目；已通过的条目对全部已激活用户公开。');
+    }
+    var host = $('cmWantedList');
+    if (host) {
+      host.innerHTML = cmWan.rows.length
+        ? cmWan.rows.map(cmWantedCard).join('')
+        : '<div class="cm-empty">' + esc(T('community|还没有可显示的条目。')) + '</div>';
+    }
+    cmSetMsg($('cmWantedState'), cmWan.msg);
+  }
+
+  /** One card, drawn by the wall AND by the room's `wanted-share` card's detail door — §2.1.3's four
+   *  lines and its three buttons. `cmWan.followed` is the only state the card reads, which is why the
+   *  room's own card can be a smaller thing without becoming a second answer: it carries no buttons
+   *  that depend on it. */
+  function cmWantedCard(row) {
+    var id = String(row.id);
+    var followed = cmWan.followed.indexOf(id) >= 0;
+    var counts = cmWantedCounts(row);
+    return '<div class="cm-wcard">' +
+      '<div class="cm-wrow">' +
+        '<span class="cm-wtitle">🚨 ' + esc(cmWantedLabel(row)) + '</span>' +
+        '<span class="hint">' + esc(cmWanStatusLabel(String(row.status || ''))) + '</span>' +
+      '</div>' +
+      '<div class="hint">' + esc(T('community|提交者：{name} · {ago} · 👥 {n} 人跟踪', {
+        name: row.submitter_name || '—', ago: cmAgo(row.created_at),
+        n: Number(row.follower_count) || 0,
+      })) + '</div>' +
+      (row.reason
+        ? '<div class="hint">' + esc(T('community|理由：{text}', { text: cmPreview(row.reason, 160) })) + '</div>'
+        : '') +
+      (counts ? '<div class="hint">' + esc(counts) + '</div>' : '') +
+      '<div class="btn-row" style="margin-top:4px">' +
+        '<button class="sec" data-cwa="detail" data-cw="' + esc(id) + '">' +
+          esc(T('community|查看详情')) + '</button>' +
+        '<button class="sec" data-cwa="follow" data-cw="' + esc(id) + '">' +
+          esc(followed ? T('community|已跟踪') : T('community|跟踪')) + '</button>' +
+        '<button class="sec" data-cwa="evidence" data-cw="' + esc(id) + '">' +
+          esc(T('community|补充证据')) + '</button>' +
+      '</div></div>';
+  }
+
+  /**
+   * §2.1.7's 跟踪.
+   *
+   * ⚠ THE COUNT COMES BACK FROM THE SERVER AND IS NOT INCREMENTED HERE. `wanted-follow` recounts
+   * `wanted_followers` and answers with the new `follower_count`; adding one locally would be the
+   * second arithmetic — the defect `cmVoteCast` refuses, for the same reason and on the same shape.
+   */
+  function cmWantedFollow(id) {
+    var key = String(id);
+    var following = cmWan.followed.indexOf(key) >= 0;
+    cmWan.msg = null;
+    return GMCommunity.wanted.follow(key, !following).then(function (r) {
+      if (!r || !r.ok) {
+        cmWan.msg = { code: 'actFailed', err: (r && r.error) || 'INTERNAL', tone: 'err' };
+        cmPaintWanted();
+        cmPaintWantedDetail();
+        return;
+      }
+      var k = cmWan.followed.indexOf(key);
+      if (r.following && k < 0) cmWan.followed.push(key);
+      if (!r.following && k >= 0) cmWan.followed.splice(k, 1);
+      for (var i = 0; i < cmWan.rows.length; i++) {
+        if (String(cmWan.rows[i].id) === key) cmWan.rows[i].follower_count = r.followerCount;
+      }
+      if (cmWanDetail && cmWanDetail.row && String(cmWanDetail.row.id) === key) {
+        cmWanDetail.row.follower_count = r.followerCount;
+      }
+      cmWan.msg = { code: r.following ? 'followed' : 'unfollowed', tone: 'ok' };
+      cmPaintWanted();
+      cmPaintWantedDetail();
+    });
+  }
+
+  // ---- §2.1.3's 「查看详情」 ---------------------------------------------------------------------
+
+  /**
+   * `focus` is 「补充证据」 vs 「查看详情」: both open this modal (§2.1.3 puts both verbs on the card and
+   * they lead to the same person), and the difference is whether the label picker is already open —
+   * `'archive'` / `'sample'` / `''`.
+   */
+  function cmWantedOpen(id, focus) {
+    if (!id) return Promise.resolve();
+    cmWanDetail = {
+      id: String(id), row: null, evidence: [],
+      pickKind: (focus === 'archive' || focus === 'sample') ? focus : '',
+      msg: null, evMsg: null,
+    };
+    if ($('cmWantedComment')) $('cmWantedComment').value = '';
+    cmPaintWantedDetail();
+    if ($('cmWantedDetail')) $('cmWantedDetail').classList.remove('hidden');
+    return Promise.all([
+      GMCommunity.wanted.one(cmWanDetail.id),
+      GMCommunity.wanted.evidence(cmWanDetail.id),
+    ]).then(function (b) {
+      if (!cmWanDetail) return;
+      var one = b[0] || {};
+      var ev = b[1] || {};
+      if (!one.ok || !one.row) {
+        cmWanDetail.msg = { code: 'loadFailed', err: one.error || 'INTERNAL', tone: 'err' };
+      } else {
+        cmWanDetail.row = one.row;
+        cmWanDetail.msg = null;
+      }
+      cmWanDetail.evidence = (ev.ok && ev.rows) || [];
+      cmPaintWantedDetail();
+    });
+  }
+
+  function cmWantedDetailClose() {
+    if ($('cmWantedDetail')) $('cmWantedDetail').classList.add('hidden');
+    if ($('cmWantedPickHost')) $('cmWantedPickHost').innerHTML = '';
+    cmWanDetail = null;
+  }
+
+  function cmWanEvKindLabel(kind) {
+    return cmNamed('cm.wev.', kind);
+  }
+
+  function cmPaintWantedDetail() {
+    var d = cmWanDetail;
+    var row = d && d.row;
+    if ($('cmWantedDetailHead')) {
+      $('cmWantedDetailHead').textContent = row ? cmWantedLabel(row) : '—';
+    }
+    if ($('cmWantedDetailMeta')) {
+      $('cmWantedDetailMeta').textContent = row
+        ? T('community|提交者：{name} · {ago} · 👥 {n} 人跟踪', {
+            name: row.submitter_name || '—', ago: cmAgo(row.created_at),
+            n: Number(row.follower_count) || 0,
+          })
+        : '';
+    }
+    if ($('cmWantedDetailReason')) {
+      $('cmWantedDetailReason').textContent = (row && row.reason)
+        ? T('community|理由：{text}', { text: row.reason })
+        : '';
+    }
+    if ($('cmWantedDetailState')) {
+      var bits = [];
+      if (row) {
+        bits.push(T('community|状态：{s}', { s: cmWanStatusLabel(String(row.status || '')) }));
+        var counts = cmWantedCounts(row);
+        if (counts) bits.push(counts);
+      }
+      $('cmWantedDetailState').textContent = bits.join(' · ');
+    }
+    if ($('cmWantedFollow')) {
+      var id = d ? d.id : '';
+      var followed = cmWan.followed.indexOf(id) >= 0;
+      $('cmWantedFollow').textContent = followed ? T('community|已跟踪') : T('community|跟踪');
+    }
+    var host = $('cmWantedDetailList');
+    if (host) {
+      var rows = (d && d.evidence) || [];
+      host.innerHTML = rows.length
+        ? rows.map(function (r) {
+            var p = r.payload || {};
+            var body = r.kind === 'comment'
+              ? String(p.text || '')
+              : (String(p.name || '—') + (p.summary ? ' · ' + String(p.summary) : ''));
+            return '<div class="cm-wrow">' +
+              '<span class="cm-wevk">' + esc(cmWanEvKindLabel(String(r.kind || ''))) + '</span>' +
+              '<span class="cm-wtitle">' + esc(body) + '</span>' +
+              '<span class="hint">' + esc(cmAgo(r.created_at)) + '</span>' +
+            '</div>';
+          }).join('')
+        : '<div class="cm-empty">' + esc(T('community|还没有补充证据。')) + '</div>';
+    }
+    cmPaintWantedPick();
+    cmSetMsg($('cmWantedEvState'), d && (d.evMsg || d.msg));
+  }
+
+  /**
+   * §2.1.7's 「上传本地存档/样本」 as a ONE-CLICK label list.
+   *
+   * ⚠ THE PAYLOAD IS THE NAME, NOT THE FILE. `wanted-add-evidence` states the argument at length:
+   * §2.1.9 publishes 「证据摘要」 and nothing else, and an archive is somebody else's game. The list
+   * here is the SAME `archives` / `samples` arrays the 发送 picker draws, so 「本地存档」 means one
+   * thing on both screens.
+   */
+  function cmPaintWantedPick() {
+    var host = $('cmWantedPickHost');
+    if (!host || !cmWanDetail) return;
+    var kind = cmWanDetail.pickKind;
+    if (!kind) { host.innerHTML = ''; return; }
+    var list = (kind === 'sample' ? samples : archives) || [];
+    var S = GMCommunity.shared() || {};
+    var max = S.WANTED_EVIDENCE_MAX || 20;
+    if (!list.length) {
+      host.innerHTML = '<div class="cm-empty">' + esc(T('community|本地没有可附加的内容。')) + '</div>';
+      return;
+    }
+    host.innerHTML = list.slice(0, max).map(function (r) {
+      return '<div class="cm-pick" data-wpick="' + esc(r.id) + '" data-wpkind="' + esc(kind) + '">' +
+        esc(String(r.name || '—')) +
+        '<span class="cm-meta">' + esc(String(r.createdAt || '').slice(0, 10)) + '</span></div>';
+    }).join('');
+  }
+
+  /** §2.1.7's write: a comment or a label. Both go to `wanted-add-evidence`, which is the only door
+   *  — the table has no client INSERT policy (026 §2.1.8's own decision). */
+  function cmWantedAddEvidence(kind, payload) {
+    if (!cmWanDetail) return Promise.resolve();
+    cmWanDetail.evMsg = null;
+    cmPaintWantedDetail();
+    return GMCommunity.wanted.addEvidence({
+      wanted_id: cmWanDetail.id, kind: kind, payload: payload,
+    }).then(function (r) {
+      if (!cmWanDetail) return;
+      if (!r || !r.ok) {
+        cmWanDetail.evMsg = { code: 'submitFailed', err: (r && r.error) || 'INTERNAL', tone: 'err' };
+        cmPaintWantedDetail();
+        return;
+      }
+      cmWanDetail.evMsg = { code: 'wantedEvAdded', tone: 'ok' };
+      // The list is RE-READ rather than appended: `wanted-add-evidence` answers with the row it wrote,
+      // but the wall's own 证据 line and the follower notification are the server's business, and one
+      // row built from two shapes is how the two start disagreeing (the argument `cmFeedbackGo` makes).
+      cmWanDetail.pickKind = '';
+      if ($('cmWantedComment')) $('cmWantedComment').value = '';
+      return GMCommunity.wanted.evidence(cmWanDetail.id).then(function (ev) {
+        if (!cmWanDetail) return;
+        if (ev && ev.ok) cmWanDetail.evidence = ev.rows || [];
+        cmPaintWantedDetail();
+      });
+    });
+  }
+
+  // ---- §2.1.3's 提交表单 -------------------------------------------------------------------------
+
+  /**
+   * §2.1.5 step 2's list: 「自己提交过且已通过的嫌疑人」.
+   *
+   * ⚠ `approvedOnly` IS THE SERVER'S FILTER (`&status=eq.approved`), not a sieve over the wall here.
+   * A pending entry may be offered to nobody — a card pointing at one 404s for every reader, because
+   * 026's read predicate hands it to its submitter and to an admin and to no one else.
+   */
+  function cmLoadWantedMine() {
+    if (cmWanMineBusy) return Promise.resolve();
+    cmWanMineBusy = true;
+    return GMCommunity.wanted.mine(true).then(function (r) {
+      cmWanMineBusy = false;
+      cmWanMine = (r && r.ok && r.rows) || [];
+      cmPaintSharePick();
+    });
+  }
+
+  function cmWantedFormOpen() {
+    var S = GMCommunity.shared() || {};
+    cmWanForm = { arc: [], sample: [], msg: null, busy: false, pickKind: '' };
+    ['cmWantedUrl', 'cmWantedName', 'cmWantedDisplay', 'cmWantedReason'].forEach(function (id) {
+      if ($(id)) $(id).value = '';
+    });
+    var ev = $('cmWantedEvList');
+    if (ev) ev.innerHTML = '';
+    if ($('cmWantedReason')) $('cmWantedReason').maxLength = S.WANTED_REASON_MAX || 1000;
+    if ($('cmWantedDisplay')) $('cmWantedDisplay').maxLength = S.WANTED_DISPLAY_MAX || 40;
+    cmPaintWantedForm();
+    if ($('cmWantedMask')) $('cmWantedMask').classList.remove('hidden');
+  }
+
+  function cmWantedFormClose() {
+    if ($('cmWantedMask')) $('cmWantedMask').classList.add('hidden');
+    cmWanForm = null;
+  }
+
+  /**
+   * §2.1.4's two readers, run on the URL box as it is typed.
+   *
+   * ⚠ BOTH ARE THE SHARED BLOCK'S (`extractUsernameFromProfileUrl` / `wantedUrlMatches`), and the
+   * server runs the same two — so the sentence printed here and the 400 that comes back are one
+   * answer. The auto-fill is a CONVENIENCE, not the check: a hand-typed name still has to match, and
+   * the verdict line says which of the two halves is wrong.
+   */
+  function cmWantedUrlChanged() {
+    var S = GMCommunity.shared() || {};
+    var urlEl = $('cmWantedUrl');
+    var nameEl = $('cmWantedName');
+    if (!urlEl || !nameEl) return;
+    var url = String(urlEl.value || '').trim();
+    var extracted = S.extractUsernameFromProfileUrl ? S.extractUsernameFromProfileUrl(url) : null;
+    // Auto-fill only while the name box is EMPTY or still holds the previous extraction: overwriting
+    // something the operator typed would make the consistency check untestable by hand.
+    if (extracted && (nameEl.value === '' || cmWanForm.autoName === nameEl.value)) {
+      nameEl.value = '@' + extracted;
+      cmWanForm.autoName = nameEl.value;
+    }
+    cmPaintWantedForm();
+  }
+
+  function cmPaintWantedForm() {
+    var S = GMCommunity.shared() || {};
+    var f = cmWanForm;
+    if (!f) return;
+    var url = String(($('cmWantedUrl') || {}).value || '').trim();
+    var name = String(($('cmWantedName') || {}).value || '').trim();
+    var st = $('cmWantedUrlState');
+    if (st) {
+      var valid = S.isValidProfileUrl ? S.isValidProfileUrl(url) : false;
+      var match = S.wantedUrlMatches ? S.wantedUrlMatches(url, name) : false;
+      if (url === '') st.textContent = '';
+      else if (!valid) st.textContent = T('community|链接必须是 gomoku.com 的主页链接（含语言段与 /profile/）。');
+      else if (match) st.textContent = T('community|与链接一致。');
+      else if (name === '') st.textContent = T('community|请填写用户名（可与链接中的一致）。');
+      else {
+        st.textContent = T('community|用户名与链接不一致：链接中是 {name}。', {
+          name: S.extractUsernameFromProfileUrl ? S.extractUsernameFromProfileUrl(url) : '',
+        });
+      }
+      st.style.color = (url !== '' && (!valid || !match)) ? 'var(--red)'
+        : (match ? 'var(--green)' : '');
+    }
+    var cnt = $('cmWantedEvCount');
+    if (cnt) {
+      cnt.textContent = T('community|已选：{a} 个存档 · {b} 个样本', {
+        a: f.arc.length, b: f.sample.length,
+      });
+    }
+    // ⚠ THIS FUNCTION DOES NOT TOUCH `#cmWantedEvList`. The list is the BROWSABLE one
+    // (`cmWantedFormPick`) and a selected row is marked `on` inside it, exactly as `cmPaintSharePick`
+    // marks its own — so re-rendering it from here would either fight that paint or replace a list of
+    // twenty with a list of two, making the second pick impossible.
+    if ($('cmWantedGo')) $('cmWantedGo').disabled = !!f.busy;
+    cmSetMsg($('cmWantedFormState'), f.msg);
+  }
+
+  /** The pick list for the FORM: 选择本地存档 / 选择本地样本. Multi-select, because §2.1.3's control
+   *  is a pair of buttons that fill a list — unlike the detail modal's one-click label. */
+  function cmWantedFormPick(kind) {
+    var f = cmWanForm;
+    if (!f) return;
+    f.pickKind = kind;
+    var host = $('cmWantedEvList');
+    if (!host) return;
+    var list = (kind === 'sample' ? samples : archives) || [];
+    var chosen = kind === 'sample' ? f.sample : f.arc;
+    var S = GMCommunity.shared() || {};
+    var max = S.WANTED_EVIDENCE_MAX || 20;
+    if (!list.length) {
+      host.innerHTML = '<div class="cm-empty">' + esc(T('community|本地没有可附加的内容。')) + '</div>';
+      return;
+    }
+    host.innerHTML = list.slice(0, max).map(function (r) {
+      var on = chosen.indexOf(String(r.id)) >= 0;
+      return '<div class="cm-pick' + (on ? ' on' : '') + '" data-wpick="' + esc(r.id) +
+        '" data-wpkind="' + esc(kind) + '">' + esc(String(r.name || '—')) +
+        '<span class="cm-meta">' + esc(String(r.createdAt || '').slice(0, 10)) + '</span></div>';
+    }).join('');
+  }
+
+  function cmWantedFormPickItem(id, kind) {
+    var f = cmWanForm;
+    if (!f || !id) return;
+    var arr = kind === 'sample' ? f.sample : f.arc;
+    var k = arr.indexOf(String(id));
+    if (k >= 0) arr.splice(k, 1);
+    else arr.push(String(id));
+    cmWantedFormPick(kind);
+    cmPaintWantedForm();
+  }
+
+  function cmWantedFormGo() {
+    var S = GMCommunity.shared() || {};
+    var f = cmWanForm;
+    if (!f || f.busy) return;
+    var url = String(($('cmWantedUrl') || {}).value || '').trim();
+    var name = String(($('cmWantedName') || {}).value || '').trim();
+    var reason = String(($('cmWantedReason') || {}).value || '').trim();
+    var display = String(($('cmWantedDisplay') || {}).value || '').trim();
+    // ⚠ THE TWO GATES ARE §2.1.3's 必填 MARKERS, and they are asked in the order the form draws them.
+    // The consistency check itself is NOT repeated as a third gate: it is the same `wantedUrlMatches`
+    // the verdict line above already ran, and a second copy here is the shape that drifts.
+    if (!(S.isValidProfileUrl && S.isValidProfileUrl(url))) {
+      f.msg = { code: 'wantedNeedUrl', tone: 'err' };
+      cmPaintWantedForm();
+      return;
+    }
+    if (!(S.wantedUrlMatches && S.wantedUrlMatches(url, name))) {
+      f.msg = { code: 'wantedMismatch', tone: 'err' };
+      cmPaintWantedForm();
+      return;
+    }
+    // §2.1.9's third constraint, in the reading `wanted-submit` states: the two fields are optional
+    // INDIVIDUALLY (§2.1.3 writes 「（可选）」 on one of them) and the PAIR may not both be empty.
+    if (reason === '' && !f.arc.length && !f.sample.length) {
+      f.msg = { code: 'wantedNeedReason', tone: 'err' };
+      cmPaintWantedForm();
+      return;
+    }
+    var hit = S.censorHit ? (S.censorHit(reason) || S.censorHit(display)) : null;
+    if (hit) {
+      f.msg = { code: 'censorForm', word: hit, tone: 'err' };
+      cmPaintWantedForm();
+      return;
+    }
+    var evidence = {};
+    if (f.arc.length) evidence.archive_ids = f.arc.slice();
+    if (f.sample.length) evidence.sample_ids = f.sample.slice();
+    f.busy = true;
+    f.msg = null;
+    cmPaintWantedForm();
+    GMCommunity.wanted.submit({
+      suspect_profile_url: url,
+      suspect_username: name,
+      suspect_display_name: display,
+      reason: reason,
+      evidence: Object.keys(evidence).length ? evidence : null,
+    }).then(function (r) {
+      if (!cmWanForm) return;
+      cmWanForm.busy = false;
+      if (!r || !r.ok) {
+        cmWanForm.msg = { code: 'submitFailed', err: (r && r.error) || 'INTERNAL', tone: 'err' };
+        cmPaintWantedForm();
+        return;
+      }
+      // ⚠ §2.1.6's 去重 is the SERVER's and its verdict comes back as one flag — 「重复提交合并到已有
+      // 条目」 — so the sentence differs: 「已合并到已有条目」 is not 「已提交」, and the operator who
+      // filed the same person twice should be told which one happened.
+      cmWanForm.msg = { code: r.merged ? 'wantedMerged' : 'wantedSubmitted', tone: 'ok' };
+      cmPaintWantedForm();
+      cmLoadWanted();
+      window.setTimeout(cmWantedFormClose, 900);
+    });
+  }
+
   function cmPaintAll() {
     buildFeedbackCats();
     cmPaintHint();
@@ -4835,6 +5426,13 @@
     cmPaintUser();
     cmPaintShare();
     cmPaintReport();
+    // 1.0.7 §2.1 — the wall, last like the surfaces above it: 「缉捕墙」 is the sixth tab. This paints
+    // from `cmWan` only (no read), so a language switch redraws the chips and the cards in the new
+    // language without a request — which is the whole reason `cmLoadWanted` and `cmPaintWanted` are
+    // two functions.
+    cmPaintWanted();
+    cmPaintWantedDetail();
+    cmPaintWantedForm();
     cmPaintBadges();
     cmPaintVotes();
   }
@@ -5176,6 +5774,49 @@
     };
     if ($('cmReportSend')) $('cmReportSend').onclick = cmReportGo;
     if ($('cmReportCancel')) $('cmReportCancel').onclick = cmReportClose;
+    // ---- 1.0.7 §2.1 缉捕墙：每一颗按钮都在这里接线 ------------------------------------------------
+    // ⚠ THE PANE'S CONTROLS WOULD WORK THROUGH `root.onclick` (they are inside `#view-community`), but
+    // they are wired here anyway — `#cmWantedSubmit` / `#cmWantedReload` are in the markup and never
+    // rebuilt, which is the case `#cmChatMore`'s note calls a plain handler. The MODALS' controls are
+    // NOT optional: they are outside the view, so this is the only place they can be reached.
+    if ($('cmWantedReload')) $('cmWantedReload').onclick = cmLoadWanted;
+    if ($('cmWantedSubmit')) $('cmWantedSubmit').onclick = cmWantedFormOpen;
+    if ($('cmWantedCancel')) $('cmWantedCancel').onclick = cmWantedFormClose;
+    if ($('cmWantedGo')) $('cmWantedGo').onclick = cmWantedFormGo;
+    // §2.1.4's two readers run as the box is TYPED, not on 提交: the operator sees 「与链接一致」
+    // appear, and the auto-fill happens before they reach for the name field.
+    if ($('cmWantedUrl')) $('cmWantedUrl').oninput = cmWantedUrlChanged;
+    if ($('cmWantedName')) $('cmWantedName').oninput = cmPaintWantedForm;
+    if ($('cmWantedPickArc')) $('cmWantedPickArc').onclick = function () { cmWantedFormPick('archive'); };
+    if ($('cmWantedPickSample')) $('cmWantedPickSample').onclick = function () { cmWantedFormPick('sample'); };
+    if ($('cmWantedFollow')) $('cmWantedFollow').onclick = function () {
+      if (cmWanDetail) cmWantedFollow(cmWanDetail.id);
+    };
+    if ($('cmWantedEvArc')) $('cmWantedEvArc').onclick = function () {
+      if (cmWanDetail) { cmWanDetail.pickKind = 'archive'; cmPaintWantedDetail(); }
+    };
+    if ($('cmWantedEvSample')) $('cmWantedEvSample').onclick = function () {
+      if (cmWanDetail) { cmWanDetail.pickKind = 'sample'; cmPaintWantedDetail(); }
+    };
+    if ($('cmWantedEvSend')) $('cmWantedEvSend').onclick = function () {
+      var text = String(($('cmWantedComment') || {}).value || '').trim();
+      var S2 = GMCommunity.shared() || {};
+      if (text === '') {
+        if (cmWanDetail) { cmWanDetail.evMsg = { code: 'wantedNeedReason', tone: 'err' }; cmPaintWantedDetail(); }
+        return;
+      }
+      if (text.length > (S2.WANTED_COMMENT_MAX || 500)) {
+        if (cmWanDetail) { cmWanDetail.evMsg = { code: 'tooLong', n: S2.WANTED_COMMENT_MAX || 500, tone: 'err' }; cmPaintWantedDetail(); }
+        return;
+      }
+      var hit = S2.censorHit ? S2.censorHit(text) : null;
+      if (hit) {
+        if (cmWanDetail) { cmWanDetail.evMsg = { code: 'censorForm', word: hit, tone: 'err' }; cmPaintWantedDetail(); }
+        return;
+      }
+      cmWantedAddEvidence('comment', { text: text });
+    };
+    if ($('cmWantedClose')) $('cmWantedClose').onclick = cmWantedDetailClose;
     // The two masks close on a click on the BACKDROP but not inside the sheet — the same rule
     // `showCtx` applies, expressed with `target === currentTarget`.
     //
@@ -5191,14 +5832,23 @@
     // won and the dispatcher was never installed. A pair of assignments to one slot looks like
     // composition and behaves like an overwrite — so the two jobs live in one function, and the
     // backdrop test comes first because it is the narrower case.
-    ['cmShareMask', 'cmReportMask'].forEach(function (id) {
+    // ⚠ 1.0.7 §2.1 — THE FOURTH AND FIFTH SLOT ARE THE SAME TRAP A THIRD TIME. §2.1.3's 提交表单
+    // (`#cmWantedMask`) and 查看详情 (`#cmWantedDetail`) are siblings of `#view-community` too, so
+    // `root.onclick` never sees a click inside them: their chips, their card buttons and their two
+    // pick lists are drawn by JS on every open and every repaint, and none of them has an `onclick`
+    // of its own. `data-wstatus` / `data-cwa` / `data-wpick` are dispatched from `cmRootClick` for
+    // exactly that reason.
+    var cmMaskClosers = {
+      cmShareMask: cmShareClose,
+      cmReportMask: cmReportClose,
+      cmWantedMask: cmWantedFormClose,
+      cmWantedDetail: cmWantedDetailClose,
+    };
+    ['cmShareMask', 'cmReportMask', 'cmWantedMask', 'cmWantedDetail'].forEach(function (id) {
       var el = $(id);
       if (!el) return;
       el.onclick = function (e) {
-        if (e.target === e.currentTarget) {
-          if (id === 'cmShareMask') cmShareClose(); else cmReportClose();
-          return;
-        }
+        if (e.target === e.currentTarget) { cmMaskClosers[id](); return; }
         cmRootClick(e);
       };
     });
@@ -5285,12 +5935,66 @@
 
     var sk = t.closest('[data-sk]');
     if (sk) {
-      if (cmShare) { cmShare.kind = sk.getAttribute('data-sk'); cmShare.pick = null; cmPaintShare(); }
+      if (cmShare) {
+        var nk = sk.getAttribute('data-sk');
+        // ⚠ 1.0.7 §2.1.5 — the 嫌疑人 list is RE-ASKED ON EVERY SELECTION of that chip. What it offers
+        // is the server's answer (`mine(true)`), and an approval can land between two openings of this
+        // picker; a once-per-session cache would show a stale list to the one operator who had just
+        // submitted the entry they were looking for.
+        if (nk === (GMCommunity.shared() || {}).WANTED_ATTACHMENT_KIND) cmWanMine = null;
+        cmShare.kind = nk;
+        cmShare.pick = null;
+        cmPaintShare();
+      }
       return;
     }
 
     var sp = t.closest('[data-sp]');
     if (sp) { cmSharePickItem(sp.getAttribute('data-sp')); return; }
+
+    // ---- 1.0.7 §2.1 缉捕墙的三条委托 -------------------------------------------------------------
+    // ⚠ CHECKED IN THIS ORDER, AND THE CHIP BEFORE THE CARD BUTTON IS NOT ARBITRARY: the two live in
+    // different containers today, but a future card that carried a chip would make the general one win
+    // — the 「later, more general rule swallows the specific one」 shape this router's header warns
+    // about. The chip is the narrower claim, so it is asked first.
+    var wc = t.closest('[data-wstatus]');
+    if (wc) {
+      cmWan.status = wc.getAttribute('data-wstatus') || '';
+      cmPaintWanted();
+      cmLoadWanted();
+      return;
+    }
+
+    var wa = t.closest('[data-cwa]');
+    if (wa) {
+      var wid = wa.getAttribute('data-cw') || '';
+      var verb = wa.getAttribute('data-cwa');
+      if (!wid) return;
+      // 「补充证据」 opens the SAME modal as 「查看详情」 with the label picker already up — §2.1.3 puts
+      // both verbs on the card and they lead to the same person, so a second screen would be a second
+      // place for §2.1.9's 「公开的信息只有」 list to be got wrong.
+      if (verb === 'follow') cmWantedFollow(wid);
+      else cmWantedOpen(wid, verb === 'evidence' ? 'archive' : '');
+      return;
+    }
+
+    // §2.1.7's evidence rows. `data-wpick` and NOT `data-sp`: the share picker's handler is guarded by
+    // `if (cmShare)`, so a shared attribute would be an inert row in whichever picker was not open —
+    // the 「一个属性两个容器」 trap, avoided by giving the two lists two names.
+    var wp = t.closest('[data-wpick]');
+    if (wp) {
+      var pk = wp.getAttribute('data-wpkind') || 'archive';
+      var pid = wp.getAttribute('data-wpick');
+      if ($('cmWantedMask') && !$('cmWantedMask').classList.contains('hidden')) {
+        cmWantedFormPickItem(pid, pk);
+      } else {
+        var item = ((pk === 'sample' ? samples : archives) || []).filter(function (r) {
+          return String(r.id) === String(pid);
+        })[0];
+        if (item) cmWantedAddEvidence(pk, { name: String(item.name || '—') });
+      }
+      return;
+    }
 
     var ua = t.closest('[data-ua]');
     if (ua) { cmUserAction(ua.getAttribute('data-ua')); return; }
@@ -6665,12 +7369,20 @@
   }
 
   /**
-   * Write one or more watermarks and repaint from the server's answer.
+   * Write one or more watermarks and repaint from the WRITE ITSELF.
    *
-   * ⚠ THE REPAINT READS THE ROW POSTGREST RETURNED, not the map that was just sent. `patchUser`
-   * merges that row into the session, so the counts below are computed from what the DATABASE now
-   * holds — and a write that did not happen (RLS, a missing column grant, an offline minute) leaves
-   * the dot exactly where it was instead of clearing a badge nothing was recorded for.
+   * ⚠ 1.0.6 六号 — THIS USED TO REPAINT FROM THE ROW POSTGREST RETURNED, AND THERE WAS NO SUCH ROW.
+   * `Prefer: return=representation` on `users` asks for `RETURNING "public"."users".*`, which
+   * `authenticated` cannot execute (011 §3 grants SELECT by COLUMN and withholds `email` among
+   * others) ⇒ every mark was a 403 and this function's `.catch` swallowed it. That is why the 消息
+   * dot never went away: nothing was ever written. `GMCommunity.messages.markRead` now answers with
+   * the column→value map the response PROVED was stored (see `selfPatch`'s header for the two
+   * measured shapes), and that map is what the session takes.
+   *
+   * ⚠ AND A FAILED MARK IS NO LONGER SILENT. §2.1.1's whole complaint was a dot that stayed up, and
+   * the two reasons it can stay up — 「服务端拒绝了」 and 「我还没看」 — used to look identical on
+   * screen. The pane already has the line for it (`#cmMsgsState`, painted from `cmMsgsMsg`), and
+   * `cmNoticeAct` sets it the same way for the per-row 「标记已读」.
    */
   async function cmMarkMsgRead(cats) {
     var map = null;
@@ -6682,7 +7394,12 @@
     }
     if (!map) return null;
     var res = await GMCommunity.messages.markRead(map);
-    if (res && res.ok && res.user) await GMAuth.patchUser(res.user);
+    if (!res || !res.ok) {
+      cmMsgsMsg = { code: 'loadFailed', err: (res && res.error) || 'INTERNAL', tone: 'err' };
+      cmPaintMsgsMsg();
+      return res;
+    }
+    if (res.fields) await GMAuth.patchUser(res.fields);
     cmPaintMsgTabs();
     cmPaintBadges();
     return res;
@@ -7216,6 +7933,11 @@
   }
 
   function cmShareFilled(kind) {
+    // ⚠ 1.0.7 §2.1.5 — A 嫌疑人 IS NEVER 「额度用完了」. §2.1.5's 「发送嫌疑人」 shares a LABEL, and the
+    // daily quota `cmQuota` counts is §1.2.3's files (`daily_quotas`). Answering this question with the
+    // archive column for a 嫌疑人 would refuse the picker's fourth chip on a day when twenty replays
+    // had already gone out — a refusal about a file that is not being sent.
+    if (kind === (GMCommunity.shared() || {}).WANTED_ATTACHMENT_KIND) return true;
     return !!cmQuota && (kind === 'config' ? cmQuota.config < cmQuota.maxConfig
                                            : cmQuota.archive < cmQuota.maxArchive);
   }
@@ -7223,7 +7945,13 @@
   function cmPaintShare() {
     if (!cmShare) return;
     var S = GMCommunity.shared() || {};
-    var kinds = S.SHARE_KINDS || ['archive', 'sample', 'config'];
+    var kinds = (S.SHARE_KINDS || ['archive', 'sample', 'config']).slice();
+    // 1.0.7 §2.1.5 — 「「文件」菜单扩展：发送回放 / 发送样本 / 发送嫌疑人」. The fourth chip is appended
+    // and is NOT part of `SHARE_KINDS`: the other three are FILES (a `cloud_shares` row, a payload, an
+    // `expires_at`, a poll), and a 嫌疑人 is a label pointing at a row that already exists. See
+    // `WANTED_ATTACHMENT_KIND` in the shared block for the long form — 「adding it to SHARE_KINDS would
+    // silently hand it a daily quota, an expires_at and a poll checkbox」.
+    if (S.WANTED_ATTACHMENT_KIND) kinds.push(S.WANTED_ATTACHMENT_KIND);
 
     var who = $('cmShareWho');
     if (who) {
@@ -7272,14 +8000,19 @@
       vm.checked = !!cmShare.vote;
     }
     if (vh) {
-      // ⚠ TWO REASONS, TWO SENTENCES. 1.0.2 gave the disabled box one line — 「投票只对聊天室分享
+      // ⚠ THREE REASONS, THREE SENTENCES. 1.0.2 gave the disabled box one line — 「投票只对聊天室分享
       // 生效（好友分享是私密的）」 — and printed it for 配置 + 聊天室 as well, which names the WRONG
       // reason for a control the operator is standing in the room looking at. The generic fallback
       // naming a specific cause is the defect `cloudErrText` documents; here it is caught at source.
+      // ⚠ 1.0.7 §2.1.5 ADDS THE THIRD, and it had to be added rather than left to the `else`: a
+      // 嫌疑人 sent to the ROOM would otherwise have been told 「配置包不能发起投票」 — a true sentence
+      // about a different chip, which is exactly the failure this block's own comment names.
       if (votable) {
         vh.textContent = T('community|投票持续 24 小时，仅对聊天室分享生效。');
       } else if (cmShare.to !== 'room') {
         vh.textContent = T('community|投票只对聊天室分享生效（好友分享是私密的）。');
+      } else if (cmShare.kind === (S.WANTED_ATTACHMENT_KIND || 'wanted')) {
+        vh.textContent = T('community|嫌疑人卡片不能发起投票。');
       } else {
         vh.textContent = T('community|配置包不能发起投票。');
       }
@@ -7288,7 +8021,12 @@
     var hint = $('cmShareHint');
     if (hint) {
       if (!cmQuota) hint.textContent = '';
-      else if (cmShare.kind === 'config') {
+      // ⚠ 1.0.7 §2.1.5 — the 嫌疑人 chip HAS NO QUOTA, so the sentence says so rather than printing
+      // the archive budget: 「今日还可发送回放/样本 7 个」 beside a button that sends neither is the
+      // same 「a specific cause named by a generic fallback」 defect, one level down.
+      else if (cmShare.kind === (S.WANTED_ATTACHMENT_KIND || 'wanted')) {
+        hint.textContent = T('community|嫌疑人卡片只有一条，不占用今日的回放 / 样本额度。');
+      } else if (cmShare.kind === 'config') {
         hint.textContent = T('community|今日还可发送配置 {n} 个。',
           { n: Math.max(0, cmQuota.maxConfig - cmQuota.config) });
       } else {
@@ -7304,6 +8042,26 @@
   function cmPaintSharePick() {
     var box = $('cmSharePick');
     if (!box || !cmShare) return;
+    var S = GMCommunity.shared() || {};
+    if (cmShare.kind === (S.WANTED_ATTACHMENT_KIND || 'wanted')) {
+      // §2.1.5 step 2 — 「列出自己提交过且已通过的嫌疑人」. `mine(true)` is that filter, and it is the
+      // server's answer through 026's read predicate, not a client-side sieve over the wall.
+      if (cmWanMine === null) {
+        box.innerHTML = '<div class="cm-empty">' + esc(T('community|加载中…')) + '</div>';
+        cmLoadWantedMine();
+        return;
+      }
+      var wrows = cmWanMine.slice(0, CM_PICK_MAX);
+      box.innerHTML = wrows.length
+        ? wrows.map(function (r) {
+            var mine = cmShare.pick === String(r.id);
+            return '<div class="cm-pick' + (mine ? ' on' : '') + '" data-sp="' + esc(String(r.id)) + '">' +
+              esc(cmWantedLabel(r)) +
+              '<span class="cm-meta">' + esc(cmWanStatusLabel(String(r.status || ''))) + '</span></div>';
+          }).join('')
+        : '<div class="cm-empty">' + esc(T('community|你还没有已通过审核的提交。')) + '</div>';
+      return;
+    }
     if (cmShare.kind === 'config') {
       box.innerHTML = '<div class="cm-empty">' +
         esc(T('community|配置包包含设置、自定义问题、自定义引擎、学习参数与列折叠偏好（不含 API Key 与背景图片）。')) +
@@ -7334,6 +8092,24 @@
    *  importCustomData」 — so the payload is exactly the bundle those importers already read. */
   function cmSharePayload() {
     if (!cmShare) return Promise.resolve(null);
+    var S = GMCommunity.shared() || {};
+    if (cmShare.kind === (S.WANTED_ATTACHMENT_KIND || 'wanted')) {
+      // ⚠ 1.0.7 §2.1.5 — A 嫌疑人 HAS NO PAYLOAD, AND THE ATTACHMENT IS PRE-BUILT HERE.
+      // `chat-send`'s attachment vocabulary is `SHARE_KINDS` (files), and this fourth kind travels
+      // past that check on its own branch; the wire object is `{kind, wanted_id}` and nothing else,
+      // because `chat-send` reads the NAME and the STATUS out of the `wanted_players` row itself —
+      // trusting the client for either would let a card claim any display name it liked.
+      var row = (cmWanMine || []).filter(function (r) {
+        return String(r.id) === cmShare.pick;
+      })[0];
+      if (!row) return Promise.resolve(null);
+      return Promise.resolve({
+        kind: cmShare.kind,
+        name: cmWantedLabel(row),
+        payload: null,
+        attachment: { kind: cmShare.kind, wanted_id: String(row.id) },
+      });
+    }
     if (cmShare.kind === 'config') {
       return Promise.resolve().then(function () {
         return G.exportCustomData(CM_CONFIG_CATS);
@@ -7357,6 +8133,19 @@
     var kind = cmShare.kind;
     if (!cmShareFilled(kind)) {
       cmShareMsg = { code: 'quota', tone: 'err' };
+      cmPaintShare();
+      return;
+    }
+    // ⚠ 1.0.7 §2.1.5 — A 嫌疑人 CARD IS A ROOM MESSAGE AND ONLY A ROOM MESSAGE. §2.1.5's flow is
+    // 「生成一条 wanted-share 类型的消息，显示为缉捕墙卡片」, and the card's 「查看详情」 opens a modal
+    // that reads the entry through 026's read predicate — which a friend's private inbox has no route
+    // to. Checked HERE rather than by hiding the 发送给 select, because a client-side refusal that
+    // says why is worth more than a control that silently stops offering an option. (`friend-share`
+    // would refuse the kind anyway: its vocabulary is `SHARE_KINDS` — this is the SENTENCE, not the
+    // check.)
+    var built0 = GMCommunity.shared() || {};
+    if (kind === (built0.WANTED_ATTACHMENT_KIND || 'wanted') && to !== 'room') {
+      cmShareMsg = { code: 'wantedRoomOnly', tone: 'err' };
       cmPaintShare();
       return;
     }
@@ -7391,8 +8180,12 @@
       if (to === 'room') {
         // §1.1.2 — the room path is a MESSAGE with an attachment, not a `friend_shares` row. The
         // upload and the message happen in one call; see chat-send/index.ts.
+        // ⚠ 1.0.7 §2.1.5 — `built.attachment` WINS WHEN IT EXISTS. A 嫌疑人 carries no payload and no
+        // `cloud_id`; building `{kind, name, payload}` for it would send a null payload that
+        // `chat-send` refuses. One `||` covers all four kinds without a second send path.
         return GMCommunity.chat.send('', {
-          attachment: { kind: built.kind, name: built.name, payload: built.payload },
+          attachment: built.attachment ||
+            { kind: built.kind, name: built.name, payload: built.payload },
         }).then(function (r) {
           if (!r || !r.ok || !r.row) return r;
           // The room's row exists, so it spent one of the twenty — the same stamp `cmSend` lays down.
@@ -8640,10 +9433,13 @@
         adState('acCmState', cloudErrText((res && res.error) || 'INTERNAL'), true);
         return;
       }
-      // ⚠ The session's copy is updated from the ROW THE SERVER RETURNED, not from the controls.
-      // `myManualStatus()` reads the projection and the presence channel announces it, so a local
-      // edit that the policy silently dropped would be announced as if it had been stored.
-      if (res.user) await GMAuth.patchUser(res.user);
+      // ⚠ The session's copy is updated from WHAT THE SERVER PROVED IT STORED — `settings.patch`
+      // answers with the column→value map its own `select=id` response vouched for (see
+      // `selfPatch` in community.js), NOT with the raw row it used to hand back: that row could not
+      // be fetched at all, so this panel had never once saved anything. `myManualStatus()` reads the
+      // projection and the presence channel announces it, so a local edit that the policy silently
+      // dropped must not be announced as if it had been stored.
+      if (res.fields) await GMAuth.patchUser(res.fields);
       adState('acCmState', T('viewer|已保存'), false);
       // Both visible consequences: the presence dot's own status, and the flag on other people's
       // screens (which reads `hide_country` off the public projection).
@@ -8962,6 +9758,14 @@
     adSay('adRepReload', T('viewer|刷新'));
     adSay('adFbTitle', T('viewer|反馈回复'));
     adSay('adFbReload', T('viewer|刷新'));
+    // ---- 1.0.7 §2.1.6 缉捕墙审核 -----------------------------------------------------------------
+    // ⚠ THE `<h2>` IS FILLED HERE AND MUST BE: `sectionNav` builds the nav row from this panel's
+    // heading, and the markup ships it as `—` so the static i18n pass does not invent a key for a
+    // title that is already keyed below. A panel whose `<h2>` stayed `—` would contribute no row.
+    adSay('adWanTitle', T('viewer|缉捕墙审核'));
+    adSay('adWanStatusLab', T('viewer|状态'));
+    adSay('adWanNoteLab', T('viewer|审核备注'));
+    adSay('adWanReload', T('viewer|刷新'));
     adSay('adNewsTitle', T('viewer|发布公告'));
     adSay('adNewsCatLab', T('viewer|分类'));
     adSay('adNewsLangLab', T('viewer|语言'));
@@ -9035,8 +9839,24 @@
       }).join('');
       sel.value = keep;
     }
-    var cat = $('adNewsCat');
-    if (cat) {
+    // ---- 1.0.7 §2.1.6 — the wall's review queue filter ---------------------------------------------
+    // ⚠ `WANTED_STATUSES` WHOLE, INCLUDING `'rejected'` — unlike the wall's own chips, which are
+    // `WANTED_WALL_STATUSES` plus 全部. A moderator deciding the queue is the one reader who needs to
+    // see what they turned down; a member's wall has no such chip, because a rejected entry is not on
+    // the wall. The two lists differ on purpose and the constants say why.
+    var wan = $('adWanStatus');
+    if (wan) {
+      var keepW = wan.value || ADWAN.status || '';
+      var wopts = [{ v: '', t: T('viewer|全部') }];
+      (S.WANTED_STATUSES || []).forEach(function (s) { wopts.push({ v: s, t: cmWanStatusLabel(s) }); });
+      wan.innerHTML = wopts.map(function (o) {
+        return '<option value="' + esc(o.v) + '">' + esc(o.t) + '</option>';
+      }).join('');
+      wan.value = keepW;
+      if (wan.value !== keepW) wan.value = '';
+      ADWAN.status = wan.value;
+    }
+    var cat = $('adNewsCat');    if (cat) {
       var keepC = cat.value || '';
       cat.innerHTML = (S.NEWS_CATEGORIES || []).map(function (c) {
         return '<option value="' + esc(c) + '">' + esc(cmNewsCatLabel(c)) + '</option>';
@@ -9080,6 +9900,12 @@
       adminLoadReports();
     };
     if ($('adFbReload') && !$('adFbReload').onclick) $('adFbReload').onclick = adminLoadFeedback;
+    // ---- 1.0.7 §2.1.6 ------------------------------------------------------------------------
+    if ($('adWanReload') && !$('adWanReload').onclick) $('adWanReload').onclick = adminLoadWanted;
+    if ($('adWanStatus') && !$('adWanStatus').onchange) $('adWanStatus').onchange = function () {
+      ADWAN.status = ($('adWanStatus') || {}).value || '';
+      adminLoadWanted();
+    };
     if ($('adNewsGo') && !$('adNewsGo').onclick) $('adNewsGo').onclick = adminPublishNews;
     if ($('adNewsReload') && !$('adNewsReload').onclick) $('adNewsReload').onclick = adminLoadNews;
     if ($('adGlobalSave') && !$('adGlobalSave').onclick) $('adGlobalSave').onclick = adminSaveGlobal;
@@ -9211,6 +10037,11 @@
     if (!ADC.loaded) adminLoadUsers(1);
     adminLoadReports();
     adminLoadFeedback();
+    // 1.0.7 §2.1.6 step 4 — this IS 「管理员信箱新增『缉捕墙审核』分区」: the section exists, and
+    // entering the console puts the pending queue in it. §2.1.6's step 4 asks for the section and not
+    // for a per-admin notification row; `wanted-submit`'s header states why a fan-out would be the
+    // second, worse answer.
+    adminLoadWanted();
     adminLoadNews();
     // The switches are cached because they are two booleans that change rarely, and re-reading them
     // on every entry would overwrite a checkbox the operator had just flipped but not saved.
@@ -9291,6 +10122,78 @@
     return typeof iso === 'string' && iso.length >= 16
       ? iso.slice(0, 16).replace('T', ' ')
       : '';
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  // 1.0.7 §2.1.6 — 缉捕墙审核
+  // ---------------------------------------------------------------------------------------------
+  //
+  // ⚠ THIS PANEL READS `wanted_admin`, NOT `wanted_players`. 026 grants `authenticated` a COLUMN list
+  // on the table (§2.1.9's public fields), and `admin_note` / `approved_by` are deliberately OUTSIDE
+  // it — a moderator's private reasoning is not a public field. The console therefore reads a VIEW
+  // whose body carries `where public.is_admin()` and which runs with the owner's privileges
+  // (`security_invoker = false`), and that view joins `approved_by` back to a name in the same read.
+  // Reading the table directly would answer 401 on `select=*` (the 1.0.6 六号 shape, on a read) and
+  // would leave the moderator unable to see the note they themselves wrote.
+  //
+  // ⚠ `ADR_WAN.status` DEFAULTS TO `'pending'`, not to `''`. §2.1.6 makes pending the queue a
+  // moderator has work in; an admin who opened this panel on 「全部」 would be reading the public
+  // wall, which §2.1.3 already gives them one tab away.
+  var ADWAN = { status: 'pending', rows: [], loaded: false };
+
+  function adminLoadWanted() {
+    adState('adWanState', T('viewer|正在加载…'), false);
+    return GMAdmin.listWanted({ status: ADWAN.status, limit: 50 }).then(function (r) {
+      if (!r || !r.ok) {
+        adState('adWanState', cloudErrText((r && r.error) || 'INTERNAL'), true);
+        return;
+      }
+      ADWAN.rows = r.rows || [];
+      ADWAN.loaded = true;
+      adminPaintWanted();
+      adState('adWanState', '', false);
+    });
+  }
+
+  function adminPaintWanted() {
+    var host = $('adWanRows');
+    if (!host) return;
+    adSay('adWanCount', String(ADWAN.rows.length));
+    if (!ADWAN.rows.length) {
+      host.innerHTML = '<div class="hint">' + esc(T('viewer|暂无待审条目')) + '</div>';
+      return;
+    }
+    host.innerHTML = ADWAN.rows.map(function (r) {
+      // §2.1.6's three verdicts, from the shared block's `WANTED_ACTIONS` — the same list
+      // `wanted-approve` validates against, so the buttons and the server are one vocabulary.
+      var acts = ((GMCommunity.shared() || {}).WANTED_ACTIONS || ['approve', 'reject', 'resolve'])
+        .map(function (a) {
+          return '<button class="sec" data-ad-wan="' + esc(r.id) + '" data-ad-wanact="' + esc(a) + '">' +
+            esc(cmNamed('cm.wact.', a)) + '</button>';
+        }).join('');
+      // A handled entry shows WHICH verdict it took and, when there is one, the note — so a moderated
+      // row is not indistinguishable from one nobody has opened. (The note is the moderator's own
+      // words, which is why this panel is the only screen that prints it.)
+      var done = r.approved_at
+        ? '<div class="hint">' + esc(adWhen(r.approved_at)) +
+          (r.approved_by_name ? ' · ' + esc(r.approved_by_name) : '') +
+          (r.admin_note ? ' · ' + esc(r.admin_note) : '') + '</div>'
+        : '';
+      return '<div class="rowline" style="margin-top:10px">' +
+          '<span class="em">' + esc(cmWantedLabel(r)) + '</span>' +
+          '<span class="hint">' + esc(cmWanStatusLabel(String(r.status || ''))) + '</span>' +
+          '<span class="hint">' + esc(adWhen(r.created_at)) + '</span>' +
+        '</div>' +
+        '<div class="hint">' + esc(T('community|提交者：{name} · {ago} · 👥 {n} 人跟踪', {
+          name: r.submitter_name || '—', ago: cmAgo(r.created_at),
+          n: Number(r.follower_count) || 0,
+        })) + '</div>' +
+        '<div class="hint">' + esc(String(r.suspect_profile_url || '')) + '</div>' +
+        (r.reason ? '<div class="hint">' + esc(T('community|理由：{text}', { text: r.reason })) + '</div>' : '') +
+        (cmWantedCounts(r) ? '<div class="hint">' + esc(cmWantedCounts(r)) + '</div>' : '') +
+        done +
+        '<div class="btn-row" style="margin-top:4px">' + acts + '</div>';
+    }).join('');
   }
 
   // ---------------------------------------------------------------------------------------------
@@ -10183,6 +11086,30 @@
       // The user list carries 已封禁, so an action that changed it has to re-read — otherwise the
       // queue and the directory disagree about the same account until the operator reloads.
       if (act === 'ban') adminLoadUsers(ADC.page);
+    });
+  }
+
+  // 1.0.7 §2.1.6 — the wall's three verdicts. ⚠ `resolve` DOES NOT TAKE THE ENTRY DOWN: 026's read
+  // predicate tests `status = 'approved'` alone, so a 已解决 entry stays public — §2.1.2's fourth state
+  // is 「这件事办完了」, not 「撤下来」. A moderator who wants it off the wall 驳回s it.
+  if ($('adWanRows')) {
+    $('adWanRows').addEventListener('click', async function (ev) {
+      var b = ev.target && ev.target.closest ? ev.target.closest('[data-ad-wanact]') : null;
+      if (!b) return;
+      var id = b.getAttribute('data-ad-wan');
+      var act = b.getAttribute('data-ad-wanact');
+      var note = String(($('adWanNote') || {}).value || '').trim();
+      b.disabled = true;
+      var res = await GMAdmin.handleWanted(id, act, note);
+      b.disabled = false;
+      if (!res.ok) { adState('adWanState', cloudErrText(res.error), true); return; }
+      adState('adWanState', T('viewer|已处理'), false);
+      // BOTH LISTS RE-READ. The queue's own row has moved state, and §2.1.3's wall is a different read
+      // of the same table — an approval that did not appear on the wall until the operator switched
+      // tabs would look like the button had failed.
+      adminLoadWanted();
+      cmWanMine = null;
+      if ($('cmPane-wanted')) cmLoadWanted();
     });
   }
 
@@ -11928,6 +12855,21 @@
     return T('viewer|{p}（{n}/{m}）', { p: pct(a.goodRatio), n: a.goodCount || 0, m: a.goodTotal });
   }
   function simCount(a) { return a ? T('viewer|{n} 步', { n: a.simCount || 0 }) : '—'; }
+  // 1.0.7 §1.2 — the 规避行为 pair. Two rows, not one, because the two numbers answer different
+  // questions and neither is derivable from the other: 「深 low 点几手」 is exposure, 「其中几手两侧
+  // 都是好点」 is rhythm — and it is the second that separates a deliberately isolated bad hand from
+  // a weaker player's losing patch. `—` means the archive predates the fields, NOT "we looked and
+  // found none" — the same rule `evCount`'s doc states for the evasion row.
+  function evasiveDeepCell(a) {
+    if (!a || a.evasiveDeep == null) return '—';
+    return T('viewer|{n} 手，其中 {k} 手两侧都是好点',
+      { n: a.evasiveDeep, k: a.evasiveSurrounded || 0 });
+  }
+  function evasiveRhythmCell(a) {
+    if (!a || a.evasiveRhythm == null || !a.evasiveDeep) return '—';
+    return T('viewer|{p}（{n}/{m}）',
+      { p: pct(a.evasiveRhythm), n: a.evasiveSurrounded || 0, m: a.evasiveDeep });
+  }
   // 0.4.2 §2.5. The evasion row carries two numbers because they answer different questions —
   // how many, and how evenly they were spaced. `0.00` regularity is the normal answer for one
   // or two evasions (below the count that makes a rhythm measurable), so it is printed rather
@@ -12001,6 +12943,10 @@
       '<tr><td>' + T('viewer|好点最长连击') + '</td><td>' + ssCell(rep.black, 'goodStreak') + '</td><td>' + ssCell(rep.white, 'goodStreak') + '</td></tr>' +
       '<tr><td>' + T('viewer|活三好手最长连击') + '</td><td>' + ssCell(rep.black, 'liveThreeMax') + '</td><td>' + ssCell(rep.white, 'liveThreeMax') + '</td></tr>' +
       '<tr><td>' + T('viewer|Top5 之外') + '</td><td>' + (rep.black ? pct(rep.black.outTop5) : '—') + '</td><td>' + (rep.white ? pct(rep.white.outTop5) : '—') + '</td></tr>' +
+      // 1.0.7 §1.2 — the 规避行为 pair, directly under 回避手 because it is the same claim read at a
+      // finer resolution (see the weight table's `evasion` note). The rate row is the headline.
+      '<tr><td>' + T('viewer|深低点') + '</td><td>' + evasiveDeepCell(rep.black) + '</td><td>' + evasiveDeepCell(rep.white) + '</td></tr>' +
+      '<tr><td>' + T('viewer|规避节奏') + '</td><td>' + evasiveRhythmCell(rep.black) + '</td><td>' + evasiveRhythmCell(rep.white) + '</td></tr>' +
       '<tr><td>' + T('viewer|将败冲四') + '</td><td>' + desCount(rep.black) + '</td><td>' + desCount(rep.white) + '</td></tr>' +
       '<tr><td>' + T('viewer|回避手') + '</td><td>' + evCount(rep.black) + '</td><td>' + evCount(rep.white) + '</td></tr>' +
       '<tr><td>' + T('viewer|将胜乱下') + '</td><td>' + wbCount(rep.black) + '</td><td>' + wbCount(rep.white) + '</td></tr>' +
