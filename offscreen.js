@@ -1,0 +1,452 @@
+// Offscreen document: the only place the Rapfi engine may legally run.
+//
+// app.js is loaded here as a plain script, so `Engine` / `analyzeGame` /
+// `analyzeStepwise` / `analyzeStep` are globals of this document. `Engine.init()`
+// does `new Worker('worker.js')`, which resolves to chrome-extension://<id>/worker.js —
+// same origin as this page, so it works.
+//
+// Protocol (all via chrome.runtime, content.js is the peer):
+//   gm-warmup           -> preload the engine so the first live step is not delayed
+//   gm-engine-info      -> which build loaded, whether multi-threading is live
+//   gm-analyze          -> 全局分析, one analyzeGame call
+//   gm-analyze-stepwise -> 逐步分析（导入回放）, one analyzeStepwise call
+//   gm-step             -> 逐步分析（实时）, one analyzeStep for one move
+//   gm-step-report      -> full report for the live session
+//   gm-step-finish      -> close the live session, return the full report
+//   gm-abort            -> ask the running job to stop at the next move
+//   gm-ai-think         -> one analyzePosition, for the viewer's AI-思考 button (0.4.11 §一.2)
+//   gm-pause            -> pause a queued/running one-shot job (0.4.11 §一.2)
+//   gm-resume           -> resume it; calls the pauseCtrl's `_resume` for us
+// Broadcasts gm-progress { jobId, p, msg } while working.
+//
+// 0.5.1 §2.1.4 — every gm-* job now carries the operator's engine choice: `msg.opts.engineId`
+// for the two analysis jobs, `msg.engineId` for gm-warmup and gm-ai-think. It travels as an
+// ordinary option rather than through a side channel because `getEngine` has to be handed the
+// same id on EVERY call — the per-step path calls it once per move, and a step that silently
+// used a different model than the previous one would produce a report whose flags are half one
+// engine and half another.
+//
+// 0.4.11 §一.2 — THE VIEWER RUNS NO ENGINE OF ITS OWN.
+// Before this, viewer.html loaded app.js and viewer.js called its `getEngine()`, so the
+// extension page built a SECOND Rapfi: a second worker, a second 40MB data package, a second
+// pthread pool, and a second queue that content.js knew nothing about. Both instances then
+// resolved `settings.threadNum` independently and could oversubscribe the machine. Every
+// engine call the viewer makes now arrives here, where the one engine and the one FIFO queue
+// live. `pauseCtrl` is the reason gm-pause/gm-resume exist at all: it holds `_resume`, a
+// FUNCTION, which no message can carry — so the object stays in this document and is looked
+// up by jobId.
+//
+// 0.2.5 — CONCURRENCY MODEL
+// There is exactly ONE engine (one worker, one 40MB data package, one WASM instance), so
+// all engine work is serialised through a single FIFO queue. What changed is the answer
+// to "someone else is using it":
+//
+//   before: `if (busy) return { ok:false, error:'引擎正忙' }` — the second tab's analysis
+//           was *rejected*, and a mid-join tab showed "引擎正忙" instead of "数据不完整",
+//           which reads as a hang and explains the 0.2.5 bug report.
+//   after:  the request is queued, runs when its turn comes, and a queued job is told so
+//           through gm-progress ("引擎正忙，排队中…").
+//
+// Live sessions are keyed by jobId, so two tabs each get their own session and their own
+// step history; only the underlying engine call is serialised. That is safe because
+// analyzeStep re-sends the whole YXBOARD prefix for every move — no engine state carries
+// over between steps. Serialising is not merely a courtesy here: analyzePosition/analyzeStep
+// swap `worker.onmessage`, so two overlapping engine calls would interleave their output
+// handlers and produce garbage verdicts.
+'use strict';
+
+(function () {
+  // 0.3.6 §1.6/§1.7: this file TRANSPORTS messages, it never translates them. Every string it
+  // returns to a consumer travels as a `__i18n:` code and is turned into text by whichever
+  // surface shows it (content.js panel / viewer.js), because only that surface knows the
+  // operator's language. Defined locally rather than borrowed from app.js so the two files
+  // stay independently loadable.
+  function i18nErr(key, vars) {
+    if (typeof GMI18n !== 'undefined' && GMI18n && GMI18n.errCode) return GMI18n.errCode(key, vars);
+    var s = '__i18n:' + key;
+    if (vars) Object.keys(vars).forEach(function (k) { s += '|' + k + '=' + encodeURIComponent(vars[k]); });
+    return s;
+  }
+
+  var queue = [];        // FIFO of { jobId, fn, ahead, resolve }
+  var processing = false;
+  var currentJobId = null;
+  var sessions = {};     // jobId -> 实时逐步 session
+  var aborted = {};
+  var pauseCtrls = {};   // 0.4.11 §一.2: jobId -> { paused, _resume } for the one-shot jobs
+
+  function pauseCtrlFor(jobId) {
+    if (!pauseCtrls[jobId]) pauseCtrls[jobId] = { paused: false, _resume: null };
+    return pauseCtrls[jobId];
+  }
+
+  // 0.3.6 §1.8: this document has no UI, but it does produce strings that reach one — the
+  // default archive name, the 排队中 note, every error code. It therefore has to know the
+  // operator's language too, and it has to keep knowing it: a switch mid-session must not
+  // leave the rest of that session naming archives in the old language.
+  function applyLang(setting) {
+    if (typeof GMI18n === 'undefined' || !GMI18n) return;
+    GMI18n.setLocale(GMI18n.resolveLang(setting));
+  }
+
+  // 0.5.1 §2.1.1/§2.2 — the registry `getEngine` reads has to be kept current, because the
+  // operator can move their server or delete a model while a game is in progress. An Engine
+  // object that had captured the old address would keep talking to a server they just left.
+  function applyEngineSettings(s) {
+    if (typeof GMEngines !== 'undefined' && GMEngines) GMEngines.setHttpBase(s && s.engineUrl);
+  }
+  function syncCustomEngines() {
+    if (typeof GMCustomEngines === 'undefined' || !GMCustomEngines || !GMCustomEngines.available()) {
+      return Promise.resolve();
+    }
+    return GMCustomEngines.list().then(function (rows) {
+      if (typeof GMEngines === 'undefined' || !GMEngines) return;
+      GMEngines.sync(rows.map(function (r) {
+        return { id: r.id, name: r.name, dataId: r.id, fileName: r.fileName, size: r.size, addedAt: r.addedAt };
+      }));
+    }, function () { /* no list is the same as no custom models */ });
+  }
+
+  function applySettings(s) {
+    applyLang(s && s.lang);
+    applyEngineSettings(s);
+  }
+
+  try {
+    GMStorage.loadSettings().then(function (s) { applySettings(s); }, function () {});
+    syncCustomEngines();
+  } catch (e) { /* storage unavailable — the zh-CN default and the packaged engine stand */ }
+  try {
+    chrome.storage.onChanged.addListener(function (changes, area) {
+      if (area !== 'local' || !changes || !changes.settings) return;
+      var next = changes.settings.newValue || {};
+      applySettings(next);
+      // Cheap and idempotent: the list is at most five rows, and re-syncing after any settings
+      // write is how a model uploaded in the viewer becomes selectable in the panel without a
+      // reload.
+      syncCustomEngines();
+    });
+  } catch (e) { /* no storage API in this context — nothing to track */ }
+
+  function broadcast(type, payload) {
+    try {
+      chrome.runtime.sendMessage(Object.assign({ type: type }, payload));
+    } catch (e) {
+      // No receiver left (page closed) — harmless.
+    }
+  }
+
+  function progressFn(jobId) {
+    return function (p, msg) { broadcast('gm-progress', { jobId: jobId, p: p, msg: msg }); };
+  }
+
+  function engineSnapshot() {
+    try { return engineInfo(); } catch (e) { return null; }
+  }
+
+  // ---------- the queue ----------
+  function runQueued(jobId, fn) {
+    return new Promise(function (resolve) {
+      // Everything ahead of this request: the one currently on the engine plus the ones
+      // still waiting. Counting only `queue.length` would report 0 for the second arrival,
+      // because the first was already shifted into `processing` before it landed.
+      var ahead = queue.length + (processing ? 1 : 0);
+      queue.push({
+        jobId: jobId,
+        fn: fn,
+        ahead: ahead,
+        resolve: function (res) {
+          // Tell the caller it had to wait, so the panel can drop the "排队中" note.
+          if (res && typeof res === 'object' && ahead > 0 && !res.queuedAhead) res.queuedAhead = ahead;
+          resolve(res);
+        },
+      });
+      if (ahead > 0) {
+        broadcast('gm-progress', {
+          jobId: jobId, p: 0,
+          msg: i18nErr('queue.busy', { ahead: ahead }),
+        });
+      }
+      pumpQueue();
+    });
+  }
+
+  function pumpQueue() {
+    if (processing) return;
+    var item = queue.shift();
+    if (!item) return;
+    processing = true;
+    currentJobId = item.jobId;
+
+    function next() { processing = false; currentJobId = null; pumpQueue(); }
+
+    // A job aborted while it waited must not run at all.
+    if (aborted[item.jobId]) {
+      delete aborted[item.jobId];    // it never started, so no tombstone is needed
+      item.resolve({ ok: false, aborted: true, error: i18nErr('job.abortedInQueue') });
+      next();
+      return;
+    }
+
+    Promise.resolve()
+      .then(item.fn)
+      .then(
+        function (res) { item.resolve(res); },
+        function (e) {
+          var text = String((e && e.message) || e);
+          item.resolve(text === '__aborted__' ? { ok: false, aborted: true } : { ok: false, error: text });
+        }
+      )
+      .then(next, next);
+  }
+
+  // ---------- report slimming ----------
+  // The engine returns a `bestline` (principal variation) per candidate: up to a few
+  // dozen coordinates each, and nothing renders it. Dropping it here as well as in
+  // storage.js keeps the message channel small — a 42-move game would otherwise ship
+  // several hundred arrays per analysis just to have them thrown away.
+  function trimStep(step) {
+    if (!step) return step;
+    step.cands = (step.cands || []).map(function (c) {
+      return { move: c.move, winrate: c.winrate, eval: c.eval };
+    });
+    return step;
+  }
+
+  function trimReport(rep) {
+    if (!rep) return rep;
+    if (Array.isArray(rep.steps)) rep.steps = rep.steps.map(trimStep);
+    // `flagged` is a filtered copy of `steps`, so shipping it would double the payload
+    // for data the consumer can recompute in one line. Nothing reads it today.
+    delete rep.flagged;
+    return rep;
+  }
+
+  async function handleWarmup(msg) {
+    await getEngine(msg && msg.engineId);
+    return { ok: true, engine: 'ready', info: engineSnapshot() };
+  }
+
+  function handleEngineInfo() {
+    return { ok: true, info: engineSnapshot() };
+  }
+
+  async function runOneShot(msg, kind) {
+    aborted[msg.jobId] = false;
+    try {
+      var opts = Object.assign({}, msg.opts, {
+        shouldAbort: function () { return !!aborted[msg.jobId]; },
+        // 0.4.11 §一.2 — the caller (a viewer page, a panel) cannot hold a reference to this
+        // object across a message boundary, so we own it here and drive it from gm-pause /
+        // gm-resume. Registering it at DISPATCH time, not here, is what lets a pause arrive
+        // while the job is still sitting in the queue.
+        pauseCtrl: pauseCtrlFor(msg.jobId),
+      });
+      var fn = kind === 'global' ? analyzeGame : analyzeStepwise;
+      var report = await fn(msg.record, opts, progressFn(msg.jobId));
+      return { ok: true, report: trimReport(report), info: engineSnapshot() };
+    } finally {
+      delete aborted[msg.jobId];
+      delete pauseCtrls[msg.jobId];
+    }
+  }
+
+  // 0.4.11 §一.2 — the viewer's AI-思考 button. Queued like everything else so its engine call
+  // cannot interleave with a running analysis: analyzePosition swaps `worker.onmessage`, and two
+  // overlapping calls would hand each other's output to the wrong resolver.
+  async function handleAiThink(msg) {
+    var eng = await getEngine(msg.engineId);
+    eng.configure({ rule: msg.rule, thinkMs: msg.thinkMs, threadNum: msg.threadNum });
+    var res = await eng.analyzePosition(msg.prefix, msg.nbest);
+    return { ok: true, best: res.best, candidates: res.candidates, info: engineSnapshot() };
+  }
+
+  // ---- 实时逐步分析 ----
+  //
+  // 0.5.6 补增 §三 — the live session is the ONE analysis path that does not go through
+  // analyzeGame / analyzeStepwise, so it has to resolve the weight table on its own: `summarizeSteps`
+  // and `buildReport` both build the score out of `opts.learned`, and `msg.opts` arrives straight
+  // from a content script that has no idea the pins exist.
+  //
+  // Resolved ONCE, when the session starts — the same rule `learned` follows in app.js. A table
+  // that changed mid-game would make the live score and the score archived at the end of the same
+  // game disagree about the very same hands, and the archived one is written from these steps.
+  //
+  // ⚠ 补增 §三·补: `applySignalPins` now ALWAYS returns a fresh object whose `weights` are
+  // 「shipped ⊕ pins」 — the learner's stored weights never reach the score. So there is no
+  // "nothing pinned, hand the request straight through" shortcut any more, and that is the point:
+  // passing `opts` through unchanged would let `riskParams` merge the learner's table back in.
+  //
+  // `applySignalPins` / `loadSignalPins` are top-level declarations of a classic script, so they
+  // are reachable here as bare identifiers — the arrangement tagWiki.js uses for BASE_WEIGHTS.
+  // Guarded anyway, because harnesses inject a subset of these scripts.
+  async function resolveLiveOpts(opts) {
+    var o = opts || {};
+    try {
+      if (typeof applySignalPins !== 'function' || typeof loadSignalPins !== 'function') return o;
+      var learned = (o.learned !== undefined) ? o.learned : null;
+      var pins = (o.signalWeights !== undefined) ? o.signalWeights : await loadSignalPins();
+      return Object.assign({}, o, { learned: applySignalPins(learned, pins) });
+    } catch (e) { return o; }
+  }
+
+  async function doStep(msg) {
+    if (msg.reset) {
+      sessions[msg.jobId] = {
+        jobId: msg.jobId, steps: [], times: [], opts: await resolveLiveOpts(msg.opts), ended: false,
+        prejoinCount: msg.prejoinCount || 0, seen: {},
+      };
+    }
+    var live = sessions[msg.jobId];
+    if (!live) {
+      return { ok: false, error: i18nErr('live.goneMaybe') };
+    }
+    if (live.ended) return { ok: false, ended: true, error: i18nErr('live.ended') };
+
+    // One entry per PLAYED move. The collector can legitimately ask twice for the same
+    // hand — a socket reconnect re-delivers it, or the board render confirms a stone we
+    // already stepped — and a second engine run would append a second row with the same
+    // move number, which reads as a broken move order in the step table.
+    var key = msg.actual ? msg.actual[0] + ',' + msg.actual[1] : String(msg.playerIdx);
+    if (live.seen[key] != null) {
+      return { ok: true, step: live.steps[live.seen[key]], duplicate: true,
+               summary: withPrejoin(summarizeSteps(live.steps, live.times, live.opts), live.prejoinCount) };
+    }
+
+    var eng = await getEngine(msg.opts && msg.opts.engineId);
+    var allMoves = msg.prefix.concat([msg.actual]);
+    var budget = stepBudget(msg.recorded, msg.opts).budget;
+    // 0.3.4: the live-four test needs the real colours of the board, which index parity
+    // cannot give (a duplicated or dropped stone shifts every later slot). The collector
+    // sends the WHOLE board's colours (0.4.11 §一.1 renamed `prefixSides` → `boardSides`, since
+    // it describes every move, not the prefix); the length must equal `allMoves.length`.
+    // When it does not, analyzeStep falls back to parity.
+    var board = null;
+    if (Array.isArray(msg.boardSides) && msg.boardSides.length === allMoves.length) {
+      board = allMoves.map(function (c, k) {
+        return { x: c[0], y: c[1], side: msg.boardSides[k] };
+      });
+    }
+    var step = await analyzeStep(eng, allMoves, msg.playerIdx, msg.actual, msg.opts, budget, msg.recorded, msg.side, board);
+
+    // 0.3.4 活四停止: a real live four ends the live session so no further hand is scored —
+    // the rest of the game carries no signal.
+    if (step.terminal) live.ended = true;
+
+    live.seen[key] = live.steps.length;
+    live.steps.push(step);
+    live.times.push(msg.recorded != null ? msg.recorded : null);
+    markDesperate(live.steps);
+
+    return {
+      ok: true,
+      step: trimStep(step),
+      summary: withPrejoin(summarizeSteps(live.steps, live.times, live.opts), live.prejoinCount),
+      info: engineSnapshot(),
+    };
+  }
+
+  // Stones recovered from a board render (joining mid-game) are on the board and count
+  // as moves, but they are never stepped, so they are absent from `steps`.
+  function withPrejoin(rep, prejoinCount) {
+    if (!rep) return rep;
+    rep.prejoinCount = prejoinCount || 0;
+    // Both buildReport and summarizeSteps report totalMoves as steps.length, which
+    // counts verdicts, not stones on the board.
+    rep.totalMoves = (rep.totalMoves || 0) + rep.prejoinCount;
+    rep.orderKnown = rep.prejoinCount === 0;
+    return rep;
+  }
+
+  function liveReport(jobId) {
+    var live = sessions[jobId];
+    if (!live) return null;
+    return trimReport(withPrejoin(buildReport(live.steps, {
+      moves: live.steps.map(function (s) { return s.actual; }),
+      times: live.times,
+      sources: live.steps.map(function () { return 'player'; }),
+    }, live.opts), live.prejoinCount));
+  }
+
+  function handleStepReport(msg) {
+    if (!sessions[msg.jobId]) return { ok: false, error: i18nErr('live.gone') };
+    return { ok: true, report: liveReport(msg.jobId) };
+  }
+
+  function handleStepFinish(msg) {
+    if (!sessions[msg.jobId]) return { ok: false, error: i18nErr('live.gone') };
+    var report = liveReport(msg.jobId);
+    delete sessions[msg.jobId];
+    return { ok: true, report: report, info: engineSnapshot() };
+  }
+
+  chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
+    if (!msg || typeof msg.type !== 'string' || msg.type.indexOf('gm-') !== 0) return;
+    if (msg.type === 'gm-ensure-offscreen') return; // background's job
+    if (msg.type === 'gm-progress') return;
+
+    var work;
+    switch (msg.type) {
+      case 'gm-warmup': work = handleWarmup(msg); break;
+      case 'gm-engine-info': work = Promise.resolve(handleEngineInfo()); break;
+      case 'gm-analyze':
+        pauseCtrlFor(msg.jobId);   // registered before the queue is reached, so gm-pause works queued
+        work = runQueued(msg.jobId, function () { return runOneShot(msg, 'global'); });
+        break;
+      case 'gm-analyze-stepwise':
+        pauseCtrlFor(msg.jobId);
+        work = runQueued(msg.jobId, function () { return runOneShot(msg, 'stepwise'); });
+        break;
+      case 'gm-ai-think':
+        work = runQueued(msg.jobId, function () { return handleAiThink(msg); });
+        break;
+      case 'gm-pause': {
+        var pcp = pauseCtrls[msg.jobId];
+        if (pcp) pcp.paused = true;
+        work = Promise.resolve({ ok: true });
+        break;
+      }
+      case 'gm-resume': {
+        var pcr = pauseCtrls[msg.jobId];
+        if (pcr) {
+          pcr.paused = false;
+          if (pcr._resume) { var wake = pcr._resume; pcr._resume = null; wake(); }
+        }
+        work = Promise.resolve({ ok: true });
+        break;
+      }
+      case 'gm-step':
+        work = runQueued(msg.jobId, function () { return doStep(msg); });
+        break;
+      case 'gm-step-report': work = Promise.resolve(handleStepReport(msg)); break;
+      case 'gm-step-finish': work = Promise.resolve(handleStepFinish(msg)); break;
+      case 'gm-abort':
+        aborted[msg.jobId] = true;
+        // Drop it out of the queue immediately when it has not started yet: it would
+        // otherwise keep its slot and run a doomed analysis.
+        var wasPending = false;
+        for (var i = queue.length - 1; i >= 0; i--) {
+          if (queue[i].jobId === msg.jobId) {
+            queue[i].resolve({ ok: false, aborted: true, error: i18nErr('job.aborted') });
+            queue.splice(i, 1);
+            wasPending = true;
+          }
+        }
+        // Nothing owns the id any more -> do not leave a permanent tombstone behind.
+        if (!wasPending && currentJobId !== msg.jobId) delete aborted[msg.jobId];
+        work = Promise.resolve({ ok: true });
+        break;
+      default: return;
+    }
+
+    work
+      .then(function (res) { sendResponse(res); })
+      .catch(function (e) {
+        var text = String((e && e.message) || e);
+        sendResponse(text === '__aborted__' ? { ok: false, aborted: true } : { ok: false, error: text });
+      });
+    return true; // keep the channel open for the async reply
+  });
+
+  broadcast('gm-offscreen-ready', {});
+})();

@@ -1,0 +1,183 @@
+# config.example.toml -- EXAMPLE ONLY.
+#
+# Copy this file to `config.toml` next to it and adjust `project_id` (and the ports, if
+# they clash with something already running on your machine) before you use the Supabase
+# CLI. `config.toml` is what the CLI actually reads; this example is committed so the
+# expected settings are reviewable. Do not commit real secrets here -- secrets are set
+# with `supabase secrets set`, never in this file.
+#
+#   cp supabase/config.example.toml supabase/config.toml
+#
+# verify_jwt = false on every function is intentional: each function does its own
+# verification (requireUser / requireAdmin), and auth-renew must be able to accept a
+# just-expired token, which the platform gate would otherwise reject before our code
+# runs. See README.md for the full reasoning.
+
+project_id = "baishen-detector"
+
+[api]
+enabled = true
+port = 54321
+schemas = ["public", "graphql_public"]
+extra_search_path = ["public", "extensions"]
+max_rows = 1000
+
+[db]
+port = 54322
+major_version = 15
+
+[studio]
+enabled = true
+port = 54323
+
+[functions.auth-activate]
+verify_jwt = false
+
+[functions.auth-renew]
+verify_jwt = false
+
+[functions.auth-delete-account]
+verify_jwt = false
+
+[functions.profile-get]
+verify_jwt = false
+
+[functions.profile-update]
+verify_jwt = false
+
+[functions.device-remove]
+verify_jwt = false
+
+[functions.admin-generate-code]
+verify_jwt = false
+
+[functions.admin-list-users]
+verify_jwt = false
+
+[functions.admin-ban-user]
+verify_jwt = false
+
+[functions.admin-unban-user]
+verify_jwt = false
+
+[functions.admin-revoke-codes]
+verify_jwt = false
+
+[functions.admin-grant-badge]
+verify_jwt = false
+
+[functions.admin-reissue-jwt]
+verify_jwt = false
+
+# ---- 1.0.1 §二 / §3.7 / §3.8 — the two-step registration and the account settings ------------
+# Six of these are deliberately ANONYMOUS (no session exists yet when they are called), so
+# verify_jwt = false here skips nothing: each one validates its own inputs and its own credential
+# (the activation code, the emailed code, or the password) before it writes anything.
+[functions.auth-validate-code]
+verify_jwt = false
+
+[functions.auth-send-code]
+verify_jwt = false
+
+[functions.auth-check-available]
+verify_jwt = false
+
+[functions.auth-register]
+verify_jwt = false
+
+[functions.auth-login]
+verify_jwt = false
+
+[functions.auth-reset-password]
+verify_jwt = false
+
+[functions.auth-change-password]
+verify_jwt = false
+
+[functions.auth-change-email]
+verify_jwt = false
+
+[functions.chat-send]
+verify_jwt = false
+
+[functions.feedback-submit]
+verify_jwt = false
+
+[functions.admin-publish-news]
+verify_jwt = false
+
+[functions.admin-reply-feedback]
+verify_jwt = false
+
+# ---- 1.0.3 §一~§三 — 社区设施（好友 / 投票 / 举报 / 国籍 / 在线状态）------------------------
+# Same reasoning as every block above: each one runs `requireUser` / `requireAdmin` itself, so the
+# platform gate has nothing to add and one thing to break. The clear-cut case is
+# `friend-share-purge`: it is called by the cron with a shared secret and has NO user session at
+# all, so a platform JWT check would reject it before any of our code runs. (`geo-update` is not
+# that case — it IS a normal client call carrying a user JWT on the login path, and it verifies that
+# JWT itself like every other function here.)
+[functions.friend-request]
+verify_jwt = false
+
+[functions.friend-accept]
+verify_jwt = false
+
+[functions.friend-share]
+verify_jwt = false
+
+[functions.friend-share-purge]
+verify_jwt = false
+
+[functions.vote-create]
+verify_jwt = false
+
+[functions.vote-cast]
+verify_jwt = false
+
+[functions.report-submit]
+verify_jwt = false
+
+[functions.admin-handle-report]
+verify_jwt = false
+
+[functions.admin-global-chat]
+verify_jwt = false
+
+[functions.geo-update]
+verify_jwt = false
+
+[functions.cloud-share]
+verify_jwt = false
+
+[functions.admin-set-role]
+verify_jwt = false
+
+[functions.chat-recall]
+verify_jwt = false
+
+[functions.admin-list-codes]
+verify_jwt = false
+
+# 1.0.6 四号 §一 — 平台痕迹. Same two entries as config.toml: a client call that verifies its own JWT
+# (`platform-report`), and the console's whole-product census (`admin-platform-stats`), which exists
+# as its own endpoint because the counting has to happen in SQL.
+[functions.platform-report]
+verify_jwt = false
+
+[functions.admin-platform-stats]
+verify_jwt = false
+
+# 1.0.7 §2.1 缉捕墙 — the four endpoints, same four entries as config.toml and for the same reason:
+# every function here verifies its own JWT, and `wanted-approve` verifies the CALLER'S ROLE on top of
+# it (via `requireAdmin`), which the gateway's signature check cannot do.
+[functions.wanted-submit]
+verify_jwt = false
+
+[functions.wanted-approve]
+verify_jwt = false
+
+[functions.wanted-follow]
+verify_jwt = false
+
+[functions.wanted-add-evidence]
+verify_jwt = false

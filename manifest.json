@@ -1,0 +1,112 @@
+{
+  "manifest_version": 3,
+  "name": "白身 (Baishen)",
+  "version": "1.0.7",
+  "minimum_chrome_version": "109",
+  "description": "白身 (Baishen): archives gomoku.com / papergames.io games, detects AI play with Rapfi; cloud account, community & sync, 15 languages.",
+  "permissions": [
+    "storage",
+    "offscreen",
+    "contextMenus",
+    "downloads",
+    "notifications"
+  ],
+  "icons": {
+    "16": "icon/16.png",
+    "48": "icon/48.png",
+    "128": "icon/128.png"
+  },
+  "host_permissions": [
+    "https://gomoku.com/*",
+    "https://www.gomoku.com/*",
+    "https://papergames.io/*",
+    "https://www.papergames.io/*",
+    "https://raw.githubusercontent.com/AODOJUST/gomoku-anti-cheat-detector/*",
+    "https://truajeswcpofgqqtbmkm.supabase.co/*"
+  ],
+  "optional_host_permissions": [
+    "https://*/*",
+    "http://*/*"
+  ],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'"
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "打开 Gomoku 检测查看器",
+    "default_icon": {
+      "16": "icon/16.png",
+      "48": "icon/48.png",
+      "128": "icon/128.png"
+    }
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://gomoku.com/*",
+        "https://www.gomoku.com/*",
+        "https://papergames.io/*",
+        "https://www.papergames.io/*"
+      ],
+      "js": [
+        "gm-nonce.js"
+      ],
+      "run_at": "document_start"
+    },
+    {
+      "matches": [
+        "https://gomoku.com/*",
+        "https://www.gomoku.com/*",
+        "https://papergames.io/*",
+        "https://www.papergames.io/*"
+      ],
+      "js": [
+        "sites.js",
+        "hook.js"
+      ],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": [
+        "https://gomoku.com/*",
+        "https://www.gomoku.com/*",
+        "https://papergames.io/*",
+        "https://www.papergames.io/*"
+      ],
+      "js": [
+        "i18n.js",
+        "locale/zh-CN.js",
+        "locale/zh-TW.js",
+        "locale/ja.js",
+        "locale/ko.js",
+        "locale/en.js",
+        "locale/ru.js",
+        "locale/fr.js",
+        "locale/de.js",
+        "locale/vi.js",
+        "locale/es.js",
+        "locale/es-MX.js",
+        "locale/ms.js",
+        "locale/ar.js",
+        "locale/mn.js",
+        "locale/lzh.js",
+        "llm.js",
+        "archive-db.js",
+        "storage.js",
+        "sites.js",
+        "openings.js",
+        "questions.js",
+        "chat.js",
+        "engines.js",
+        "toast.js",
+        "cloud.js",
+        "auth.js",
+        "content.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ]
+}
