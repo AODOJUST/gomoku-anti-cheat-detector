@@ -998,6 +998,7 @@ GMI18n.register('en', {
   'panel|真实间隔': 'Real interval',
   'panel|正在分析，请等待完成': 'Analysis is running — please wait for it to finish',
   'panel|重新分析': 'Re-analyze',
+  'panel|重新载入后补存': 'saved after a reload',
   'panel|逐步分析（每落一子）': 'Stepwise analysis (on every stone)',
   'panel|逐步预算 = min( max(2000ms, 落子间隔), 检测思考 )；无时间数据时回退到该上限。': 'Stepwise budget = min( max(2000ms, move interval), detection thinking ); with no timing data it falls back to that upper bound.',
   'panel|状态：': 'Status: ',

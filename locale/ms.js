@@ -998,6 +998,7 @@ GMI18n.register('ms', {
   'panel|真实间隔': 'Selang sebenar',
   'panel|正在分析，请等待完成': 'Analisis sedang berjalan — sila tunggu',
   'panel|重新分析': 'Analisis semula',
+  'panel|重新载入后补存': 'disimpan semula selepas muat semula',
   'panel|逐步分析（每落一子）': 'Analisis langkah demi langkah (setiap batu)',
   'panel|逐步预算 = min( max(2000ms, 落子间隔), 检测思考 )；无时间数据时回退到该上限。': 'Bajet langkah demi langkah = min( max(2000ms, selang langkah), pemikiran pengesanan ); apabila tiada data masa ia kembali kepada had atas itu.',
   'panel|状态：': 'Status: ',

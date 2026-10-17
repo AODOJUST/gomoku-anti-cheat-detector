@@ -1004,6 +1004,7 @@ GMI18n.register('es-MX', {
   'panel|真实间隔': 'Intervalo real',
   'panel|正在分析，请等待完成': 'Análisis en curso: espera a que termine',
   'panel|重新分析': 'Reanalizar',
+  'panel|重新载入后补存': 'guardado tras recargar',
   'panel|逐步分析（每落一子）': 'Análisis paso a paso (con cada piedra)',
   'panel|逐步预算 = min( max(2000ms, 落子间隔), 检测思考 )；无时间数据时回退到该上限。': 'Presupuesto paso a paso = min( máx(2000ms, intervalo entre jugadas), pensamiento de la detección ); sin datos de tiempo se recurre a ese límite superior.',
   'panel|状态：': 'Estado: ',

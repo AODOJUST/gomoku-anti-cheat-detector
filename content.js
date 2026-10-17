@@ -268,12 +268,21 @@
     // is a fact about THIS session, so the browser closing is allowed to forget it. It carries
     // its own key rather than riding on one of them because its shape is a record, not a counter.
     lastGamePlayers: 'lastGamePlayers',
+    // 1.0.7 续 ⑧ — 局终但还没归档的那一局，连 record 一起放在会话区里。见
+    // `persistPendingGame()` / `adoptPendingGame()`：收集器只活在**本页内存**里，而站点在
+    // 某些对局结束后会跳转（回大厅 / 评分页），一次导航就把引擎、报告、存档全带走。
+    pendingGame: 'pendingGame',
   };
 
   // The synchronous mirror, for the same reason as `archivedEpoch` / `liveStopped`: the track
   // menu is opened by a click and cannot await a storage read, so the answer has to already be
   // in memory. Written through by `snapshotLastGamePlayers()` below.
   var lastGamePlayers = null;
+  // Same split, same reason: the synchronous mirror of `SESSION_KEYS.pendingGame`.
+  var pendingGame = null;
+  // `hydrateSession()` 可能比 `boot()` 先回来：先把它攥在这里，等设置读完了再补跑。
+  var pendingAdopt = null;
+  var booted = false;
 
   // 1.0.5 (audit P3) — THE FALLBACK TO `local` IS GONE. It used to be here, and it meant that on a
   // browser where the session area is unavailable these four transient values were written to DISK:
@@ -305,6 +314,93 @@
     archivedEpoch[epoch] = true;
     var o = {}; o[SESSION_KEYS.archived] = archivedEpoch;
     persistSession(o);
+    // 1.0.7 续 ⑧ — 「这一局已经结算过了」只有一个落点，pending 的清理跟着它走。少一个调用点，
+    // 就是「已存档的局每次开机都被当成待补存」：引擎白跑一遍，回放里还会多出一条重复。
+    clearPendingGame(epoch);
+  }
+
+  // ---- 1.0.7 续 ⑧ — 局终即落盘：分析没跑完，这一局也不能丢 ---------------------------------
+  //
+  // 用户报的现象：「对手是注册玩家时，这一局没在回放里出现，刷新也没有」。差别不在对手 ——
+  // 扩展里 `identity` 只有 `spectator` / `registered` 两档，没有任何一处按「对手是不是注册用户」
+  // 分支。真正的差别在**站点**：那种对局（有评分的一方）结束后页面会跳转/刷新（回大厅、评分页），
+  // 而游客对局不跳。收集器只活在 content script 的内存里，一次导航就全没了 —— 引擎还在算、
+  // 存档还没写、页面已经重新载入，于是什么都没存下，看起来就只是「跟注册对手打才会丢」。
+  //
+  // ⚠ 所以判据不是「分析成功」，而是「这一局的棋已经下完了」：`persistPendingGame()` 在
+  //   `finalizeGame()` 开始异步工作之前、以及 `pagehide`（页面即将消失）各写一次；
+  //   `adoptPendingGame()` 在下次开机时把这份 record 交给同一条分析流水线，补出报告并存档。
+  //
+  // ⚠ 存的是**会话区**（`chrome.storage.session`），不是 `local`：与另外四个 session 值同一条
+  //   规矩 —— 它们说的是「这次会话里发生了什么」，关掉浏览器就该忘掉。1.0.5 审计 P3 已经删掉了
+  //   往 `local` 的兜底，这里不再把它加回来。
+  //
+  // ⚠ 一个槽位（不是队列）：只有「最新一局还没结算的」值得救。上一局已经补存过就不会再被覆盖 ——
+  //   见下面 `adopted` 那个判断。
+  function persistPendingGame(reason) {
+    if (!(gameEpoch >= 1) || archivedEpoch[gameEpoch]) return null;
+    // 正在补存的那一局还没落地：不要用「当前这一局」把它盖掉，否则两次导航会连续丢掉两局。
+    if (pendingGame && pendingGame.adopted) return pendingGame;
+    var snap = snapshotGame();
+    if (!snap || !snap.record.moves.length) return null;
+    var pg = {
+      epoch: gameEpoch,
+      at: Date.now(),
+      reason: String(reason || ''),
+      players: snap.players || null,
+      record: snap.record,
+    };
+    pendingGame = pg;
+    var o = {}; o[SESSION_KEYS.pendingGame] = pg;
+    persistSession(o);
+    return pg;
+  }
+
+  function clearPendingGame(epoch) {
+    if (!pendingGame) return;
+    if (epoch != null && pendingGame.epoch !== epoch) return;
+    pendingGame = null;
+    // `set(null)` 而不是 `remove()`：会话区在夹具/降级环境里可能只有 get/set，而一个 null
+    // 值与「没有这个键」在每个读者眼里是同一件事（`hydrateSession` 就当它不存在）。
+    var o = {}; o[SESSION_KEYS.pendingGame] = null;
+    persistSession(o);
+  }
+
+  /** 开机时把上一页没算完的那一局接回来。返回新开的 job（没有可补的就 null）。 */
+  function adoptPendingGame(pg) {
+    if (!pg || !pg.record || !Array.isArray(pg.record.moves) || !pg.record.moves.length) return null;
+    // 已经结算过（存了，或被执行者自己的三档闸门之一判掉了）⇒ 不再重跑。
+    if (archivedEpoch[pg.epoch]) { clearPendingGame(pg.epoch); return null; }
+    var minMoves = GMStorage.clampMinMoves(S.minArchiveMoves);
+    if (pg.record.moves.length < minMoves) { clearPendingGame(pg.epoch); return null; }
+    // 一天以前的残局不再补：棋盘、对手、引擎版本都已经不是一回事，补出来的「检测」比没有更糟。
+    if (Date.now() - Number(pg.at || 0) > 24 * 3600 * 1000) { clearPendingGame(pg.epoch); return null; }
+    var tries = Number(pg.tries || 0);
+    if (tries >= 2) {
+      console.warn('[detector] 上一局补存已失败 ' + tries + ' 次，放弃：' + pg.record.moves.length + ' 手');
+      clearPendingGame(pg.epoch);
+      return null;
+    }
+    if (!claimEpoch(pg.epoch)) return null;
+    // ⚠⚠ 给「补存的那一局」留它自己的号，把当前这一局顶到下一个号上去。否则两边共用同一个
+    // epoch：`archiveFromJob` 成功时 `markEpochArchived()` 会把那个号标成已归档，而**正在下的
+    // 这一局**用的是同一个号 ⇒ 它结束时 `finalizeGame()` 第一行就早退，整局静默消失。
+    if (pg.epoch >= gameEpoch) bumpGameEpoch();
+    // 记一次尝试，免得同一局每次开机都重跑（失败两次就放手，见上面的 `tries`）。
+    var mine = { epoch: pg.epoch, at: pg.at, reason: pg.reason, players: pg.players,
+                 record: pg.record, tries: tries + 1, adopted: true };
+    pendingGame = mine;
+    var o = {}; o[SESSION_KEYS.pendingGame] = mine;
+    persistSession(o);
+    var job = newJob(S.mode === 'stepwise' ? 'step-live' : 'global', '补存上一局');
+    job._snap = { moves: (pg.record.moves || []).slice(), record: pg.record, players: pg.players || null };
+    job._epoch = pg.epoch;
+    job.note = T('panel|{reason}：为上一局补出报告并存档（{n} 手）',
+      { reason: T('panel|重新载入后补存'), n: pg.record.moves.length });
+    console.log('[detector] 补存上一局：' + pg.record.moves.length + ' 手（' + (pg.reason || '?') + '）');
+    paint();
+    pump();
+    return job;
   }
 
   // 0.3.7 §一.1 — take ownership of a game, once. Returns false when someone already holds it,
@@ -340,7 +436,7 @@
     if (!area || !area.get) return;
     try {
       area.get([SESSION_KEYS.archived, SESSION_KEYS.liveStopped, SESSION_KEYS.epoch,
-                SESSION_KEYS.lastGamePlayers], function (r) {
+                SESSION_KEYS.lastGamePlayers, SESSION_KEYS.pendingGame], function (r) {
         if (!r) return;
         var ae = r[SESSION_KEYS.archived];
         if (ae && typeof ae === 'object') for (var k in ae) if (ae[k]) archivedEpoch[k] = true;
@@ -353,6 +449,16 @@
         // been sitting in storage across a version that did not have it.
         var lp = r[SESSION_KEYS.lastGamePlayers];
         if (lp && typeof lp === 'object' && lp.players) lastGamePlayers = lp;
+        // 1.0.7 续 ⑧ — 上一页有没有一局没算完的棋。形状要查：这个值可能来自更老的版本。
+        var pg = r[SESSION_KEYS.pendingGame];
+        if (pg && typeof pg === 'object' && pg.record && Array.isArray(pg.record.moves)) {
+          pendingGame = pg;
+          // ⚠ 补跑分析的时机不是这里：`hydrateSession()` 在 `loadSettings()` 之前就发出去了，
+          // 而 `adoptPendingGame()` 要读 S.mode / S.minArchiveMoves。装在 `pendingAdopt` 里，
+          // 由 `boot()`（在设置之后）接手 —— 早跑会拿默认值算，等于用错设置判一遍。
+          if (booted) adoptPendingGame(pg);
+          else pendingAdopt = pg;
+        }
       });
     } catch (e) { /* nothing to restore */ }
   }
@@ -2613,6 +2719,15 @@
       return null;
     }
     // ---- from here on THIS call owns the game ----
+    // 1.0.7 续 ⑧ — BEFORE any of the asynchronous work below: the operator's page is about to
+    // navigate (a rated game goes back to the lobby), which destroys this script together with the
+    // engine run and the archive write. Once the record is in the session area a lost page costs a
+    // minute, not the game. `markEpochArchived()` clears it on every settle path.
+    //
+    // ⚠ The position is load-bearing in BOTH directions: it sits AFTER the 最小存档 gate and after
+    // the 「自动分析已关闭」 early return, so a game the operator's own rules declined is not
+    // resurrected on the next boot. Only a game this function really took is worth rescuing.
+    persistPendingGame(reason);
     // Everything above either declined (nothing to archive, or too short — both already settled)
     // or deferred: the `!S.autoAnalyze` branch deliberately leaves a normal ending for the manual
     // button, and a later force=true call is still allowed to take it.
@@ -6882,6 +6997,10 @@
     // `hydrateBlacklist()` may already have tried and returned unmarked (no host yet); this is the
     // retry that now has one.
     checkBlacklist();
+    // 1.0.7 续 ⑧ — 上一页被跳转打断的那一局。放在最后：这一刻设置已经读进来（`run()` 在
+    // `loadSettings()` 之后才调 `boot()`），面板也已经有 host，补跑的分析才有地方报告进度。
+    booted = true;
+    if (pendingAdopt) { var pa = pendingAdopt; pendingAdopt = null; adoptPendingGame(pa); }
   }
   /**
    * Everything that used to run at module scope. It is a function now for one reason: §1.2 says an
@@ -6906,6 +7025,18 @@
     // 0.4.8 §2: restore the session facts before anything can ask about them. Fire-and-forget —
     // every reader copes with the pre-restore value, so a late arrival can only add information.
     hydrateSession();
+    // 1.0.7 续 ⑧ — 页面就要消失（回大厅 / 评分页 / 刷新 / 关标签）时，把这一局先落进会话区。
+    //
+    // ⚠ `pagehide` 而不是 `beforeunload`：后者会挡住 bfcache，而且在移动端不一定触发。
+    // ⚠⚠ 只在 `ended` 时写：判据是「这一局已经下完了」。**下到一半就走人**（回大厅、关标签）
+    //   不是一局棋，把它补成一条存档就是在回放里塞一条不存在的对局 —— 那比丢一条更糟，
+    //   因为它是**假的**。`finalizeGame()` 在局终那一刻已经写过一次，这里是它没赶上时的兜底。
+    try {
+      window.addEventListener('pagehide', function () {
+        if (!ended) return;
+        persistPendingGame('页面跳转');
+      });
+    } catch (e) { /* 没有 window 的上下文：这条保护就只是没有，不影响别的 */ }
     // 0.4.9 §一.4 — the blacklist mirror. Same fire-and-forget reasoning: the button starts at
     // `na` and the match check simply retries, so a late arrival can only add information.
     hydrateBlacklist();
