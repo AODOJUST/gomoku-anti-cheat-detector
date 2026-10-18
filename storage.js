@@ -2691,7 +2691,10 @@
     acplLo: 0.003, acplHi: 0.015,   // aAcpl ramp: lower loss is better
     sharpHitLo: 0.65, sharpHitSpan: 0.35,
     outTop5Hi: 0.03,                // aOut ramp
-    riskHigh: 70, riskMid: 40,      // 高风险 / 可疑 cut lines
+    // ⚠⚠ 1.0.7 续 ⑨ — 这两条线必须与下面四条判词线**同一组数**，否则同一侧会出现
+    // 「76 分判 normal」「24 分判 ai」这种分数与判词互相打脸的情况（旧值是 70/40 对 75/55/45/30）。
+    // 现在是 65/35，与 app.js BASE_THRESHOLDS 逐字一致。
+    riskHigh: 65, riskMid: 35,      // 高风险 / 可疑 cut lines
     simWeight: 0.10,                // share of the risk score the feature library may claim
     // 0.4.2 §4.3: the evasion thresholds, learnable through the same mechanism as the rest
     // (learn.js merges its own copy of this object key by key, and only for keys it knows).
@@ -2702,9 +2705,12 @@
     evasionReg: 0.35,               // stddev / mean ceiling for "a regular rhythm"
     winningWR: 0.85,                // "winning" for the 将胜乱下 signal
     // 0.4.3 §1.6: the four cut lines behind the five risk bands. Right-open on whole points —
-    // 75 is AI, 74 is 疑似AI. A band is a summary of the risk score, not a second opinion
+    // 65 is AI, 64 is 疑似AI. A band is a summary of the risk score, not a second opinion
     // about it: nothing here feeds back into the score.
-    typeAiMin: 75, typeSuspectMin: 55, typeProMin: 45, typeExpertMin: 30,
+    // ⚠⚠ 1.0.7 续 ⑨ — 整体下移（75/55/45/30 → 65/35/28/20）。suspect 档变宽到 35~65 是为了
+    // 吃掉 35 与 65 之间那 30 分的真空带；四条线保持严格递减，`optimizeRiskCuts` 的阶梯
+    // 校验依赖这一点。与 app.js / learn.js 的那两份**必须逐字一致**。
+    typeAiMin: 65, typeSuspectMin: 35, typeProMin: 28, typeExpertMin: 20,
     // 0.4.7 §1.1: the two win-rate bounds a four run is classified with — the value of the best
     // move in the position BEFORE the run started. >= fourVcfWR is a conversion (VCF, not
     // scored); <= fourLostWR is a lost player firing fours that change nothing (scored).

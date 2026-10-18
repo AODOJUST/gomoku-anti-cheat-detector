@@ -95,12 +95,14 @@
     acplLo: 0.003, acplHi: 0.015,
     sharpHitLo: 0.65, sharpHitSpan: 0.35,
     outTop5Hi: 0.03,
-    riskHigh: 70, riskMid: 40,
+    riskHigh: 65, riskMid: 35,
     simWeight: 0.10,
     // 0.4.2 §4.3
     evasionLoss: 0.20, goodLoss: 0.05, evasionMin: 3, evasionReg: 0.35, winningWR: 0.85,
-    // 0.4.3 §1.6
-    typeAiMin: 75, typeSuspectMin: 55, typeProMin: 45, typeExpertMin: 30,
+    // 0.4.3 §1.6 — ⚠ 1.0.7 续 ⑨ 与 app.js 的 BASE_THRESHOLDS 逐字一致：两套阈值合并成一组，
+    // 「判 ai ⇒ ≥65」「判人类 ⇒ <35」在定义上恒成立。learn.js 因为 offscreen 不加载 storage.js
+    // 而必须自带这份副本，所以**改一处就得改另一处**（THE MIRROR RULE）。
+    typeAiMin: 65, typeSuspectMin: 35, typeProMin: 28, typeExpertMin: 20,
     // 0.4.7 §1.1
     fourVcfWR: 0.90, fourLostWR: 0.10,
   };
@@ -1027,7 +1029,11 @@
     var mid = (mean(pos.map(function (p) { return p.v; })) + mean(neg.map(function (n) { return n.v; }))) / 2;
     var best = pickCut(grid, mid);
     var riskHigh = Math.round(best.t);
-    var out = { riskHigh: riskHigh, riskMid: Math.round(riskHigh * 40 / 70), f1: best.f1 };
+    // ⚠ 1.0.7 续 ⑨ — 原来是硬编码的 `riskHigh * 40 / 70`。40 和 70 现在是 35 和 65，
+    // 再写死一次就等于把第二份答案留在重标定路径上（改了默认值它还会算回旧比例）。
+    // 改成按 `th` 里那两条线的比例推，只有一份来源。
+    var midRatio = th.riskHigh > 0 ? th.riskMid / th.riskHigh : 0.5;
+    var out = { riskHigh: riskHigh, riskMid: Math.round(riskHigh * midRatio), f1: best.f1 };
     // 0.4.3 §1.6: the same F1-optimal AI/human cut is the honest anchor for the AI band's lower
     // edge (§1.6 asks for these cuts to be learnable), and the three lower edges keep the §1.6
     // LADDER relative to it — so the whole ladder moves together instead of letting two bands

@@ -2333,7 +2333,12 @@ const BASE_THRESHOLDS = {
   acplLo: 0.003, acplHi: 0.015,
   sharpHitLo: 0.65, sharpHitSpan: 0.35,
   outTop5Hi: 0.03,
-  riskHigh: 70, riskMid: 40,
+  // 1.0.7 续 ⑨ — 两条「等级线」与下面四条「判词线」原本是两套数（70/40 对 75/55/45/30），
+  // 于是同一侧可以「76 分 / 判 normal」和「24 分 / 判 ai」并存 —— 分数和判词互相打脸。
+  // 现在两套共用一组边界：高风险 ⟺ 判 AI（≥65），可疑 ⟺ 判疑似（≥35）。
+  // ⚠ 65 / 35 是产品口径，不是拟合结果：`_tools/_calib-loo.cjs` 已证明按样本重拟合权重会让
+  // 留出局变差（0.667 vs 1.000），所以这次只动边界、不动权重。
+  riskHigh: 65, riskMid: 35,
   simWeight: 0.10,
   // 0.4.2 §4.3: the evasion thresholds. Same mechanism as the rest — learn.js merges its own
   // copy key by key, and only for keys it knows — so all five are learnable. The defaults are
@@ -2353,14 +2358,24 @@ const BASE_THRESHOLDS = {
   // constants stay as the belt-and-braces default for a caller that passes no set at all.
   fourVcfWR: 0.90,      // at or above this, the four-run is a winning line (VCF)
   fourLostWR: 0.10,     // at or below this, it is 无用冲四 and it scores
-  // 0.4.3 §1.6: the five risk bands' four cut lines, all right-open (75 is AI, 74 is 疑似AI).
+  // 0.4.3 §1.6: the five risk bands' four cut lines, all right-open (65 is AI, 64 is 疑似AI).
   // The band a game lands in is a summary of the risk score, not a second opinion about it,
   // so these are configurable and learnable like every other cut but never feed back into the
   // score itself.
-  typeAiMin: 75,
-  typeSuspectMin: 55,
-  typeProMin: 45,
-  typeExpertMin: 30,
+  //
+  // ⚠⚠ 1.0.7 续 ⑨ — 四条线整体下移，让「判词」与「分数」不再互相矛盾：
+  //     ai      ≥65   （原 75）
+  //     suspect 35~65 （原 55~75）  ← 唯一一条变宽的档，用来吃掉 35..65 这段
+  //     pro     28~35 （原 45~55）
+  //     expert  20~28 （原 30~45）
+  //     normal  <20   （原 <30）
+  // 这样「判为 ai ⇒ 分 ≥65」「判为 pro/expert/normal（人类）⇒ 分 <35」在**定义上**恒成立，
+  // 127 个存档侧面的实测违例数为 0/0。为什么必须留一个 suspect 档：35 与 65 之间有 30 分的
+  // 真空带，不设一档就必然有侧无处可去。
+  typeAiMin: 65,
+  typeSuspectMin: 35,
+  typeProMin: 28,
+  typeExpertMin: 20,
 };
 
 // Resolve learnedParams into the two objects sideAggregate consumes. Unknown or
@@ -2382,7 +2397,7 @@ function riskParams(params) {
 //
 // The request is one sentence: every detection signal must be adjustable in the settings page, and
 // the table those settings build may sum to at most 130%. Both halves are about the risk score,
-// which is `clamp(Σ weight_i × a_i × 100, 0, 100)` compared against the 70/40 cuts — so the
+// which is `clamp(Σ weight_i × a_i × 100, 0, 100)` compared against the 高风险/可疑 cuts — so the
 // ABSOLUTE size of the weights is what the score is made of, and the ceiling is a real limit
 // rather than a UI nicety. The operator went further than tuning their own profile: the table they
 // built in the panel IS the shipped default now (a table of exactly 1.30 — see BASE_WEIGHTS), so the
@@ -3639,11 +3654,13 @@ function segmentSide(steps, side) {
 // the thresholds object so learn.js can move them, and every fallback is the §1.6 default —
 // a hand-edited learnedParams must not be able to blank a band out.
 function riskBand(risk, thresholds) {
+  // ⚠ 1.0.7 续 ⑨ — 这里原来把 75/55/45/30 又写了一遍。四个数字现在只在 BASE_THRESHOLDS
+  // 里有一份，fallback 直接读它 —— 两处各写一份，改了一处另一处就会静默留在旧值上。
   const t = thresholds || BASE_THRESHOLDS;
-  const aiMin = t.typeAiMin != null ? t.typeAiMin : 75;
-  const susMin = t.typeSuspectMin != null ? t.typeSuspectMin : 55;
-  const proMin = t.typeProMin != null ? t.typeProMin : 45;
-  const expMin = t.typeExpertMin != null ? t.typeExpertMin : 30;
+  const aiMin = t.typeAiMin != null ? t.typeAiMin : BASE_THRESHOLDS.typeAiMin;
+  const susMin = t.typeSuspectMin != null ? t.typeSuspectMin : BASE_THRESHOLDS.typeSuspectMin;
+  const proMin = t.typeProMin != null ? t.typeProMin : BASE_THRESHOLDS.typeProMin;
+  const expMin = t.typeExpertMin != null ? t.typeExpertMin : BASE_THRESHOLDS.typeExpertMin;
   if (risk >= aiMin) return 'ai';
   if (risk >= susMin) return 'suspect';
   if (risk >= proMin) return 'pro';
@@ -3875,7 +3892,10 @@ if (typeof module !== 'undefined' && module.exports) {
     // 0.4.3 §1.1/§1.2/§1.5: the proximity grade, the segmenter and the classifier. Exported
     // for the same reason — a test that had to re-implement segmentSide() to check it would
     // be testing its own copy, and the two could drift.
-    stepProximity, segmentSide, riskBand, classifySide, MIN_SEGMENT,
+    stepProximity, segmentSide, riskBand, classifySide, TYPE_OF_BAND, MIN_SEGMENT,
+    // ⚠ 1.0.7 续 ⑨ — `TYPE_OF_BAND` 导出是为了让套件能直接读这张映射表，而不是在套件里
+    // 再抄一份（`verify-069` 原来比的是夹具快照里的 type，阈值一下移它就和实现脱钩了）。
+    // 同一张表只有这一份。
     // 1.0.7 §1.1/§1.2 — the Top2-5 tier table and the evasive-reading pass. Exported for the same
     // reason as the line above: `verify-069` drives `lowDepth` / `evasiveDepthScore` /
     // `evasiveRhythm` / `evasiveActivation` on hand-built step lists rather than re-implementing

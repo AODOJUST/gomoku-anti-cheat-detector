@@ -13529,9 +13529,21 @@
     renderList();
   }
 
+  // ⚠⚠ 1.0.7 续 ⑨ — 颜色**不再写死 70 / 40**。判词（ai / suspect / 其余）本身就是档，由唯一
+  // 那份阈值算出来，这里只负责把档翻译成颜色。写死两条线的话，阈值一改颜色就静默留在旧值上：
+  // 65 分是红字配黄点，而界面上看不出这是两个来源。存档列表与样本库两个圆点共用这一个函数。
+  function bandColor(rep) {
+    var b = rep && rep.black ? (rep.black.risk || 0) : 0;
+    var w = rep && rep.white ? (rep.white.risk || 0) : 0;
+    var t = (w >= b ? (rep && rep.types && rep.types.W) : (rep && rep.types && rep.types.B)) || null;
+    var s = t && t.suspect;
+    if (s === 'ai') return '#e74c3c';
+    if (s === 'suspect') return '#f1c40f';
+    return '#2ecc71';
+  }
+
   function riskColorOf(a) {
-    var r = a.maxRisk || 0;
-    return r >= 70 ? '#e74c3c' : (r >= 40 ? '#f1c40f' : '#2ecc71');
+    return bandColor(a.report || {});
   }
 
   // The title you click in the list and the title you land on in the detail view have to
@@ -15214,8 +15226,7 @@
   function sampleDotColor(s) {
     var rep = s.report || {};
     if (!(rep.steps || []).length) return '#4a5568';
-    var r = Math.max(rep.black ? rep.black.risk : 0, rep.white ? rep.white.risk : 0);
-    return r >= 70 ? '#e74c3c' : (r >= 40 ? '#f1c40f' : '#2ecc71');
+    return bandColor(rep);
   }
 
   // 0.3.4 二.2: how many of the current page's samples are ticked, and the bar's own label.
