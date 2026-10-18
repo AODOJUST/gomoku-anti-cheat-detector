@@ -58,20 +58,27 @@
   // 0.16, `top1`/`acpl` (base) took 0.05, and the five rare behaviour keys took the remaining 0.21;
   // `noBlunder` and `probeMatch` (both behaviour) went to 0. The total is still 1.50 and no code
   // changed — this paragraph exists so the next reader does not think the learner was left behind.
+  // ⚠⚠ 1.0.7 续 §一 then returns the parked weight to the live terms, so the split goes
+  // **0.79/0.71 → 0.75/0.75** — LEVEL, and this time it really is (the paragraph below claimed
+  // level already, which was wrong for the 0.79/0.71 table). desperate/evasion/uselessFour −0.04
+  // each (base takes −0.04 of it) against goodPool +0.04, liveThree +0.03, sharpStreak +0.02,
+  // sharpTotal +0.03 (behaviour takes +0.08 of it). Total still exactly 1.50, no code changed.
   // ⚠ The comment two paragraphs down claiming the behaviour group carries "the majority of the
-  // budget" was a 0.5.6–0.5.7 reading; the split is now nearly level (0.79 / 0.71).
+  // budget" was a 0.5.6–0.5.7 reading; the split is now exactly level (0.75 / 0.75).
   var FALLBACK_WEIGHTS = {
-    top1: 0.23, acpl: 0.10, sharp: 0.22, out: 0.12, desperate: 0.12, time: 0,
-    evasion: 0.12, winBlunder: 0.04,
-    uselessFour: 0.12,
-    sharpStreak: 0.07,
-    sharpTotal: 0.06,
+    top1: 0.23, acpl: 0.10, sharp: 0.22, out: 0.12, desperate: 0.08, time: 0,
+    evasion: 0.08, winBlunder: 0.04,
+    uselessFour: 0.08,
+    sharpStreak: 0.09,
+    sharpTotal: 0.09,
     // 0.5.7-Alpha §四 — `goodPool` 0.03 → 0.19, `out` 0.27 → 0.12. THE MIRROR RULE: this table must
     // stay term-for-term equal to app.js BASE_WEIGHTS / storage.js DEFAULT_WEIGHTS, and the total is
     // still exactly 1.50. The five keys above the pool took +0.21 between them as a PARKING decision
     // (they are 0 on the operator's corpus), not a fit — see app.js BASE_WEIGHTS note 3.
-    goodPool: 0.19,
-    liveThree: 0.03,
+    // 1.0.7 续 §一 unparked it: those keys give 0.12 back and the pool ends at 0.23 (level with
+    // `top1`) — see app.js BASE_WEIGHTS note 5.
+    goodPool: 0.23,
+    liveThree: 0.06,
     // ⚠⚠ 1.0.7 §1.2 — **0**, deliberately. THE MIRROR RULE: equal to app.js BASE_WEIGHTS /
     // storage.js DEFAULT_WEIGHTS. The mechanism is implemented and mirrored in `subscoresForSide`
     // below, but the activation measured INVERTED on the operator's 65 archives (89% of human
@@ -120,11 +127,12 @@
   // reasons that have nothing to do with the base. 0.5.6 §2 does not change that structure: it
   // moves the SPLIT (the behaviour signals came to carry the majority of the budget, and the six
   // carry less), which is a consequence of the defaults rather than an edit here. ⚠ 0.5.7-Alpha §四
-  // moves the split again — 0.10 from `out` (base) to `goodPool` (behaviour) — and it is now LEVEL
-  // (0.75 / 0.75); the sentence above about a majority was a 0.5.6–0.5.7 reading. The two groups are
-  // normalised separately, to the budget each group's own defaults sum to — `group()` below reads
-  // both off `defaultWeights()`, so adding a key here is the whole wiring and no number is written
-  // down twice.
+  // moved the split harder still (0.79 / 0.71 in favour of the six), and **1.0.7 续 §一 returns that
+  // 0.04 to the behaviour side — the split is now exactly LEVEL (0.75 / 0.75)**; the sentence above
+  // about a majority was a 0.5.6–0.5.7 reading and is now level rather than either group winning.
+  // The two groups are normalised separately, to the budget each group's own defaults sum to —
+  // `group()` below reads both off `defaultWeights()`, so adding a key here is the whole wiring and
+  // no number is written down twice.
   //
   // ⚠ `time` stays IN this list although its default is 0 (0.5.7 §1.2). Removing it would take the
   // panel's 时间规律 row and its `learn.weight.time` label away with it, and the operator is
@@ -931,8 +939,9 @@
   // ⚠ 0.5.7 §1 moved both budgets without touching a line of this code, which is the point: the
   // base became 0.85 (six statistics minus `time`'s 0.15) and the behaviour group 0.65 (seven plus
   // the three new low-end-AI signals). ⚠ 0.5.7-Alpha moved them again — `out` is base, `goodPool` is
-  // behaviour, and two behaviour keys went to zero — so the split is now **0.79 / 0.71**. The total
-  // is still 1.50 and this function is still untouched.
+  // behaviour, and two behaviour keys went to zero — so the split is now **0.79 / 0.71**. 1.0.7 续
+  // §一 then returned the parked weight to the live terms, which lands it on **0.75 / 0.75**. The
+  // total is still 1.50 and this function is still untouched.
     var dw = defaultWeights();
     var group = function (keys) {
       var raw = {}, sum = 0, budget = 0, i;

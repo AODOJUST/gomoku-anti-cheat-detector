@@ -2253,17 +2253,21 @@ const BASE_WEIGHTS = {
   //   · the TOTAL is the invariant, and it is **1.50** — exactly the ceiling, and the reason
   //     `verify-059` asserts `total <= SIGNAL_WEIGHT_SUM_MAX` on the shipped table rather than
   //     leaving it to a pin;
-  //   · ⚠ the largest single term is now **`top1` (0.23)**, then `sharp` (0.22), then `goodPool`
-  //     (0.19). 0.5.3 and 0.5.7 both had `out` on top at 0.27; 0.5.7-Alpha cuts it to 0.12 and
-  //     lifts `top1`/`goodPool`, so the wiki's 「最大的一项」 claim moves to `top1` and is asserted
-  //     against this table.
+  //   · ⚠ the largest terms are now **`top1` (0.23) and `goodPool` (0.23) TIED**, then `sharp`
+  //     (0.22). 0.5.3 and 0.5.7 both had `out` on top at 0.27; 0.5.7-Alpha cut it to 0.12 and lifted
+  //     `top1` to sole first place (0.23 vs `goodPool`'s 0.19); 1.0.7 续 §一 takes `goodPool` to
+  //     0.23 as well, so the wiki's 「最大的一项」 claim has to say **并列** and `verify-058`'s pin
+  //     (`W.top1 >= max(others)`) stays true rather than being special-cased.
   //
-  // The two families, and where each term came from:
-  //   · 基础六项 (top1/acpl/sharp/out/desperate/time) — the 0.4.2 statistics, 0.79 together since
-  //     `time` retired and `out` was cut, and the terms that actually pay.
+  // The three families, and where each term came from:
+  //   · 基础六项 (top1/acpl/sharp/out/desperate/time) — the 0.4.2 statistics, **0.75** together
+  //     since 1.0.7 续 §一 took 0.04 off `desperate`.
   //   · 行为信号 (evasion/winBlunder/uselessFour/sharpStreak/sharpTotal/goodPool/liveThree) —
   //     0.4.2's evasion pair, 0.4.7's 无用冲四, 0.4.8's two 唯一手 runs, and 0.5.2/0.5.5's two
-  //     pools. 0.63 together. These are the seven `learn.js` optimises in their own budget.
+  //     pools. **0.67** together (0.63 before 1.0.7 续 §一 returned 0.04 to `goodPool` and
+  //     0.03/0.02/0.03 to `liveThree`/`sharpStreak`/`sharpTotal` out of `evasion`/`uselessFour`).
+  //   · 低端AI 三项 (noBlunder/steadyLost/probeMatch) — **0.08**; `evasiveBehavior` (1.0.7 §一) sits
+  //     in the middle family and contributes 0, so the three families sum to the 1.50 ceiling.
   //
   // ⚠⚠ 0.5.7-Alpha 修正了 0.5.7 的两个问题，总权重仍精确为 1.50。
   //
@@ -2291,6 +2295,17 @@ const BASE_WEIGHTS = {
   //      而 `goodPool` 是 0.566 / 0.304 —— 后者抬分是全员性的，前者才打尾部分布。
   //      只按 §四 的 −0.10 做，≥70 反而会升 4.7 个百分点。
   //
+  //   5. **1.0.7 续 §一 把「停放」的份额要了回来**（同版本号，不升版）。停放等于让 0.12 永远不
+  //      起作用：那三项在**本**语料上恒 0，权重写在那儿只是占着总额。于是 desperate / evasion /
+  //      uselessFour 各 −0.04（合计 −0.12），整笔转给**在语料上活着**的项 —— `goodPool` +0.04
+  //      （0.19→0.23，因此与 `top1` **并列**最大）、`liveThree` +0.03、`sharpStreak` +0.02、
+  //      `sharpTotal` +0.03（合计 +0.12）。合计仍**精确 1.50**。
+  //      ⚠ 代价是明确的：均分抬高约 2~3 分、≥70 占比小幅上升，这是**结构性后果**不是失误 ——
+  //      两个活项（`goodPool` 与 `liveThree`）在机器侧抬得比人类侧多，正是想要的。不做的话，
+  //      §1.2 的「活三」与 §四 的「好点池」拿到的份额会被五个死项摊薄。
+  //      ⚠⚠ **已在档的分数不再可比**：同一份棋谱在 1.0.7 前/后会差 2~3 分，历史档案的
+  //      `risk` 字段是**当时那张表**算的，别拿它和新分析并列比较。
+  //
   // 实测（`_tools/_diag20-alpha-weights.cjs`，表对表复算，基线 = 0.5.7 表 × 0.5.7 读数）：
   //   均分 56.81 → 48.06（人类方 −6.77，机器方 −11.34，§七.3 要 −5~−8 ✓）
   //   ≥70 比例 −7.9 个百分点（§七.3 要 −5~−10 ✓）
@@ -2303,11 +2318,11 @@ const BASE_WEIGHTS = {
   // drives the panel's row list, `riskOfSub`/`sideAggregate` both read the table by key, and an
   // archive written by an older build still carries `thinkMs`. A missing key and a zero key are
   // not the same thing anywhere in this codebase — see the ⚠ in the block above about the learner.
-  top1: 0.23, acpl: 0.10, sharp: 0.22, out: 0.12, desperate: 0.12, time: 0,
-  evasion: 0.12, winBlunder: 0.04,
-  uselessFour: 0.12,
-  sharpStreak: 0.07,
-  sharpTotal: 0.06,
+  top1: 0.23, acpl: 0.10, sharp: 0.22, out: 0.12, desperate: 0.08, time: 0,
+  evasion: 0.08, winBlunder: 0.04,
+  uselessFour: 0.08,
+  sharpStreak: 0.09,
+  sharpTotal: 0.09,
   // 0.5.5 §1.1/§1.3.1 redefined the pool (Top5, share + streak) and made it first-class rather
   // than a surcharge; 补增 §三 then made it the largest term, and 0.5.3's restore took it back to
   // 0.03. **0.5.7-Alpha §四 raises it to 0.19** — the largest single increase in this release
@@ -2315,9 +2330,12 @@ const BASE_WEIGHTS = {
   // after that redefinition the pool expresses 「持续走在引擎好点」 more stably than `out` does.
   // ⚠ Measured lift is +0.262 (machine 0.566 vs human 0.304) against `out`'s +0.794 — so this is a
   // "stable and directional" choice, NOT the most discriminative one. See the release note above.
-  goodPool: 0.19,
-  // §1.2's 活三 pool, back at 0.5.3's 0.03.
-  liveThree: 0.03,
+  // **1.0.7 续 §一 takes it to 0.23** — the share the five parked keys were holding comes back to
+  // the terms that actually fire, which puts the pool level with `top1` (see note 5 above).
+  goodPool: 0.23,
+  // §1.2's 活三 pool. 0.5.3: 0.03; 1.0.7 续 §一: **0.06** — the only other term that fires on both
+  // groups with the right sign, so it takes the second-largest slice of the returned 0.12.
+  liveThree: 0.06,
   // ⚠⚠ 1.0.7 §1.2 — **PARKED AT 0**, and the reason is a measurement rather than a preference.
   // The mechanism §1.2.3 specifies (deep low points, and deep low points between good ones) is
   // implemented and reported — `lowDepth` / `evasiveDepthScore` / `evasiveRhythm` / the two metric

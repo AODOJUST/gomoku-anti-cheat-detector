@@ -413,12 +413,13 @@ var GM_TAG_WIKI = (function () {
     },
 
     // =====================================================================================
-    // 检测信号 — app.js BASE_WEIGHTS. The sixteen terms the risk score is summed from.
+    // 检测信号 — app.js BASE_WEIGHTS. The seventeen terms the risk score is summed from.
     //
     // The first six are the 基础统计 (0.4.2's top1/acpl/sharp/out/desperate/time, with `time` at 0
-    // since 0.5.7); the remaining ten are the 行为信号, each exactly 0 on a game that shows no such
-    // pattern — seven from 0.4.2/0.5.2 and three from 0.5.7 §1.3, the last three being the first
-    // whose figures do not come from the engine's candidate list at all. Through 0.5.4 the six were
+    // since 0.5.7); the remaining eleven are the 行为信号, each exactly 0 on a game that shows no such
+    // pattern — seven from 0.4.2/0.5.2, three from 0.5.7 §1.3 (the first whose figures do not come
+    // from the engine's candidate list at all), and one from 1.0.7 §1.2 (`evasiveBehavior`, shipped
+    // at 0 for the reason its own entry gives). Through 0.5.4 the six were
     // the whole budget and the seven rode on top as surcharges; 0.5.5 §1.3 made the WHOLE table one
     // budget, 0.5.6 补增 §三 replaced that budget with the operator's own table, and 0.5.7 §1 raised
     // the ceiling from 130% to 150% and spent the difference on the three new signals — so as
@@ -435,13 +436,13 @@ var GM_TAG_WIKI = (function () {
         meaning: '实际走法与引擎首选的一致程度。不是「命中率」那么简单——0.4.3 起用的是'
              + '分档接近度：首选记 1.0、2–5 名记 0.80、6–8 名记 0.50，再取均值后过斜坡。',
         usage: '最基础的一项。它单独说明不了什么，但它是所有其他信号的对照组。',
-        impact: '权重 {w}，基础统计六项之一，也是整张权重表里最大的一项（0.5.7-Alpha 起，'
-              + '此前的最大项是「出前五」）。',
+        impact: '权重 {w}，基础统计六项之一，也是整张权重表里最大的一项 —— 与「好点池」并列'
+              + '（0.5.7-Alpha 起它单独居首，1.0.7 续 把好点池提到同一个数）。',
       },
       en: {
         meaning: 'How closely the played moves match the engine\'s first choice. Not a plain hit rate — since 0.4.3 it reads a graded proximity: top-1 scores 1.0, ranks 2–5 score 0.80, ranks 6–8 score 0.50, and the mean goes through a ramp.',
         usage: 'The most basic term. On its own it proves little, but it is the control group for everything else.',
-        impact: 'Weight {w}, one of the six base statistics — and the largest single term in the table since 0.5.7-Alpha, a title 出前五 held before it.',
+        impact: 'Weight {w}, one of the six base statistics — and, jointly with 好点池, the largest single term in the table. 0.5.7-Alpha put it alone on top (a title 出前五 held before it); 1.0.7 续 lifted the pool level with it.',
       },
     },
     {
@@ -604,8 +605,11 @@ var GM_TAG_WIKI = (function () {
              + '是否命中首选。占比 55% 以下不计分，连续度不足 3 不扣分 —— 短连击只是不加分，'
              + '不会把占比挣来的分吃掉。',
         impact: '权重 {w}，行为信号之一。没有好点时占比项为 0。0.5.7-Alpha 把权重从 0.03 提到 0.19 ——'
-              + '实测它是「覆盖广（80% 的方）且方向正（机器 0.566 / 人类 0.304）」的行为项，'
-              + '因此承接了「不漏防」与「探针匹配」让出的份额。',
+              + '实测它是「覆盖广（80% 的方）且方向正（机器 0.566 / 人类 0.304）」的行为项。'
+              + '1.0.7 续 再把它提到 0.23：五个在本语料上恒为 0 的项把份额让了回来，好点池接的'
+              + '是最大的一份，因此它与基础统计里那一项并列整张表的最大项。'
+              // ⚠ 这里刻意不写那一项的显示名：标签百科的搜索按**显示名**命中条目，
+              //   把「Top1 吻合」写进别的条目会让搜它的人一次搜出两条（verify-056 钉着这件事）。
       },
       en: {
         meaning: 'A good-point pool: 70% the share of hands inside the engine\'s top-5 candidates, '
@@ -615,7 +619,7 @@ var GM_TAG_WIKI = (function () {
              + 'good points rather than whether any single hand hit the top choice. Nothing scores '
              + 'below a 55% share, and a run shorter than three costs nothing — a short run fails to '
              + 'add, it does not eat the share\'s contribution.',
-        impact: 'Weight {w}, one of the behaviour signals. Zero with no good points at all. 0.5.7-Alpha raised it from 0.03 to 0.19: measured, it is the behaviour term that both fires widely (80% of sides) and points the right way (machine 0.566 against human 0.304), so it took the share that 不漏防 and 探针匹配 gave up.',
+        impact: 'Weight {w}, one of the behaviour signals. Zero with no good points at all. 0.5.7-Alpha raised it from 0.03 to 0.19: measured, it is the behaviour term that both fires widely (80% of sides) and points the right way (machine 0.566 against human 0.304), so it took the share that 不漏防 and 探针匹配 gave up. 1.0.7 续 raised it again to 0.23 — the share five corpus-zero terms handed back — which leaves it TIED with the base statistics term for the largest in the table (the entry deliberately does not spell that term\'s display name out: the wiki search hits on display names, and a second copy would make it two results).',
       },
     },
     {

@@ -2641,13 +2641,18 @@
     // see app.js BASE_WEIGHTS for the 65-archive numbers), and the 0.21 that could not be returned
     // to a live term parked on the five behaviour keys that are 0 on this corpus. The total is
     // still exactly 1.50, which `verify-059` pins.
-    top1: 0.23, acpl: 0.10, sharp: 0.22, out: 0.12, desperate: 0.12, time: 0,
-    evasion: 0.12, winBlunder: 0.04,
-    uselessFour: 0.12,
-    sharpStreak: 0.07,
-    sharpTotal: 0.06,
-    goodPool: 0.19,
-    liveThree: 0.03,
+    // ⚠ 1.0.7 续 §一 moves 0.12 of that parked weight back to the terms that fire: `desperate` /
+    // `evasion` / `uselessFour` 0.12 → 0.08 each, `goodPool` 0.19 → 0.23, `liveThree` 0.03 → 0.06,
+    // `sharpStreak` 0.07 → 0.09, `sharpTotal` 0.06 → 0.09. Still exactly 1.50 — see note 5 in
+    // app.js BASE_WEIGHTS for the cost (scores on the same record go up 2–3 points, so an archived
+    // `risk` from before this table is not comparable with one analysed after it).
+    top1: 0.23, acpl: 0.10, sharp: 0.22, out: 0.12, desperate: 0.08, time: 0,
+    evasion: 0.08, winBlunder: 0.04,
+    uselessFour: 0.08,
+    sharpStreak: 0.09,
+    sharpTotal: 0.09,
+    goodPool: 0.23,
+    liveThree: 0.06,
     // ⚠⚠ 1.0.7 §1.2 — **0**, deliberately. The mechanism is implemented and reported (see
     // app.js BASE_WEIGHTS and `evasiveActivation()`), but on the operator's 65 archives the
     // activation measured INVERTED — it fired on 89% of human sides and 11% of AI ones, so

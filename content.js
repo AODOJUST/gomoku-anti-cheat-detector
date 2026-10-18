@@ -2373,7 +2373,13 @@
       job.progress = msg.p;
       job.progressMsg = msg.msg;
       if (selectedId == null) selectedId = job.id;
+      // ⚠⚠ 1.0.7 续 §三 A — 缩略态也要重画。这条 handler 原来只调 `paintStatus()`，于是**全局
+      // 分析**（没有选中任何任务、缩略态显示「最近完成的那一个」）的时候，面板里的百分比一路在
+      // 涨、缩略窗口里的百分比却停在上一次重画的值上（0%）。产品不报错，界面看不出 —— 只有盯着
+      // 两个窗口一起看才发现。缩略态的**数据源与状态区不同**（`pickCompactJob()`），所以「状态区
+      // 画了」不等于「缩略态画了」。
       paintStatus();
+      paintCompact();
       return;
     }
     if (msg.type === 'gm-restore-panel') {
@@ -3256,7 +3262,13 @@
     ':host(.dragging) .gmcp{box-shadow:0 14px 40px rgba(0,0,0,.7);border-color:var(--gm-lk)}',
     '.gmcp .cprow{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:7px 12px}',
     '.gmcp .cpk{font-size:12px;color:var(--gm-mut)}',
-    '.gmcp .cpv{font-size:22px;font-weight:600;font-variant-numeric:tabular-nums;line-height:1.1}',
+    // ⚠ 1.0.7 续 §三 B — `#12 ` in its own span. It is a QUEUE INDEX, not part of the label: at the
+    // same 12px it read as 「#12黑」 glued to the word, and at `OV_COMPACT_W`'s old 132px the whole
+    // label+value pair 「#12 黑  未检测」 was wider than the box (未检测 is 3 full-width chars). The
+    // index is a pointer, so it is smaller and slightly dimmer; the width went to 148 and the value
+    // came down to 20px so the worst case (two-digit index + 未检测 + a three-digit score) fits.
+    '.gmcp .cpn{font-size:11px;font-weight:600;opacity:.72}',
+    '.gmcp .cpv{font-size:20px;font-weight:600;font-variant-numeric:tabular-nums;line-height:1.1}',
     '.gmcp .cpbar{height:4px;background:var(--gm-in);margin:0 12px 8px}',
     '.gmcp .cpbar>i{display:block;height:100%;background:var(--gm-lk);width:0}',
     // The shrink icon is a tap target (restore); a press that travels drags it instead.
@@ -3557,6 +3569,16 @@
       // on `act`, so without a token on the container, clicking into the field would close the
       // box that owns it. `'track-menu'` is whitelisted and then ignored in the dispatcher.
       '<div class="ctx" data-slot="trackmenu" data-act="track-menu" role="menu"></div>' +
+      // 1.0.7 续 §二 — the QUEUE ROW menu. Same `.ctx` implementation a fifth time, but opened by
+      // a right click on a `.qi` rather than by a button, so it has NO owning button: `toggleMenu`
+      // is not used for it, `openJobMenu()` positions it at the pointer, and `closeMenus()`'s
+      // `btn` lookup simply finds nothing (it is guarded).
+      //
+      // ⚠ It is NOT in `paintMenus()` either, for a different reason than `trackmenu`: its contents
+      // depend on WHICH row was right-clicked and on that job's state (存为存档 vs 覆盖存档,
+      // and whether 删除任务 is even offered), so it is built by `openJobMenu()` from the job.
+      // A repaint that rebuilt it from nothing would empty an open menu.
+      '<div class="ctx" data-slot="jobmenu" role="menu"></div>' +
       '<div class="gmcp" data-act="restore" title="' + esc(T('panel|点击恢复完整面板')) + '">' +
         // 0.5.4 §3.2.3 — the labels carry a `data-slot` because they are `#seq + 黑/白` and the
         // seq changes with the job. The initial text is only what the first frame shows.
@@ -3874,7 +3896,10 @@
     // `data-act` button and `.show` class the other five do. Leaving it out is exactly the
     // 「画了没接」 shape: the box would stay on screen and the button would stay lit after the
     // operator clicked elsewhere.
-    ['lang', 'rule', 'engine', 'ask', 'copy', 'track'].forEach(function (which) {
+    // 1.0.7 续 §二 — 'job' joins for the `.show` half only (it has no owning button, so `btn` is
+    // null here and the lookup is guarded). Without it a right-click menu would survive a click
+    // on any other control.
+    ['lang', 'rule', 'engine', 'ask', 'copy', 'track', 'job'].forEach(function (which) {
       var box = root.querySelector('[data-slot=' + menuSlot(which) + ']');
       if (box) box.classList.remove('show');
       var btn = root.querySelector('[data-act=' + menuBtn(which) + ']');
@@ -4202,6 +4227,22 @@
       if (host && path.indexOf(host) >= 0) return;
       closeMenus();
     }, true);
+    // 1.0.7 续 §二 — right click on a queue row opens that row's menu. Two things are deliberate:
+    //   · `preventDefault()` only when the pointer is ON a `.qi`, so the browser's own context menu
+    //     still works everywhere else in the panel (it is how the operator copies a score);
+    //   · selecting the row as well. The menu acts on the right-clicked job by `data-id`, but the
+    //     status area above still describes `currentJob()`, and a menu about one task next to a
+    //     status line about another is the kind of two-answers problem this project keeps paying for.
+    root.addEventListener('contextmenu', function (ev) {
+      var t = ev.target;
+      var row = (t && t.closest) ? t.closest('.qi') : null;
+      if (!row) return;
+      ev.preventDefault();
+      var id = row.getAttribute('data-id');
+      selectedId = id;
+      if (root) paint();
+      openJobMenu(id, ev.clientX, ev.clientY);
+    });
     root.addEventListener('click', function (ev) {
       // A drag that travelled ends in a mouseup, and that mouseup still fires a click.
       // Without this the eval-only panel would expand the instant a drag ended on it.
@@ -4354,6 +4395,15 @@
       // the same action, so they must not be two code paths.
       if (act === 'force-save') { manualSaveToReplay(); return; }
       if (act === 'export') { exportSelected(); return; }
+      // ---- 1.0.7 续 §二 — the queue row's four operations ----
+      // Every one of them carries `data-id`, because the click arrives from a row the operator may
+      // already have moved away from (the status-area links describe `currentJob()`, the right-click
+      // menu describes the row that was actually right-clicked). Reading `selectedId` here instead
+      // would make the two entry points disagree about which task was meant.
+      if (act === 'job-archive') { manualArchiveJob(findJob(hit.getAttribute('data-id'))); return; }
+      if (act === 'job-export') { exportJob(findJob(hit.getAttribute('data-id'))); return; }
+      if (act === 'job-reanalyze') { reanalyzeJob(findJob(hit.getAttribute('data-id'))); return; }
+      if (act === 'job-delete') { deleteJob(findJob(hit.getAttribute('data-id'))); return; }
       if (act === 'clear') { jobs = []; seqCounter = 0; selectedId = null; paint(); return; }
     });
 
@@ -4403,8 +4453,12 @@
   // value is applied when a panel is built.
   var ovState = GMStorage.overlayDefaults();
   var OV_MIN_W = 240, OV_MIN_H = 200;
-  // 0.3.1 three-state sizes. Compact is fixed (~132×70); mini is the 48×48 shield.
-  var OV_COMPACT_W = 132, OV_COMPACT_H = 72, OV_MINI = 48;
+  // 0.3.1 three-state sizes. Compact is fixed (~148×72); mini is the 48×48 shield.
+  // ⚠ 1.0.7 续 §三 B — 132 → **148**. 132 was measured against 「黑 34.6」; the worst case the panel
+  // can actually produce is 「#12 黑  未检测」 (two-digit seq + the 未检测 placeholder), and at 132 the
+  // value column pushed the label off the left edge. The value font came down 22 → 20px at the same
+  // time (see the `.cpv` rule), so this is 16px of box for ~2px of glyph — the fix is the width.
+  var OV_COMPACT_W = 148, OV_COMPACT_H = 72, OV_MINI = 48;
 
   function ovClamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
 
@@ -5372,6 +5426,21 @@
     if (!running() && !lastArchive && lastEmptySkip) {
       h += '<div class="note">' + T('panel|无有效数据，未存档。') + forceSaveLinkHtml() + '</div>';
     }
+    // 1.0.7 续 §二 — the queue row's own 「未存档」, and the two things that can be done about it.
+    //
+    // ⚠ This is NOT a fourth 「未存档」 reason next to the three above; those three describe why the
+    // AUTOMATIC path refused, and each of them is cleared the moment the operator looks at a
+    // different game. This one describes the job the panel is showing: it finished, it has a report,
+    // and it is not in 回放. The three above are transient reports of a decision; this is a state.
+    // ⚠ Both links carry `data-id` so they act on the job they describe even if the selection moves
+    // between the paint and the click — see the dispatcher's note.
+    if (cur && cur.status === '已完成' && !cur.archiveId && cur.report) {
+      h += '<div class="note">' + esc(T('panel|该任务未存档')) +
+        ' · <span class="lk" data-act="job-archive" data-id="' + esc(cur.id) + '">' +
+        esc(T('panel|存为存档')) + '</span>' +
+        ' <span class="lk" data-act="job-export" data-id="' + esc(cur.id) + '">' +
+        esc(T('panel|导出JSON')) + '</span></div>';
+    }
 
     els.top.innerHTML = h;
 
@@ -5599,9 +5668,14 @@
     var rep = cur && (cur.report || cur.summary);
     // §3.2.3 — the seq is shown only when there is more than one job to confuse it with.
     // `#3 黑` on a one-job session is noise; on a queue it is the answer to "which game is this".
+    // ⚠ 1.0.7 续 §三 B — the seq gets its OWN span (`.cpn`, 11px), so the row reads 「#12 黑」 rather
+    // than one long word. The trailing space stays INSIDE the span on purpose: `textContent` of the
+    // label has to remain exactly `#12 黑` — `behave-057-compact` reads it with `.trim()` and asserts
+    // the prefix and the word together, so a purely-CSS gap would silently change the contract.
     var prefix = (jobs.length > 1 && cur && cur.seq) ? ('#' + cur.seq + ' ') : '';
-    if (els.cpKB) els.cpKB.textContent = prefix + T('panel|黑');
-    if (els.cpKW) els.cpKW.textContent = prefix + T('panel|白');
+    var pfxHtml = prefix ? ('<i class="cpn">' + esc(prefix) + '</i>') : '';
+    if (els.cpKB) els.cpKB.innerHTML = pfxHtml + esc(T('panel|黑'));
+    if (els.cpKW) els.cpKW.innerHTML = pfxHtml + esc(T('panel|白'));
     if (running() && !jobStopped(cur)) {
       var p = Math.round((running().progress || 0));
       els.cpB.textContent = p + '%';
@@ -6889,8 +6963,56 @@
     pump();
   }
 
-  function exportSelected() {
-    var job = findJob(selectedId);
+  // =====================================================================================
+  // 1.0.7 续 §二 — 排队列表可操作
+  // =====================================================================================
+  //
+  // Why this exists: until now the queue was a DISPLAY. A finished job whose archive the three
+  // gates had refused could not be saved from the panel at all (the 「强制保存」 link only appears
+  // beside a 「未存档」 note the AUTOMATIC path writes, and only for the newest one), and the older
+  // finished jobs could not be exported, re-run or dropped — they just sat in the list until the
+  // tab reloaded. §二 makes the row an object with four operations on it.
+  //
+  // ⚠ The archive path deliberately reuses `archiveFromJob()` and its `_forceSave` exemption
+  // rather than growing a second set of gates: 「导入至回放」 already established that "the operator
+  // explicitly asked for this one" is expressed by that flag, and this project has shipped
+  // silently-diverging second copies of a judgement seven times. The difference from
+  // `manualSaveToReplay()` is what is being saved — that one STARTS A RUN (a new job, its own
+  // snapshot, a fresh report); this one files a report the job ALREADY holds.
+  //
+  // ⚠⚠ The report and the record stay the same pair: `archiveFromJob` reads `job._snap.record`, and
+  // every path that produces a report sets `_snap` before the run (startJob, liveFinish, the
+  // finalize snapshot). An older job therefore archives ITS OWN game, not the board that happens to
+  // be on screen — which is the whole risk in offering this on a row the operator scrolls to.
+  function manualArchiveJob(job) {
+    if (!job) return null;
+    if (job.status !== '已完成' || !job.report) return null;
+    // The status-area link only appears when the job is NOT archived, so this question is only ever
+    // reached from the right-click menu's 覆盖存档. Overwriting is destructive (the archive id is
+    // replaced, not versioned) so it is asked rather than assumed.
+    if (job.archiveId && !confirm(T('panel|该任务已存档，覆盖它？'))) return null;
+    job._forceSave = true;
+    var p = archiveFromJob(job);
+    return Promise.resolve(p).then(function (entry) {
+      // ⚠ Cleared in both arms: `_forceSave` is read synchronously at the top of archiveFromJob, so
+      // resetting here cannot cancel this save — but leaving it set would silently exempt the NEXT
+      // automatic archive of the same job from all three gates.
+      job._forceSave = false;
+      if (root) paint();
+      return entry;
+    }, function () {
+      job._forceSave = false;
+      if (root) paint();
+      return null;
+    });
+  }
+
+  /** One report → one downloaded JSON. Factored OUT of `exportSelected()` so the queue menu and the
+   *  toolbar button cannot drift into two different file names or two different "no report" rules.
+   *  ⚠ The message reuses the existing `panel|该任务还没有结果。` key (with its 句号): adding a
+   *  period-less twin would be a second answer to the same question, and the i18n tables would then
+   *  carry both for ever. */
+  function exportJob(job) {
     if (!job) return;
     var report = job.report || job.summary;
     if (!report) { alert(T('panel|该任务还没有结果。')); return; }
@@ -6899,6 +7021,75 @@
     a.href = URL.createObjectURL(blob);
     a.download = 'gomoku-report-' + job.seq + '.json';
     a.click();
+  }
+
+  function exportSelected() {
+    exportJob(findJob(selectedId));
+  }
+
+  /** Re-run a finished job's OWN game. ⚠ Not `manualReplay()`: that one analyses the board on
+   *  screen, which for a row the operator scrolled back to is usually a different game — the same
+   *  "record and report describe different positions" defect §五.4 fixed inside startJob. Passing
+   *  the job's snapshot through is what makes this a RE-run rather than a new analysis, and
+   *  `startJob` keeps an existing `_snap` for exactly this reason. */
+  function reanalyzeJob(job) {
+    if (!job) return;
+    if (running()) { alert(T('panel|正在分析，请等待完成')); return; }
+    if (!allowAnalyze(T('panel|重新分析'))) return;
+    if (liveJob) liveFinish();
+    var next = newJob(job.mode === 'global' ? 'global' : 'step', '重新分析');
+    if (job._snap) next._snap = job._snap;
+    paint();
+    pump();
+  }
+
+  /** Drop the queue row. ⚠ The ARCHIVE is not touched — this removes the task, not the game; a
+   *  saved game lives in 回放 and is deleted there. The question says so, because "删除任务" next to
+   *  a finished row reads like "delete the game". */
+  function deleteJob(job) {
+    if (!job) return;
+    if (running() === job) { alert(T('panel|正在分析，请等待完成')); return; }
+    if (!confirm(T('panel|删除这个任务？回放里的存档不受影响。'))) return;
+    var i = jobs.indexOf(job);
+    if (i >= 0) jobs.splice(i, 1);
+    // §3.2.1's `pickCompactJob()` falls back to the last job when nothing is selected, so clearing
+    // this is enough for both faces; leaving a dangling id would make `currentJob()` return null on
+    // a queue that still has rows.
+    if (selectedId === job.id) selectedId = null;
+    if (root) paint();
+    pump();
+  }
+
+  /** The right-click menu for one queue row. Built from the JOB, not from `paintMenus()`: two of
+   *  the four rows depend on that job's state (存为存档 vs 覆盖存档, and 删除任务 is not offered for
+   *  the running job), and a menu that repainted itself from the settings would lose both. */
+  function openJobMenu(id, x, y) {
+    if (!root) return;
+    var job = findJob(id);
+    var box = root.querySelector('[data-slot=jobmenu]');
+    if (!job || !box) return;
+    closeMenus();
+    openMenu = 'job';
+    var attr = ' data-id="' + esc(job.id) + '"';
+    var html = '';
+    if (job.status === '已完成' && job.report) {
+      html += '<div class="it" data-act="job-archive"' + attr + '>' +
+        esc(job.archiveId ? T('panel|覆盖存档') : T('panel|存为存档')) + '</div>';
+    }
+    html += '<div class="it" data-act="job-export"' + attr + '>' + esc(T('panel|导出JSON')) + '</div>';
+    html += '<div class="it" data-act="job-reanalyze"' + attr + '>' + esc(T('panel|重新分析')) + '</div>';
+    if (running() !== job) {
+      html += '<div class="sep"></div>';
+      html += '<div class="it" data-act="job-delete"' + attr + '>' + esc(T('panel|删除任务')) + '</div>';
+    }
+    box.innerHTML = html;
+    // Shown before measuring, for the same reason `toggleMenu()` does it: offsetWidth/Height are 0
+    // on a display:none node, and a 0-width reading would put the clamp on a box that is not there.
+    box.classList.add('show');
+    var w = box.offsetWidth || 196, h = box.offsetHeight || 0;
+    var vw = window.innerWidth || 1024, vh = window.innerHeight || 768;
+    box.style.left = Math.max(6, Math.min(x, vw - w - 6)) + 'px';
+    box.style.top = Math.max(6, Math.min(y, (h ? vh - h - 6 : vh - 6))) + 'px';
   }
 
   // ---------- boot ----------
