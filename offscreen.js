@@ -263,12 +263,24 @@
 
   // ---- 实时逐步分析 ----
   //
-  // 0.5.6 补增 §三 — the live session is the ONE analysis path that does not go through
-  // analyzeGame / analyzeStepwise, so it has to resolve the weight table on its own: `summarizeSteps`
-  // and `buildReport` both build the score out of `opts.learned`, and `msg.opts` arrives straight
-  // from a content script that has no idea the pins exist.
+  // 0.5.6 补增 §三 / 1.0.7 续 ⑪ — the live session is the ONE analysis path that does not go through
+  // analyzeGame / analyzeStepwise, so it has to resolve BOTH halves of the learned params on its
+  // own: `summarizeSteps` and `buildReport` build the score out of `opts.learned`, and `msg.opts`
+  // arrives straight from a content script that has no idea the pins — or the profile — exist.
   //
-  // Resolved ONCE, when the session starts — the same rule `learned` follows in app.js. A table
+  // ⚠⚠ 续 ⑩ left this half-done: `learned` was `null` whenever the caller omitted it (content.js
+  // always omits it), so `applySignalPins(null, pins)` handed the analysis a `{ weights }` stub
+  // with no `features` and no thresholds. Two consequences, both invisible on screen: 「AI 指纹
+  // 命中」 was identically 0 on the panel AND in the report the session produced at 局终 (the sim
+  // term is `simWeight` = 0.10 of the score, so the same game could sit ten points lower than the
+  // viewer's own analysis of it), and the learner's re-calibrated thresholds never applied. It
+  // was the exact failure `applySignalPins`' own note describes for weights, one field over.
+  //
+  // `undefined` still means "ask storage" — that is the contract `analyzeGame` / `analyzeStepwise`
+  // follow, and the live path now follows it too. An explicit `null` still forces the defaults, so
+  // a harness can pin them.
+  //
+  // Resolved ONCE, when the session starts — the same rule `learned` follows in app.js. A profile
   // that changed mid-game would make the live score and the score archived at the end of the same
   // game disagree about the very same hands, and the archived one is written from these steps.
   //
@@ -277,14 +289,17 @@
   // "nothing pinned, hand the request straight through" shortcut any more, and that is the point:
   // passing `opts` through unchanged would let `riskParams` merge the learner's table back in.
   //
-  // `applySignalPins` / `loadSignalPins` are top-level declarations of a classic script, so they
-  // are reachable here as bare identifiers — the arrangement tagWiki.js uses for BASE_WEIGHTS.
-  // Guarded anyway, because harnesses inject a subset of these scripts.
+  // `applySignalPins` / `loadSignalPins` / `loadLearnedParams` are top-level declarations of a
+  // classic script, so they are reachable here as bare identifiers — the arrangement tagWiki.js
+  // uses for BASE_WEIGHTS. Guarded anyway, because harnesses inject a subset of these scripts.
   async function resolveLiveOpts(opts) {
     var o = opts || {};
     try {
       if (typeof applySignalPins !== 'function' || typeof loadSignalPins !== 'function') return o;
-      var learned = (o.learned !== undefined) ? o.learned : null;
+      var learned = o.learned;
+      if (learned === undefined) {
+        learned = (typeof loadLearnedParams === 'function') ? await loadLearnedParams() : null;
+      }
       var pins = (o.signalWeights !== undefined) ? o.signalWeights : await loadSignalPins();
       return Object.assign({}, o, { learned: applySignalPins(learned, pins) });
     } catch (e) { return o; }

@@ -2034,11 +2034,8 @@ async function analyzeStepwise(record, opts, onProgress, onStep) {
   // are final by now. Both are idempotent, so re-running them over a partially analysed list is
   // safe (the live summary does exactly that).
   markPoolSignals(steps);
-  // 0.3.3 C: same fingerprint pass as analyzeGame, for the same reason.
-  if (learned && learned.features && learned.features.length &&
-      typeof GMLearn !== 'undefined' && GMLearn && GMLearn.matchFeatures) {
-    GMLearn.matchFeatures(steps, learned.features, learned.simThreshold);
-  }
+  // 0.3.3 C / 1.0.7 续 ⑪ — same fingerprint pass as analyzeGame, through the one implementation.
+  matchAiFingerprints(steps, params);
   onProgress && onProgress(99, i18nErr('progress.risk'));
   // 0.5.6 补增 §三 — `params`, not `learned`: the pins are applied to the table the score is built
   // from, and buildReport is where the score is built (sideAggregate reads `opts.learned`). Passing
@@ -2046,6 +2043,28 @@ async function analyzeStepwise(record, opts, onProgress, onStep) {
   // scored, and then the aggregate was computed from the table the operator had just overridden.
   // The object is still `learned`-shaped, so the feature library and the report's own meta survive.
   return buildReport(steps, record, Object.assign({}, opts, { learned: params }));
+}
+
+// 1.0.7 续 ⑪ — the feature-library pass, ONE implementation for the three analysis paths.
+//
+// ⚠⚠ It used to be two copies of a five-line `if`, in analyzeGame and analyzeStepwise, and the
+// LIVE path had neither. So 实时浮层 scored `sim` = 0 no matter what the profile held — and so did
+// the report the live session produced at 局终, because that report is `buildReport(live.steps)`
+// and `buildReport` never matches anything itself: matching is a caller's pass. Meanwhile the same
+// game re-analysed in the viewer scored the term in full. One rule, two answers, decided by which
+// button the operator pressed — the shape of mistake this project has now made seven times, and
+// the reason the pass is a named function instead of a third copy.
+//
+// `matchFeatures` resets `aiSimilar` / `aiSim` on every step before matching, so re-running this
+// on a growing array (which is what the live summary does, once per move) is safe.
+//
+// `params` is the post-pin object — `applySignalPins` only rewrites `weights`, so the library and
+// `simThreshold` arrive unchanged, and passing the same object the score is built from keeps the
+// question 「哪个表算的这一分」 answerable in one place.
+function matchAiFingerprints(steps, params) {
+  if (!params || !params.features || !params.features.length) return 0;
+  if (typeof GMLearn === 'undefined' || !GMLearn || !GMLearn.matchFeatures) return 0;
+  return GMLearn.matchFeatures(steps, params.features, params.simThreshold);
 }
 
 // A compact live summary, used while 实时逐步分析 is still accumulating steps.
@@ -2064,6 +2083,13 @@ function summarizeSteps(steps, times, opts) {
   // live score has to equal the score the game ends with. Both reset their own fields, so they
   // are safe to re-run on every update.
   markPoolSignals(steps);
+  // 1.0.7 续 ⑪ — and the fingerprint pass, the last one the finished report ran and this one did
+  // not. Without it every live summary the panel ever drew had 「AI 指纹命中」= 0, and so did the
+  // report the session produced at 局终 (buildReport only READS `aiSimilar`), while the same game
+  // re-analysed in the viewer scored the term at its full `simWeight`. Same class of defect as the
+  // pool passes two lines above, and the same sentence applies: the live score has to equal the
+  // score the game ends with. Runs before sideAggregate, which is what consumes the flag.
+  matchAiFingerprints(steps, params);
   // Two steps in a row by the same side cannot happen in a real game. The live session
   // only holds PLAYED moves, so an adjacency here means the capture lost one.
   let issues = 0;
@@ -2862,10 +2888,10 @@ async function analyzeGame(record, opts, onProgress) {
   // 0.3.3 C: mark steps whose fingerprint matches a human-confirmed AI move. Done here, on
   // the finished step array, because the match is a post-processing pass over verdicts — it
   // never influences the engine, only the risk score's auxiliary `sim` term.
-  if (learned && learned.features && learned.features.length &&
-      typeof GMLearn !== 'undefined' && GMLearn && GMLearn.matchFeatures) {
-    GMLearn.matchFeatures(steps, learned.features, learned.simThreshold);
-  }
+  //
+  // 1.0.7 续 ⑪ — through the shared implementation, and the live path now runs it too (see the
+  // note on `matchAiFingerprints`).
+  matchAiFingerprints(steps, params);
 
   onProgress && onProgress(98, i18nErr('progress.risk'));
   // 0.5.6 补增 §三 — `params`, not `learned`, for the reason spelled out at the end of
