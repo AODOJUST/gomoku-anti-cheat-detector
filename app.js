@@ -2155,8 +2155,9 @@ function rampDown(v, lo, hi) {
 // fires (§2.6 #6, §五 #5), and making room by scaling the six down to 0.90 — the arithmetic
 // §2.3 sketches — would multiply EVERY existing score by ~0.9 and flip games sitting on the
 // 70 cut from 高风险 to 可疑. So the six kept the values that summed to 1, the two added on
-// top, and sideAggregate() clamped the total at 100. learn.js normalised the two groups
-// separately for the same reason. NOTE: 0.5.5 §1.3 supersedes this — see below.
+// top, and sideAggregate() clamped the total at 100 (1.0.7 续 ⑬ replaced that fixed ceiling with
+// the table's own effective weight sum — see the note at the clamp itself). learn.js normalised the
+// two groups separately for the same reason. NOTE: 0.5.5 §1.3 supersedes this — see below.
 // ⚠⚠ 0.5.5 §1.3 REVERSES the surcharge model that 0.4.8 and 0.5.2 both refused to give up.
 //
 // History: 0.4.8 §1.2 and 0.5.2 §1.1.4 each wrote a single table summing to 1.00 and each time the
@@ -2449,10 +2450,13 @@ function riskParams(params) {
 //
 // The request is one sentence: every detection signal must be adjustable in the settings page, and
 // the table those settings build may sum to at most 130%. Both halves are about the risk score,
-// which is `clamp(Σ weight_i × a_i × 100, 0, 100)` compared against the 高风险/可疑 cuts — so the
-// ABSOLUTE size of the weights is what the score is made of, and the ceiling is a real limit
-// rather than a UI nicety. The operator went further than tuning their own profile: the table they
-// built in the panel IS the shipped default now (a table of exactly 1.30 — see BASE_WEIGHTS), so the
+// which is `clamp(Σ wEff_i × a_i × 100, 0, 100 × Σ wEff)` compared against the 高风险/可疑 cuts — so
+// the ABSOLUTE size of the weights is what the score is made of, and the ceiling is a real limit
+// rather than a UI nicety. (1.0.7 续 ⑬: the upper bound is the table's own effective sum instead of
+// a fixed 100, so a heavier table raises the scale rather than saturating on it — see the clamp in
+// sideAggregate(). The 1.30 / 130% figures below are the historical totals this section was written
+// under; the shipped one is 1.50.) The operator went further than tuning their own profile: the table
+// built in the panel IS the shipped default now (a table of exactly 1.50 — see BASE_WEIGHTS), so the
 // ceiling is also the invariant the release ships under, and there is no headroom left in it.
 //
 //   · The pins are absolute weights, NOT shares to be renormalised. Rescaling them back to 1.00
@@ -3573,12 +3577,34 @@ function sideAggregate(steps, side, hasTime, params, opts) {
   // (1 − simW) and adding `simW * aSim` on top preserves the RATIO between the terms and the
   // auxiliary term. With no feature library `simW` is 0 and this is the identity.
   //
-  // 0.5.6 补增 §三: the table's own total is no longer 1.00 — the shipped one is exactly 1.30 (see
-  // BASE_WEIGHTS) and an operator's may be anything up to SIGNAL_WEIGHT_SUM_MAX (130%). The clamp
-  // below is where that headroom is spent: the shipped table already crosses the 70/40 cuts more
-  // easily than 0.5.5's did, and the part of the score above 100 is clipped rather than shown. The
-  // sentence above still holds term-for-term, which is what keeps the sim term's share meaningful at
-  // any total.
+  // 0.5.6 补增 §三: the table's own total is no longer 1.00 — the shipped one is exactly 1.50 (see
+  // BASE_WEIGHTS) and an operator's may be anything up to SIGNAL_WEIGHT_SUM_MAX. The sentence above
+  // still holds term-for-term, which is what keeps the sim term's share meaningful at any total.
+  //
+  // 1.0.7 续 ⑬ — the ceiling is the table itself, not 100.
+  //
+  // The clamp below used to be a fixed `0, 100`. That ceiling was written when the table summed to
+  // 1.00, where 「100」 MEANT 「every term fired」 — it was the top of the scale, not a cap on one.
+  // The table has not summed to 1.00 since 补增 §三 (1.30 → 1.50 at 1.0.7 §一), so the same clamp
+  // stopped being a sanity bound and became a compressor: every side where nearly all seventeen
+  // signals fired printed the same 「100.0」, and the score could no longer say WHICH of them was
+  // worse. The operator's instruction (2026-10-18) is to make the effective weight sum the scale:
+  // full marks = 100 × Σ wEff, i.e. 145 with a feature library (`sim` takes 0.10 and the seventeen
+  // shrink by 1 − simW) and 150 without one. Nothing about the per-term arithmetic changes.
+  //
+  // ⚠ Consequences, both intended and both stated in the release notes:
+  //   · a score above 100 is now possible, and it means 「more evidence than one full table's worth」
+  //     rather than an error. It is NOT comparable with anything archived before this patch — the
+  //     third time a release has moved the scale (0.5.7 §一, 1.0.7 §一, this).
+  //   · `contributions` now sums to `risk` EXACTLY. It always did below 100; above it the old clamp
+  //     cut the total while the parts kept summing higher, so a reader that added the rows up could
+  //     not reproduce the headline number.
+  //
+  // The bound is kept rather than removed: every activation is already clamped to [0,1], so the sum
+  // can only exceed the bound through floating point — but a hand-edited weight table can carry a
+  // negative (storage clamps the sum, not each term), and a negative total would make the upper
+  // bound smaller than 0 and turn the score into a constant. `Math.max(0, …)` covers it.
+  const wSumEff = Object.keys(wEff).reduce((sum, k) => sum + wEff[k], simW);
   const risk = clamp(100 * (wEff.top1 * aTop1 + wEff.acpl * aAcpl + wEff.sharp * aSharp + wEff.out * aOut
                     + wEff.desperate * aDesperate + wEff.time * aTime + simW * aSim
                     + wEff.evasion * aEvasion + wEff.winBlunder * aWinBlunder
@@ -3593,7 +3619,7 @@ function sideAggregate(steps, side, hasTime, params, opts) {
                     // panel row all survive §1.2, and a pin that puts `time` back would be honoured
                     // exactly as it is for every other signal.
                     + wEff.noBlunder * aNoBlunder + wEff.steadyLost * aSteadyLost
-                    + wEff.probeMatch * aProbeMatch), 0, 100);
+                    + wEff.probeMatch * aProbeMatch), 0, 100 * Math.max(0, wSumEff));
   const level = risk >= t.riskHigh ? '高风险' : (risk >= t.riskMid ? '可疑' : '低风险');
   return {
     side, n, top1, top3, top5, topProx, meanLoss, sharpHit, outTop5, desperateCount,

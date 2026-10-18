@@ -542,6 +542,14 @@
     var b = (report.black && isFinite(report.black.risk)) ? report.black.risk : 0;
     var w = (report.white && isFinite(report.white.risk)) ? report.white.risk : 0;
     var risk = Math.max(b, w);
+    // 1.0.7 续 ⑬ — this predicate needed NO change, and the note is here because it looks like it
+    // should have needed one: `risk <= maxRisk` reads like a second ceiling at 100.
+    //
+    // It is not. `shouldSkipArchive` returns true for 「DROP this game」, so both ends are the band
+    // to throw away: the default 0–54 keeps everything above 54. A score of 128 therefore fails
+    // `<= 100` and is KEPT by a filter parked at the far right — which is exactly right, and was
+    // never relying on the score stopping at 100. `maxRisk` is the slider's domain (0–100), not the
+    // risk scale's.
     return risk >= f.minRisk && risk <= f.maxRisk;
   }
 

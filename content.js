@@ -6510,7 +6510,14 @@
     if (risk == null) return risk;
     var v = Number(risk);
     if (!isFinite(v)) return risk;
-    if (side === chatAdjSide() && chat.total) v = Math.max(0, Math.min(100, v + chat.total));
+    // 1.0.7 续 ⑬ — the 100 must go with the clamp in app.js.
+    //
+    // This line used to cap the adjusted score at 100. That cap and sideAggregate()'s ceiling were
+    // the same sentence written twice: 「100 is full marks」. Now that the score can legitimately
+    // exceed 100, keeping a local 100 here does worse than being stale — it LOWERS a high score
+    // (a 120 readout plus a +30 adjustment printed 100.0). The floor stays: a negative adjustment
+    // must not drive a score below zero.
+    if (side === chatAdjSide() && chat.total) v = Math.max(0, v + chat.total);
     return fmtRisk(v);
   }
 

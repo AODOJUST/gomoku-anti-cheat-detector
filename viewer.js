@@ -1127,7 +1127,7 @@
   function buildSignalWeightsPanel() {
     var grid = $('swGrid');
     if (!grid) return;
-    setTxt('swHint', T('viewer|每项都是风险分的百分比权重：0 = 该项不参与评分，100 = 该项独占满分。十六项合计不得超过 150%，而出厂表已正好是 {d}%——想抬高某一项，得先降低另一项（合计栏会实时显示）。合计越高，同一局的分越高，也就越容易越过 70 / 40 两条线（这是把检测调得更严，不是分数能到 150）；合计越低则相反。只记录你改动过的项，其余仍跟随出厂默认（清空某一项即为恢复默认）。',
+    setTxt('swHint', T('viewer|每项都是风险分的百分比权重：0 = 该项不参与评分，100 = 该项独占满分。十七项合计不得超过 150%，而出厂表已正好是 {d}%——想抬高某一项，得先降低另一项（合计栏会实时显示）。合计越高，同一局的分越高，也就越容易越过 65 / 35 两条线（这是把检测调得更严）；合计越低则相反。分数没有 100 的天花板：满分就是有效权重之和（出厂 150；装了特征库时 145），所以超过 100 是正常的高分。只记录你改动过的项，其余仍跟随出厂默认（清空某一项即为恢复默认）。',
       { d: swShippedPct() }));
     setTxt('swReset', T('viewer|重置为默认'));
     var base = swBaseKeys(), low = swLowKeys(), group = null, html = '';
@@ -14242,7 +14242,7 @@
       h: { 'zh-CN': '4. 检测结果怎么看', en: '4. Reading the result' },
       b: {
         'zh-CN': [
-          '风险分：0–100，越高越可疑。一般低于 40 视为正常，40–69 可疑，70 以上高风险。',
+          '风险分：越高越可疑，没有 100 的天花板——满分就是有效权重之和（出厂 150；装了特征库 145）。一般低于 35 视为正常，35–65 可疑，65 以上高风险。',
           'AI 分类：把每一手归为「像人」「像 AI」「存疑」，看的是整局的分布而不是单步。',
           '分段：把连续同向的手数连成一段，一眼看清哪一段开始变了。',
           '回避手：明明该走却故意避开的选择，单独统计、不计入主要指标。',
@@ -14251,7 +14251,7 @@
           '跳四：间隔型的四（如 X_XXX / XX_XX）。它有且只有一个成五点，但那个点在四的中间，挡它的同一手也可能顺手挡掉活三，所以「跳四 + 活三」不按四三杀处理 —— 检测会继续，并在步骤里标出「跳四」。',
         ],
         en: [
-          'Risk score: 0–100, higher is more suspicious. Below 40 is normally human, 40–69 suspect, 70+ high.',
+          'Risk score: higher is more suspicious, with no 100 ceiling — full marks is the sum of the effective weights (150 as shipped, 145 with a feature library). Below 35 is normally human, 35–65 suspect, 65+ high.',
           'AI classification: each move is labelled human-like, AI-like or doubtful. Read the distribution over the game, not one move.',
           'Segments: consecutive hands pointing the same way are joined into one bar, so you can see where the game changed.',
           'Evasion moves: choices that deliberately avoid the natural move. Counted separately and kept out of the main metrics.',

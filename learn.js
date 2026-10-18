@@ -1004,15 +1004,23 @@
   }
 
   function riskOfSub(sub, weights) {
-    var r = 0;
-    WEIGHT_KEYS.forEach(function (k) { r += (weights[k] || 0) * sub[k]; });
+    var r = 0, sum = 0;
+    WEIGHT_KEYS.forEach(function (k) {
+      var w = weights[k] || 0;
+      sum += w;
+      r += w * sub[k];
+    });
     // Clamped to mirror app.js sideAggregate() exactly. The table is no longer normalised to 1.00
     // (补增 §三: the shipped table is exactly the ceiling — 1.30 then, **1.50 since 0.5.7 §1** — and
-    // an operator's may not exceed it), so a perfect subscore on every term would now reach 150 and
-    // the clamp is what the real score does with the excess — keeping it here is what makes this
-    // mirror the aggregate rather than merely resemble
-    // it.
-    return clamp(100 * r, 0, 100);
+    // an operator's may not exceed it), so a perfect subscore on every term would now reach 150.
+    //
+    // 1.0.7 续 ⑬: the bound is that reachable maximum — 100 × Σ weights — rather than a fixed 100.
+    // app.js made the same move at its own clamp; if this file kept `0, 100` the learner would cut
+    // every side above 100 and fit its cuts against a score the detector never computes, which is
+    // exactly the drift the mirror rule exists to prevent. (Σ here is over WEIGHT_KEYS, which does
+    // NOT include `sim`: this sub-score is the seventeen-term reading, and app.js's 145 ceiling is
+    // 145 only because a feature library takes 0.10 out of the same total.)
+    return clamp(100 * r, 0, 100 * Math.max(0, sum));
   }
 
   // The 高风险 cut, chosen as the F1-optimal split of the learned risk score across AI
