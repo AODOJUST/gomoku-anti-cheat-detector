@@ -2088,8 +2088,16 @@ function summarizeSteps(steps, times, opts) {
     black, white,
     segments,
     types: {
-      B: black ? classifySide(black.risk, segments.B, steps, 'B', typeTh) : null,
-      W: white ? classifySide(white.risk, segments.W, steps, 'W', typeTh) : null,
+      // 1.0.7 续 ⑩ — the sixth argument, the same one `buildReport()` hands over.
+      //
+      // ⚠⚠ Without it the live panel and the finished report disagree about the LABEL of a side
+      // whose score never moved: the 低端AI downgrade reads two ACTIVATIONS off the aggregate, and
+      // an omitted aggregate is indistinguishable from "neither activation fired". So the panel
+      // showed e.g. 可疑 for a whole game and the archived report — produced from the very same
+      // steps — said 低端AI. That is exactly the jump this function's own note (0.4.2 §2.3) says
+      // it exists to prevent; it had only been prevented for the score, not for the verdict.
+      B: black ? classifySide(black.risk, segments.B, steps, 'B', typeTh, black) : null,
+      W: white ? classifySide(white.risk, segments.W, steps, 'W', typeTh, white) : null,
     },
   };
 }
@@ -2742,6 +2750,11 @@ async function analyzeGame(record, opts, onProgress) {
   // ai-suggest stone occupies the board even though it is not scored, and leaving it out
   // would break a four that runs through it.
   const boardStones = [];
+  // The budget the engine currently holds. Seeded with the loop-exit `configure()` above, so the
+  // first hand that lands on the panel value does NOT re-configure — and, more importantly, a hand
+  // whose recorded interval puts it back on the panel value after a shorter one gets configured
+  // back instead of silently inheriting the previous hand's smaller budget.
+  let configuredBudget = opts.thinkMs;
 
   for (let i = 0; i < N; i++) {
     const side = sideFromStone(record, i) || ((playerIdxByMove[i] % 2 === 0) ? 'B' : 'W');
@@ -2770,13 +2783,32 @@ async function analyzeGame(record, opts, onProgress) {
     if (needEngine) {
       if (opts.shouldAbort && opts.shouldAbort()) throw new Error('__aborted__');
       const prefix = moves.slice(0, i);
+      // 1.0.7 续 ⑩ — the budget is `stepBudget()`, not the panel value.
+      //
+      // ⚠⚠ This is the ONE number that made 整局分析 and 浮层 disagree. `analyzeStep` (the live
+      // panel and 逐步分析) budgets `min(max(2000, recorded), panelThinkMs)` per hand; this path
+      // configured the engine ONCE at `panelThinkMs` and searched every hand that deep. With the
+      // default 2000 the two agree by accident — the clamp is a constant — so the difference only
+      // shows once the operator raises 每手思考时间, and then it shows as 「同一局棋、浮层一个分、
+      // 样本库另一个分」 with nothing on screen to explain it. Same call, same rule, same result.
+      // `step.thinkMs` is already this hand's recorded interval (declared above, and the SAME
+      // field the report prints) — re-deriving it here would be a second spelling of one value.
+      const recorded = step.thinkMs;
+      const { budget } = stepBudget(recorded, opts);
+      if (budget !== configuredBudget) {
+        eng.configure({ rule: opts.rule, thinkMs: budget, threadNum: opts.threadNum });
+        configuredBudget = budget;
+      }
       // 0.4.7 §1.4: same rule as the stepwise path — the recorded interval decides the width,
       // so `thinkMs > 6000` is measured on the human's clock and not on the engine budget.
       const res = await eng.analyzePosition(prefix, nbestFor(record.times[i]));
       // 0.4.8 §1.1: the board before this hand, so a forced defence is read off the shape.
       const prevBoard = boardStones.slice(0, -1);
-      scoreStep(step, res, actual, boardStones, prevBoard, opts.thinkMs);
-      step.budgetMs = opts.thinkMs;
+      scoreStep(step, res, actual, boardStones, prevBoard, budget);
+      step.budgetMs = budget;
+      // analyzeStepwise stamps this too; carrying it here keeps the two step shapes identical
+      // (a view that says 「本手预算」 can say whether the number came from the clock).
+      step.timedBy = recorded != null ? 'times' : 'fixed';
       // 0.3.4 活四停止: a real live four in the position after this hand ends the game, so
       // the rest carries no signal. The terminal step IS the last hand analysed.
       await applyTerminal(step, opts, boardStones);
@@ -2795,6 +2827,10 @@ async function analyzeGame(record, opts, onProgress) {
       step.isSharp = false;
       step.forcedDefense = false;
       step.forcedDefenseHow = null;
+      // 1.0.7 续 ⑩ — the per-step path declares `budgetMs: null` on a hand it never asked the
+      // engine about; this one used to leave the key absent. Same shape on both paths, so a view
+      // that prints 「本手预算」 cannot tell which button produced the row.
+      step.budgetMs = null;
       // 0.4.5 §三/§3.4 — the opening hand whose engine call we just removed is the one that
       // still has to be shape-tested. Restricted to scorable hands so prejoin / ai-suggest
       // stones keep their previous behaviour (their `side` may be a parity guess, and a shape
@@ -2812,6 +2848,16 @@ async function analyzeGame(record, opts, onProgress) {
   // 0.4.7 §1.1: same two steps as the stepwise path, in the same order and for the same reason.
   recordPrevBestWR(steps);
   markFourRuns(steps, riskParams(learned).t);
+  // 1.0.7 续 ⑩ — the two pool passes, which `markPoolSignals`' own note says both callers run.
+  //
+  // ⚠⚠ It did not. `markPoolSignals` was called by analyzeStepwise and summarizeSteps only, so a
+  // game analysed 整局 — the viewer's 「开始分析」, and the panel's 收尾分析 — produced steps with
+  // NO `liveThreePool` at all. `sideAggregate` reads that field as a stamp
+  // (`s.reduce(max, x.liveThreePool || 0)`), so the 活三 term of every whole-game report was
+  // identically zero while the same game analysed 逐步 scored it: one detection rule, two answers,
+  // decided by which button the operator pressed. `isGood`/`goodPool` were missing for the same
+  // reason, and those travel into the archive (slimStep persists them).
+  markPoolSignals(steps);
 
   // 0.3.3 C: mark steps whose fingerprint matches a human-confirmed AI move. Done here, on
   // the finished step array, because the match is a post-processing pass over verdicts — it
