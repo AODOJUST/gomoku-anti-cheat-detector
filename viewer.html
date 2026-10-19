@@ -526,6 +526,9 @@
      the detector reached, this one is a verdict it DECLINED to reach, and the two must not read
      like the same kind of statement. */
   .b-jump{background:transparent;color:var(--orange);border:1px solid var(--orange)}
+  /* 1.0.7 快照七号 §一.6.10 — 连续冲四豁免. Deliberately duller than every other badge:
+     it marks a hand that was NOT counted, so it must not read like a finding. */
+  .badge.b-exempt{background:transparent;color:var(--mut);border:1px dashed var(--line);opacity:.7}
   /* 0.4.3 §1.3: the segment rail. A 4px line down the left edge of every step row — green
      while the side stayed inside the engine's Top5, orange once it stepped outside. The point
      is that a run of hands reads as a run, instead of as N separate ✓ columns the eye has to
@@ -2399,6 +2402,10 @@
              by renderTypeRow(); kept out of #dSummary because that table is shared verbatim
              with the detect pane and the sample detail, which have no archive to write to. -->
         <div id="dType" class="type-row"></div>
+        <div id="dParams" class="hint" style="margin-top:6px">—</div>
+        <div class="btn-row" style="margin-top:6px">
+          <button class="sec" id="dCompare">对比分析参数</button>
+        </div>
       </div>
 
       <div class="dgrid">
@@ -2749,6 +2756,12 @@
             <h2>评估结果</h2>
             <div class="score" id="seScores"><div class="hint">分析后显示</div></div>
             <div id="seSummary" class="hint" style="margin-top:8px">—</div>
+            <!-- 1.0.7 快照七号 §二 R2 — 「本次分析参数」. The overlay has the same line; the two
+                 exist so 「同一个棋谱两个分数」 can be settled by looking instead of guessing. -->
+            <div id="seParams" class="hint" style="margin-top:6px">—</div>
+            <div class="btn-row" style="margin-top:6px">
+              <button class="sec" id="seCompare">对比分析参数</button>
+            </div>
           </div>
 
           <div class="panel" data-section="se-notes" data-nav-order="4">

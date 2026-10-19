@@ -187,6 +187,12 @@
   var UNBOUNDED_STEP = 5;
   var UNBOUNDED_EPS = 1e-9;
 
+  // 1.0.7 快照七号 §二 R5 — mirrored from app.js (SMALL_N). Same reason as the block above:
+  // learn.js is a separate module and cannot import app.js, so the number is repeated here and
+  // the suite asserts the two literal values are equal. Below this many scored hands, top1 /
+  // acpl / out read as the neutral 0.5 in BOTH implementations.
+  var SMALL_N = 5;
+
   // 0.5.2 §1.1/§1.2 — the 活三 pool's threshold, mirrored from app.js (LIVE_POOL_MIN). learn.js is
   // a separate module and cannot import app.js, so it is repeated here; the suite asserts the two
   // files agree, so an edit to one cannot move without the other being reported.
@@ -615,7 +621,12 @@
   // app.js's per-side sub-terms, recomputed here (see THE MIRROR RULE at the top).
   function subscoresForSide(rep, side, hasTime, th) {
     var all = ((rep && rep.steps) || []).filter(function (x) {
-      return x.side === side && !x.isOpening && x.analyzed && !x.forcedDefense;
+      return x.side === side && !x.isOpening && x.analyzed && !x.forcedDefense &&
+             // 1.0.7 快照七号 §一 — the 连续冲四 exemption, word for word the condition
+             // app.js's countsForSide() applies (verify-070/verify-076 compare the two literally).
+             // ⚠ Without it the learner would train on hands the detector refuses to look at, and
+             // the two would drift apart while each stayed internally consistent.
+             !x.fourRunExempt;
     });
     // 0.4.2 §2.3: the main six are computed over the sequence WITHOUT the evasion hands, exactly
     // as sideAggregate() does. A sample archived before 0.4.2 has no `evasion` field at all, so
@@ -625,7 +636,11 @@
     var top1 = mean(steps.map(function (x) { return x.top1 ? 1 : 0; }));
     var topProx = mean(steps.map(proximity));
     var losses = steps.map(function (x) { return x.loss; }).filter(function (v) { return v != null; });
-    var meanLoss = mean(losses);
+    // 1.0.7 快照七号 §二 R4, mirrored from app.js sideAggregate(): no loss sample is null, not 0.
+    // `mean([])` is 0 here and `rampDown(0, …)` is 1, so an empty sample used to collect a FULL
+    // aAcpl. The learner must move with the detector, or it fits weights against a curve the
+    // detector no longer uses.
+    var meanLoss = losses.length ? mean(losses) : null;
     var sharp = steps.filter(function (x) { return x.isSharp; });
     // 0.4.3 §1.1: graded, exactly as app.js computes it. A sharp hand that landed on Top2-3 is
     // engine-like precision and used to be scored as zero.
@@ -645,11 +660,15 @@
       }
     }
 
-    var aTop1 = rampUp(topProx, th.topProxLo, th.topProxHi);
-    var aAcpl = rampDown(meanLoss, th.acplLo, th.acplHi);
+    // 1.0.7 快照七号 §二 R5, mirrored from app.js: under SMALL_N hands the three ratio terms are
+    // noise, so they read as the neutral 0.5 rather than as whatever the ramp says about three
+    // moves. Same constant value, separate copy — learn.js cannot require app.js.
+    var nCount = steps.length;
+    var aTop1 = nCount < SMALL_N ? 0.5 : rampUp(topProx, th.topProxLo, th.topProxHi);
+    var aAcpl = (meanLoss == null || nCount < SMALL_N) ? 0.5 : rampDown(meanLoss, th.acplLo, th.acplHi);
     var aSharp = sharp.length >= 3
       ? clamp((sharpHit - th.sharpHitLo) / Math.max(0.05, th.sharpHitSpan), 0, 1) : 0.5;
-    var aOut = rampDown(outTop5, 0, th.outTop5Hi);
+    var aOut = nCount < SMALL_N ? 0.5 : rampDown(outTop5, 0, th.outTop5Hi);
     var aDesperate = clamp(desperateCount / 3, 0, 1);
     var aTime = 0.5;
     if (time) {

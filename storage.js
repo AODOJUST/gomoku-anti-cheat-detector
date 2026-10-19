@@ -3257,6 +3257,11 @@
       // kind (the classification is a function of this one number plus the run's extent).
       fourRun: isFinite(s.fourRun) ? s.fourRun : 0,
       fourKind: s.fourKind || null,
+      // 1.0.7 快照七号 §一 — this hand was dropped from the side's statistics by the 连续冲四
+      // rule (from the third hand of one run onward). Persisted because the flag IS the difference
+      // between 「counted」 and 「excluded」: without it, reopening a saved game re-counts hands the
+      // report had already excluded, and the same game shows two scores in the same viewer.
+      fourRunExempt: !!s.fourRunExempt,
       // 0.4.7 §1.1 — the raw input the two fields above are DERIVED from: scoreStep() stamps it
       // from the board after the hand, markFourRuns() groups it into runs and labels them. Kept
       // for the same reason `prevBestWR` is: the archive claims to be re-derivable, and a reader
@@ -3475,6 +3480,68 @@
     });
   }
 
+  // 1.0.7 快照七号 §二 R2 — 「这一次分析到底用了什么参数」, as one plain object.
+  //
+  // The point is comparison, not decoration: the same game scored 80 in the overlay and 30 in the
+  // sample library is the report that started this patch, and every candidate cause (openingCutoff,
+  // suspect, rule, thinkMs, engine, learned table) lives in this object. Deliberately shape-only —
+  // it reads nothing from storage and computes nothing, so a fixture can call it directly.
+  //
+  // ⚠ It lives HERE rather than in app.js because the overlay (content.js) loads storage.js and
+  // NOT app.js: a copy in each is the 「同一答案两份实现」 failure this project has shipped wrong
+  // seven times.
+  //
+  // ⚠ `weightsSum` is the one field that answers 「哪个表算的这一分」 at a glance: 1.50 is the
+  // shipped table, 1.30 is a pre-1.0.7 learned profile, 1.45 is one with a feature library. Two
+  // panes showing different numbers for one game is usually this field.
+  //
+  // ⚠⚠ A run on the SHIPPED table has `report.learned === null` (app.js only stamps that object
+  // when `params` resolves), so reading `l.weightsSum` alone printed 「权重和 ?」 on precisely the
+  // most common case — the question this line exists to answer, unanswered. The fallback is the
+  // sum of THIS file's DEFAULT_WEIGHTS, which is the canonical copy of the table (app.js holds a
+  // mirror, and a suite asserts the two are identical), so a factory run reports 1.50 rather than
+  // a question mark. An OLD learned profile (an object without the field) still reports null:
+  // there 「unknown」 is the truth, while 「not a learned table」 is a different fact.
+  function analysisParamsSummary(opts, learned, engine) {
+    var o = opts || {};
+    var l = learned || {};
+    var e = engine || {};
+    var factorySum = 0;
+    Object.keys(DEFAULT_WEIGHTS).forEach(function (k) { factorySum += Number(DEFAULT_WEIGHTS[k]) || 0; });
+    return {
+      openingCutoff: o.openingCutoff != null ? o.openingCutoff : null,
+      suspect: o.suspect != null ? o.suspect : null,
+      rule: o.rule != null ? o.rule : null,
+      thinkMs: o.thinkMs != null ? o.thinkMs : null,
+      engineId: e.id || o.engineId || null,
+      engineBuild: e.build != null ? e.build : null,
+      learnedTrainedAt: l.trainedAt != null ? l.trainedAt : null,
+      learnedSampleCount: l.sampleCount != null ? l.sampleCount : null,
+      learnedFeatureCount: l.featureCount != null ? l.featureCount : null,
+      weightsSum: l.weightsSum != null ? Number(l.weightsSum)
+                : (learned ? null : Number(factorySum.toFixed(4))),
+    };
+  }
+
+  // The same summary for a REPORT, live or read back from an archive.
+  //
+  // ⚠ The two shapes differ and that is the whole reason this function exists: a fresh report has
+  // `opts`, while slimReport stores the same facts flat (`openingCutoff`, `optThinkMs`, `optRule`,
+  // `suspects`) and drops `opts` entirely. Reading only `opts` would make every archived game
+  // report 「—」 for three fields, which is exactly the kind of silence this patch is trying to end.
+  function reportParamsSummary(rep) {
+    if (!rep) return null;
+    var o = rep.opts || {};
+    return analysisParamsSummary({
+      openingCutoff: o.openingCutoff != null ? o.openingCutoff : rep.openingCutoff,
+      suspect: o.suspect != null ? o.suspect
+             : (rep.suspect != null ? rep.suspect : rep.suspects),
+      rule: o.rule != null ? o.rule : rep.optRule,
+      thinkMs: o.thinkMs != null ? o.thinkMs : rep.optThinkMs,
+      engineId: o.engineId,
+    }, rep.learned, rep.engine);
+  }
+
   function slimReport(rep) {
     if (!rep) return null;
     var agg = function (a) {
@@ -3500,6 +3567,11 @@
         // did rather than `undefined` leaking into the detail table.
         uselessFourCount: a.uselessFourCount || 0,
         fourRuns: copyFourRuns(a.fourRuns),
+        // 1.0.7 快照七号 §1.8 — how many hands the 连续冲四 rule took out of this side's
+        // statistics. NOT defaulted to 0: an archive written before this build never ran the pass,
+        // and the detail table prints `—` rather than claiming 「nothing was exempted」 about a rule
+        // that did not exist. Same distinction sharpStreakMax / goodRatio draw.
+        fourRunExemptCount: a.fourRunExemptCount == null ? null : Number(a.fourRunExemptCount),
         // 0.4.8 §1.2: the two 唯一手 streak figures. Deliberately NOT defaulted to 0 — an
         // archive written before this build never computed them, and the detail table prints
         // `—` for that case rather than claiming a clean scan that never ran (the same
@@ -3577,6 +3649,13 @@
       // wrote `undefined`, which the next pass turned into `null`.
       optThinkMs: rep.optThinkMs != null ? rep.optThinkMs
                  : (rep.opts && rep.opts.thinkMs != null ? rep.opts.thinkMs : null),
+      // 1.0.7 快照七号 §二 R2 — `rule` joins the two above for exactly the same reason, and it
+      // was caught by the behaviour suite rather than by reading the code: without it the replay
+      // pane printed 「规则 ?」 for a game the overlay had scored with rule 3, and R3's diff then
+      // reported a difference that does not exist. An archive that cannot name its own options is
+      // the bug this whole patch is about.
+      optRule: rep.optRule != null ? rep.optRule
+             : (rep.opts && rep.opts.rule != null ? rep.opts.rule : null),
       openingCutoff: rep.openingCutoff != null ? rep.openingCutoff
                  : (rep.opts && rep.opts.openingCutoff != null ? rep.opts.openingCutoff : null),
       totalMoves: rep.totalMoves || 0,
@@ -4539,6 +4618,9 @@
     archiveBridgeOp: archiveBridgeOp,
     buildArchive: buildArchive,
     slimReport: slimReport,
+    // 1.0.7 快照七号 §二 R2 — 「本次分析参数」, shared by the viewer panes and the overlay.
+    analysisParamsSummary: analysisParamsSummary,
+    reportParamsSummary: reportParamsSummary,
     defaultArchiveName: defaultArchiveName,
     beijingTime: beijingTime,
     modeLabel: modeLabel,

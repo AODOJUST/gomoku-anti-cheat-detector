@@ -134,6 +134,52 @@
   function suspectName(v) {
     return v === 'B' ? T('viewer|黑方') : (v === 'W' ? T('viewer|白方') : T('viewer|双方'));
   }
+
+  // =====================================================================
+  // 1.0.7 快照七号 §二 R2/R3 — 「本次分析参数」 and its diff
+  // =====================================================================
+  // One line per report, built by storage.js's reportParamsSummary() so the overlay and the two
+  // viewer panes cannot disagree about what a report says about itself. Reading the archive's
+  // flat fields is that function's job, not this one's — see its note on the two shapes.
+  function paramsLine(rep) {
+    var ps = G.reportParamsSummary(rep);
+    if (!ps) return '—';
+    var w = ps.weightsSum != null ? ps.weightsSum.toFixed(2) : '?';
+    return T('viewer|本次参数：开局排除 {o} · 怀疑 {s} · 规则 {r} · 思考 {t}ms · 权重和 {w}', {
+      o: ps.openingCutoff != null ? ps.openingCutoff : '?',
+      s: ps.suspect ? suspectName(ps.suspect) : '?',
+      r: ps.rule != null ? ps.rule : '?',
+      t: ps.thinkMs != null ? ps.thinkMs : '?',
+      w: w,
+    });
+  }
+
+  function paintParams(el, rep) {
+    if (!el) return;
+    el.textContent = rep ? paramsLine(rep) : '—';
+  }
+
+  // R3 — the diff. Two reports is the ONLY precondition: this never re-derives a number and never
+  // scores anything, so it cannot introduce a third answer. The console table is the artefact
+  // (the operator asked for it in 定稿 §2.5); the alert only says whether it is worth reading.
+  function compareParams(repA, repB) {
+    if (!repA || !repB) {
+      alert(T('viewer|需要两份报告才能对比：一份来自回放，一份来自样本编辑器。'));
+      return;
+    }
+    var pa = G.reportParamsSummary(repA);
+    var pb = G.reportParamsSummary(repB);
+    var rows = Object.keys(pa).map(function (k) {
+      return { 项: k, A: String(pa[k]), B: String(pb[k]), 相同: String(pa[k]) === String(pb[k]) ? '✓' : '✗' };
+    });
+    try { console.table(rows); } catch (e) { /* a console-less context must not break the button */ }
+    var diff = rows.filter(function (r) { return r.相同 === '✗'; });
+    if (diff.length) {
+      alert(T('viewer|发现 {n} 处差异，详见控制台', { n: diff.length }));
+    } else {
+      alert(T('viewer|参数完全一致，问题在公式层，见定稿 §2.3 的三处微调'));
+    }
+  }
   // 0.4.1 §三.4: a record's trustworthiness in one word — see content.js's toRecord() for how
   // it is derived. Only 0.4.1+ records carry it, so everything older falls back to the same
   // verdict computed from the fields it does have; that also keeps the list badge and the
@@ -12210,9 +12256,12 @@
     pauseCtrl.jobId = jid; pauseCtrl.paused = false;
     jobSinks[jid] = setProgress;
     try {
-      // 0.4.11 §一.2 — the analysis runs in the offscreen document, on the one engine. The
-      // learned parameters go with the request for the same reason as before: the run and the
-      // incremental recompute must not drift apart mid-analysis.
+      // 0.4.11 §一.2 — the analysis runs in the offscreen document, on the one engine.
+      // ⚠ 1.0.7 快照七号 §二 R1: `learned` is NOT sent. `curLearned` is a snapshot from the last
+      // renderLearnStatus(); sending it would let a run that happened after that paint score with
+      // the previous table. Omitting the key makes the offscreen document read storage — the same
+      // path the overlay takes, so all three surfaces resolve one table (see the long note on the
+      // sample editor's call below).
       var resp = await askOffscreen({
         type: 'gm-analyze',
         jobId: jid,
@@ -12223,7 +12272,6 @@
           openingCutoff: parseInt($('openCut').value, 10),
           suspect: $('suspect').value,
           threadNum: S.threadNum,
-          learned: curLearned,
           // 0.5.1 §2.1.4 — the model the operator picked. The offscreen document owns the engine,
           // so the choice has to travel with the job; it also means switching models mid-session
           // rebuilds the engine exactly once, on the next job.
@@ -12389,7 +12437,8 @@
             thinkMs: task.thinkMs,
             openingCutoff: parseInt($('openCut').value, 10),
             threadNum: S.threadNum,
-            learned: curLearned,
+            // 1.0.7 快照七号 §二 R1 — same reason as the two calls above: read storage, do not
+            // hand the offscreen document a snapshot that a later 重新学习 could have invalidated.
             engineId: S.engineId,
           },
         });
@@ -13006,6 +13055,12 @@
     // intent and must not read like the engine's 可疑 verdict or like 将败's hopelessness.
     if (s.evasion) badges.push('<span class="badge b-evasion">' + T('viewer|回避') + '</span>');
     if (s.forcedDefense) badges.push('<span class="badge" style="background:#888;color:#fff">' + T('viewer|豁免') + '</span>');
+    // 1.0.7 快照七号 §一.6.10 — a hand the 连续冲四 rule dropped from the statistics. Rendered in
+    // outline, not in a solid colour, on purpose: every other badge here says 「this hand IS
+    // evidence」 and this one says the opposite — 「this hand was NOT counted」. Painting it like a
+    // signal would make the operator read an exclusion as a finding.
+    if (s.fourRunExempt) badges.push('<span class="badge b-exempt" title="' +
+      T('viewer|连续冲四第 3 手起不计入检测') + '">' + T('viewer|连续冲四·不计') + '</span>');
     // 0.5.0 §1.1 — a 跳四 + 活三, which is deliberately NOT treated as a 四三杀 (the four's only
     // answer sits inside it, where one stone can also answer the three). The badge exists so the
     // operator can tell "the detector decided this was not a kill" apart from "the detector
@@ -14965,6 +15020,8 @@
     renderTypeRow($('dType'), a,
       function (side, v) { return G.saveArchiveType(a.id, side, v); },
       function () { return refetchArchive(); });
+    // 1.0.7 快照七号 §二 R2 — the same line the sample editor and the overlay print.
+    paintParams($('dParams'), rep);
     var tb = document.querySelector('#dTbl tbody');
     tb.innerHTML = '';
     steps.forEach(function (s, i) {
@@ -16103,6 +16160,14 @@
     await refreshSamples();
   };
 
+  // 1.0.7 快照七号 §二 R3 — 「对比分析参数」, one implementation for both panes.
+  // WHICH two reports get compared is decided by what is loaded (the replay pane's `report` and
+  // the sample editor's `seReport`), never by which button was pressed — two buttons that each
+  // picked their own pair is how a comparison ends up comparing a report with itself and
+  // reporting 「参数完全一致」.
+  $('seCompare').onclick = function () { compareParams(report, seReport); };
+  $('dCompare').onclick = function () { compareParams(report, seReport); };
+
   function setSeStatus(t) { $('seStatus').textContent = t; }
   function setSeProgress(p, msg) {
     $('seBar').style.width = p + '%';
@@ -16253,6 +16318,8 @@
         ? summaryTableHtml(rep, { sim: true })
         : '<div class="hint">' + T('viewer|没有可用于统计的手。') + '</div>';
     }
+    // 1.0.7 快照七号 §二 R2 — and the parameters that produced those numbers.
+    paintParams($('seParams'), rep);
   }
 
   function renderSeTable() {
@@ -16455,7 +16522,19 @@
           openingCutoff: parseInt($('seOpenCut').value, 10),
           suspect: $('seSuspect').value,
           threadNum: S.threadNum,
-          learned: curLearned,
+          // ⚠⚠ 1.0.7 快照七号 §二 R1 — `learned` is deliberately NOT passed here.
+          //
+          // It used to be `learned: curLearned`, and `curLearned` is a snapshot taken by
+          // renderLearnStatus() the last time the status pane was painted. Analysing a sample
+          // after running 重新学习 in another pane therefore scored it with the table from
+          // BEFORE that run — and the overlay, which passes nothing and lets the offscreen
+          // document read storage, scored the same game with the NEW one. Two numbers for one
+          // game, differing by nothing the operator could see.
+          //
+          // Omitting the key is the whole fix: app.js reads `opts.learned !== undefined` and
+          // falls back to loadLearnedParams() (plus the signal pins), i.e. exactly the overlay's
+          // path. Putting `learned: null` here would instead mean 「force the built-in defaults」,
+          // which is a different thing and would be worse.
           engineId: S.engineId,
         },
       });

@@ -5347,6 +5347,27 @@
       '</div>' +
       '<div class="bar"><i style="width:' + Math.max(0, Math.min(100, pct)).toFixed(1) + '%"></i></div>';
 
+    // 1.0.7 快照七号 §二 R2 — 「本次参数」.
+    //
+    // The overlay is one of the two panes that scored the same game differently, and until this
+    // line existed neither pane said WHICH table / cutoff / rule / budget produced its number, so
+    // the only visible explanation was 「检测不准」. One line, read straight off the report.
+    //
+    // ⚠ Nothing is re-derived here: `GMStorage.reportParamsSummary` is the same function the two
+    // viewer panes call (storage.js is the only layer all three of them load). A local copy would
+    // be the 「同一答案两份实现」 failure this project has shipped wrong seven times.
+    var paramRep = cur && (cur.report || cur.summary);
+    if (paramRep) {
+      var ps = GMStorage.reportParamsSummary(paramRep);
+      h += '<div class="note" style="font-size:10px;opacity:.85">' +
+        esc(T('panel|本次参数：开局排除 {o} · 怀疑 {s} · 规则 {r} · 思考 {t}ms · 权重和 {w}', {
+          o: ps.openingCutoff != null ? ps.openingCutoff : '?',
+          s: ps.suspect === 'B' ? T('panel|黑方') : (ps.suspect === 'W' ? T('panel|白方') : T('panel|双方')),
+          r: ps.rule != null ? ps.rule : '?',
+          t: ps.thinkMs != null ? ps.thinkMs : '?',
+          w: ps.weightsSum != null ? ps.weightsSum.toFixed(2) : '?',
+        })) + '</div>';
+    }
     if (inferred) {
       h += '<div class="note">' + T('panel|数据不完整：前 {n} 手缺失（检测器中途加入，由盘面还原），有效样本 n = <b>{known}</b> 手 / 原始 {total} 手（来源：{src}）。这些手不参与命中率/时间统计，只用于还原盘面。',
         { n: inferred, known: moves.length - inferred, total: moves.length,

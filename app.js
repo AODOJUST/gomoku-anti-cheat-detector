@@ -1732,6 +1732,11 @@ const FOUR_RUN_MIN = 2;
 const VCF_WR = 0.90;
 const LOST_WR = 0.10;
 
+// ---------- 1.0.7 快照七号 §一 连续冲四豁免 ----------
+// How many hands of a consecutive-four run still count. §1.1's rule: 「超过两手（不包括两手）
+// 后的连续冲四步骤不计入检测」 ⇒ the first 2 count, the 3rd and later do not.
+const FOUR_RUN_EXEMPT_AFTER = 2;
+
 function markFourRuns(steps, thresholds) {
   const t = thresholds || BASE_THRESHOLDS;
   const vcfWR = t.fourVcfWR != null ? t.fourVcfWR : VCF_WR;
@@ -1779,6 +1784,51 @@ function markFourRuns(steps, thresholds) {
   return steps;
 }
 
+/**
+ * 1.0.7 快照七号 §一 —— 连续冲四豁免.
+ *
+ * One side's consecutive `four === true` run is a single forcing sequence; the operator ruled
+ * that hand 3 onward is not evidence about the player (a VCF conversion is one decision played
+ * out, not N engine-like choices). So the first FOUR_RUN_EXEMPT_AFTER hands still count and the
+ * rest carry `fourRunExempt = true`, which every per-side population predicate drops.
+ *
+ * ⚠ Deliberately a SEPARATE pass from markFourRuns, not a fourth `fourKind`. `fourKind`
+ * classifies the run (vcf / defensive / useless) by the win rate before it started — that is a
+ * SIGNAL and it is still reported. The exemption is a rule about counting, and it fires on all
+ * three kinds. Merging them would lose the classification on exactly the long runs it is most
+ * informative about.
+ *
+ * ⚠ 「连续」 is walked along ONE side's own scored hands, exactly like markFourRuns: the
+ * opponent's intervening move neither extends nor breaks the run, because it is not in `own`.
+ *
+ * ⚠ Old archives: `fourRunExempt` is `undefined` there, and the predicates read it with `!`,
+ * so a pre-1.0.7 archive scores bit-for-bit what it scored before. The flag is persisted by
+ * slimStep for the same reason — without it, reopening a saved game would re-count hands the
+ * report had already excluded.
+ *
+ * Idempotent: resets the whole array first, like markDesperate / markEvasion, because this runs
+ * again on the same array during a live session.
+ */
+function markFourRunExempt(steps) {
+  for (let i = 0; i < steps.length; i++) steps[i].fourRunExempt = false;
+  for (const side of ['B', 'W']) {
+    const own = [];
+    steps.forEach((s) => {
+      if (s.side === side && s.analyzed && !s.isOpening) own.push(s);
+    });
+    let runLen = 0;
+    for (let k = 0; k < own.length; k++) {
+      if (own[k].four) {
+        runLen++;
+        if (runLen > FOUR_RUN_EXEMPT_AFTER) own[k].fourRunExempt = true;
+      } else {
+        runLen = 0;
+      }
+    }
+  }
+  return steps;
+}
+
 // ---------- 0.4.7 §1.1: the win rate of the position BEFORE each hand ----------
 // `markFourRuns` classifies a run of fours by the value the engine gave the best move before
 // the run began, so every analysed step has to carry "what the best move was worth one of MY
@@ -1810,7 +1860,9 @@ function recordPrevBestWR(steps) {
 // while three of them at a fixed interval is a rhythm.
 function evasionStats(steps, side, thresholds) {
   const t = thresholds || BASE_THRESHOLDS;
-  const own = steps.filter(x => x.side === side && x.analyzed && !x.isOpening && !isExemptUnique(x));
+  // 1.0.7 快照七号 §一: same population as everything else — an exempt hand is not counted here
+  // either, so 「excluded」 means excluded from the whole side, not from five terms of six.
+  const own = steps.filter(x => countsForSide(x, side));
   const evs = own.filter(x => x.evasion);
   const count = evs.length;
 
@@ -2028,6 +2080,10 @@ async function analyzeStepwise(record, opts, onProgress, onStep) {
   // which is where sideAggregate() counts `fourKind === 'useless'`.
   recordPrevBestWR(steps);
   markFourRuns(steps, riskParams(learned).t);
+  // 1.0.7 快照七号 §一 — 连续冲四豁免, right after markFourRuns: it reads the `four` flag scoreStep
+  // stamped (markFourRuns only reads it too), and sideAggregate / the streak+pool walks must see
+  // the verdict before they filter. Idempotent, so re-running it on a growing array is safe.
+  markFourRunExempt(steps);
   // 0.5.2 §1.1/§1.2: the two pool passes, after the four-run pass for the same reason it runs
   // after markEvasion — a hand's 冲四豁免 verdict has to be settled before markGoodPool decides
   // whether the hand joins the run, and the live-three flags read `cands`/`top1`/`top3`, which
@@ -2079,6 +2135,10 @@ function summarizeSteps(steps, times, opts) {
   // too — same reason as the line above. Both are idempotent (they reset their own fields).
   recordPrevBestWR(steps);
   markFourRuns(steps, riskParams(params).t);
+  // 1.0.7 快照七号 §一 — 连续冲四豁免, right after markFourRuns: it reads the `four` flag scoreStep
+  // stamped (markFourRuns only reads it too), and the live summary the panel draws must see
+  // the verdict before they filter. Idempotent, so re-running it on a growing array is safe.
+  markFourRunExempt(steps);
   // 0.5.2 §1.1/§1.2 — same two passes as the finished report, same reason as the two above: the
   // live score has to equal the score the game ends with. Both reset their own fields, so they
   // are safe to re-run on every update.
@@ -2937,6 +2997,10 @@ async function analyzeGame(record, opts, onProgress) {
   // 0.4.7 §1.1: same two steps as the stepwise path, in the same order and for the same reason.
   recordPrevBestWR(steps);
   markFourRuns(steps, riskParams(learned).t);
+  // 1.0.7 快照七号 §一 — 连续冲四豁免, right after markFourRuns: it reads the `four` flag scoreStep
+  // stamped (markFourRuns only reads it too), and sideAggregate / the streak+pool walks must see
+  // the verdict before they filter. Idempotent, so re-running it on a growing array is safe.
+  markFourRunExempt(steps);
   // 1.0.7 续 ⑩ — the two pool passes, which `markPoolSignals`' own note says both callers run.
   //
   // ⚠⚠ It did not. `markPoolSignals` was called by analyzeStepwise and summarizeSteps only, so a
@@ -3038,7 +3102,7 @@ function evasiveOwnHands(steps, side) {
   const own = [];
   for (let i = 0; i < steps.length; i++) {
     const s = steps[i];
-    if (s.side === side && s.analyzed && !s.isOpening && !isExemptUnique(s)) own.push(s);
+    if (countsForSide(s, side)) own.push(s);
   }
   return own;
 }
@@ -3118,6 +3182,27 @@ function isExemptUnique(s) {
   return !!(s && s.forcedDefense);
 }
 
+// 1.0.7 快照七号 §一 — 「这一手算不算这一方的统计样本」, in ONE place.
+//
+// ⚠ It has to be one place: the four walks that feed a side's terms (sideAggregate's `s`,
+// sharpStreakStats, goodPoolCounts, evasionStats) each grew their own copy of this predicate
+// over the years, and a rule added to three of them is the 「同一答案两份实现」 failure this
+// project has shipped wrong seven times. Adding `fourRunExempt` here is what makes §一's
+// exemption apply to the streak terms and the pools as well — §1.6 of the 定稿 says those follow
+// `s` automatically, which is true of the ones computed FROM `s` and false for these three,
+// because they take the full step list and filter it themselves.
+//
+// The `!` (not `!== true`) is deliberate: a pre-1.0.7 archive has no `fourRunExempt` field at
+// all, `!undefined === true`, and the hand keeps counting — exactly the old behaviour.
+//
+// It deliberately does NOT exclude evasions: sideAggregate stacks `!x.evasion` on top for the
+// six main figures, while the streak/pool/evasion walks have always seen them. That asymmetry
+// predates this patch and is left alone; folding it in here would move every archived score.
+function countsForSide(s, side) {
+  return !!s && s.side === side && !!s.analyzed && !s.isOpening &&
+         !isExemptUnique(s) && !s.fourRunExempt;
+}
+
 // ---------- 0.4.8 §1.2 唯一手连续命中 ----------
 // 唯一手 here is the ENGINE's only-good-move reading (`isSharp`: best-vs-second gap >= 0.12
 // with the best move winning or losing outright) — not the four's only-block reading, which is
@@ -3141,7 +3226,7 @@ function sharpStreakStats(steps, side) {
   const own = [];
   for (let i = 0; i < steps.length; i++) {
     const s = steps[i];
-    if (s.side === side && s.analyzed && !s.isOpening && !isExemptUnique(s)) own.push(s);
+    if (countsForSide(s, side)) own.push(s);
   }
   let maxStreak = 0, totalSharp = 0, streakHits = 0, currentStreak = 0;
   for (let i = 0; i < own.length; i++) {
@@ -3207,7 +3292,9 @@ function isGoodMove(s) {
 // 活三 defence that lands as the engine's first choice is a good point on its own merits, so it is
 // not double-counted either way.
 function goodPoolCounts(s, side) {
-  return !!s && s.side === side && s.analyzed && !s.isOpening && !isExemptUnique(s);
+  // 1.0.7 快照七号 §一: one predicate for "counts toward this side", so the exemption reaches
+  // the pool as well as the six main figures — see countsForSide().
+  return countsForSide(s, side);
 }
 
 // A hand that is not on this side's own list never reaches isGoodMove's second tier, so `thinkMs`
@@ -3400,6 +3487,11 @@ function probeMatchActivation(seen, hits, maxRun) {
   return (maxRun >= PROBE_RUN_MIN || rate >= PROBE_RATE_MIN) ? 1 : clamp(rate, 0, 1);
 }
 
+// 1.0.7 快照七号 §二 R5 — below this many scored hands, top1 / acpl / out read as 「no sample」.
+// §2.3 argues the number: n = 5 is the smallest sample at which an 80% Top-1 rate is separable
+// from a coin flip at ~80% confidence. It is a property of the MEASUREMENT, not of this corpus.
+const SMALL_N = 5;
+
 function sideAggregate(steps, side, hasTime, params, opts) {
   const { w, t } = riskParams(params);
   // 0.4.2 §2.3: an evasion hand is excluded from the main statistics. That exclusion IS the
@@ -3407,8 +3499,9 @@ function sideAggregate(steps, side, hasTime, params, opts) {
   // ACPL / Top5-外) it is meant to be evidence about — the operator would see a "human-like"
   // ACPL produced by the smoke screen rather than by the play. The two evasion terms below
   // are what carries that evidence instead, so nothing is lost.
-  const s = steps.filter(x => x.side === side && !x.isOpening && x.analyzed &&
-                              !isExemptUnique(x) && !x.evasion);
+  // 1.0.7 快照七号 §一: the 连续冲四 exemption rides in countsForSide() — hands from the third
+  // of a consecutive-four run onward never reach any of the figures below.
+  const s = steps.filter(x => countsForSide(x, side) && !x.evasion);
   if (!s.length) return null;
   const n = s.length;
   const top1 = avg(s.map(x => x.top1 ? 1 : 0));
@@ -3428,7 +3521,13 @@ function sideAggregate(steps, side, hasTime, params, opts) {
   const legacy = !!(opts && opts.legacyTop1);
   const topProx = avg(s.map(stepProximity));
   const losses = s.map(x => x.loss).filter(v => v != null);
-  const meanLoss = avg(losses);
+  // 1.0.7 快照七号 §二 R4 — no loss sample is NOT a perfect score.
+  // `avg([])` is 0 in JavaScript and `rampDown(0, lo, hi)` is 1, so a side whose every hand came
+  // back without a readable loss used to collect a FULL aAcpl for having no evidence at all.
+  // null says 「no sample」, and aAcpl below turns that into the neutral 0.5 instead.
+  // ⚠ The report carries the null (`meanLoss`), because the two cases are different facts: an
+  // archive with `meanLoss: null` never had a sample, one with 0.0 really scored perfectly.
+  const meanLoss = losses.length ? avg(losses) : null;
   const sharp = s.filter(x => x.isSharp);
   const sharpHit = sharp.length
     ? (legacy ? avg(sharp.map(x => (x.top1 ? 1 : 0))) : avg(sharp.map(stepProximity)))
@@ -3473,11 +3572,20 @@ function sideAggregate(steps, side, hasTime, params, opts) {
 
   // `top1Lo`/`top1Hi` stay in storage and in the learner (they are still what an old archive
   // describes itself with), but nothing here reads them unless `legacy` above asks for it.
-  const aTop1 = legacy ? rampUp(top1, t.top1Lo, t.top1Hi)
-                       : rampUp(topProx, t.topProxLo, t.topProxHi);
-  const aAcpl = rampDown(meanLoss, t.acplLo, t.acplHi);
+  // 1.0.7 快照七号 §二 R5 — under SMALL_N hands the three ratio terms are noise, not evidence.
+  // Each of them is a rate over this side's hands, and a rate's variance grows as its denominator
+  // shrinks: one lucky hand in three moves moves `topProx` by 0.33, one bad loss in five moves
+  // moves `meanLoss` by more than its whole ramp. The neutral 0.5 says 「no reading」 — it neither
+  // awards nor withholds, which is the only honest thing such a short sample supports.
+  // ⚠ The 65/35 verdict line is untouched: this moves the ACTIVATION, and only for sides short
+  // enough that the operator's own evidence floor (⑮, MIN_AI_HANDS = 8) already refuses to call
+  // them AI. `aTop1`'s legacy branch is gated too, so the comparison switch cannot drift apart
+  // from the live reading it exists to reproduce.
+  const aTop1 = n < SMALL_N ? 0.5 : (legacy ? rampUp(top1, t.top1Lo, t.top1Hi)
+                                            : rampUp(topProx, t.topProxLo, t.topProxHi));
+  const aAcpl = (meanLoss == null || n < SMALL_N) ? 0.5 : rampDown(meanLoss, t.acplLo, t.acplHi);
   const aSharp = sharp.length >= 3 ? clamp((sharpHit - t.sharpHitLo) / Math.max(0.05, t.sharpHitSpan), 0, 1) : 0.5;
-  const aOut = rampDown(outTop5, 0, t.outTop5Hi);
+  const aOut = n < SMALL_N ? 0.5 : rampDown(outTop5, 0, t.outTop5Hi);
   const aDesperate = clamp(desperateCount / 3, 0, 1); // >=3 desperate flags -> max
   let aTime = 0.5;
   if (time) {
@@ -3716,6 +3824,11 @@ function sideAggregate(steps, side, hasTime, params, opts) {
     // (the thing that scores), and how many runs of each kind there were (reported, so an
     // operator can tell "one long run" from "three short ones" — the score cannot).
     uselessFourCount, fourRuns,
+    // 1.0.7 快照七号 §1.8 — how many of this side's hands the 连续冲四 rule took out of the
+    // statistics. Reported, never scored: it is how the operator can tell 「this side played one
+    // six-hand forcing sequence」 from 「this side had six ordinary fours」, which the score cannot.
+    // ⚠ By construction these hands are NOT in `n` — that is the whole point of the exemption.
+    fourRunExemptCount: steps.filter(x => x.side === side && x.fourRunExempt).length,
     // 0.4.8 §1.2. The two streak figures behind the terms above. `sharpStreakMax` is the
     // longest run of top-1 sharp hands, `sharpStreakHits` the total count — reported so the
     // detail table can say "唯一手最长连续命中 N 次 / 累计 M 次" without recomputing either.
@@ -3770,8 +3883,10 @@ function sideAggregate(steps, side, hasTime, params, opts) {
       probeMatch: contrib.probeMatch * 100,
     },
     // 1.0.7 快照六号 §4.1 — the split, and the per-term bonus the UI prints in parentheses.
-    // All three are 0–100 scale, same unit as `contributions`, so a reader can add them without a
-    // conversion. `bonusByKey` holds only terms that actually earned something (see the loop).
+    // All three are in points (× 100), same unit as `contributions`, so a reader can add them
+    // without a conversion. ⚠ They are NOT 0–100: an uncapped term can earn up to 3 × its weight,
+    // so `baseScore` alone reaches 150 on a saturated side. Don't describe them as percentages.
+    // `bonusByKey` holds only terms that actually earned something (see the loop).
     baseScore, bonusScore, bonusByKey,
     risk, level,
   };
@@ -4093,6 +4208,14 @@ function buildReport(steps, record, opts) {
       trainedAt: params.trainedAt || null,
       sampleCount: params.sampleCount || 0,
       featureCount: (params.features || []).length,
+      // 1.0.7 快照七号 §二 R2 — the sum of the table this report was actually scored with
+      // (pins included, because `params` is the post-pin object). 1.50 = shipped, 1.45 = shipped
+      // plus a feature library, anything else = a learned profile. Carried so a reader can tell
+      // two reports apart without re-reading settings that have since changed.
+      weightsSum: (() => {
+        const w = riskParams(params).w;
+        return Object.keys(w).reduce((sum, k) => sum + (Number(w[k]) || 0), 0);
+      })(),
     } : null,
     steps, black, white, flagged,
     // 0.4.3 §4.2/§4.3. `manualSegments` / `manualType` are the operator's overrides and start
@@ -4118,7 +4241,8 @@ if (typeof module !== 'undefined' && module.exports) {
     // 0.4.7 §1.1: the four-run pass and the per-step value it classifies with. Exported for the
     // same reason as the two above — a test that re-derived `prevBestWR` itself would be
     // testing its own copy of the rule, and the two could drift.
-    markFourRuns, recordPrevBestWR, FOUR_RUN_MIN,
+    markFourRuns, markFourRunExempt, countsForSide, recordPrevBestWR, FOUR_RUN_MIN,
+    FOUR_RUN_EXEMPT_AFTER, SMALL_N,
     // 0.4.7 §1.4: the candidate width the two analysis paths derive from the recorded interval.
     nbestFor, NBEST_DEFAULT, NBEST_EXTENDED, THINK_MS_EXTENDED,
     // 0.4.3 §1.1/§1.2/§1.5: the proximity grade, the segmenter and the classifier. Exported

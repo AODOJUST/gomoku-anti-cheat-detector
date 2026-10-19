@@ -568,12 +568,16 @@ var GM_TAG_WIKI = (function () {
       applied: true, weightKey: 'uselessFour',
       zh: {
         meaning: '必败方的连续冲四（≥2 步，且该方最佳胜率 ≤ 0.10）。2 段即满值。',
-        usage: '0.4.7 引入，比「将败冲四」更严格：不仅败势，还要连着冲。单次可能是诚实的挣扎，连着冲才是无谓。',
+        usage: '0.4.7 引入，比「将败冲四」更严格：不仅败势，还要连着冲。单次可能是诚实的挣扎，连着冲才是无谓。'
+              + '⚠ 1.0.7 快照七号起另有一条计数规则：该方的连续冲四从**第 3 手起不再计入任何统计**'
+              + '（本项也一样，回放里那几手带「连续冲四·不计」徽标）。一条转换序列是一个决定被走出来的样子，'
+              + '不是 N 个独立的决定；本项分类（vcf / 防守 / 无用）照旧保留，被豁免的只是「算不算样本」。',
         impact: '权重 {w}，行为信号之一。无此形态时为 0。',
       },
       en: {
         meaning: 'A run of 2+ consecutive four-chases played from a lost position (that side\'s best win rate ≤ 0.10). Two such runs saturate it.',
-        usage: 'Added in 0.4.7 and stricter than 将败冲四: not just lost, but chasing repeatedly. A single one can be an honest attempt; a run cannot.',
+        usage: 'Added in 0.4.7 and stricter than 将败冲四: not just lost, but chasing repeatedly. A single one can be an honest attempt; a run cannot.'
+              + ' ⚠ From 1.0.7 snapshot 7 there is also a counting rule: from the THIRD hand of one side\'s consecutive fours, the hand no longer counts in any statistic (this term included; the replay badges those hands 「连续冲四·不计」). A conversion sequence is one decision played out, not N independent decisions — the classification (vcf / defensive / useless) is still reported; only 「is this a sample」 changes.',
         impact: 'Weight {w}, one of the behaviour signals. Zero when the pattern is absent.',
       },
     },
