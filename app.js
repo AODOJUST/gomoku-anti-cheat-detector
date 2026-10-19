@@ -2254,11 +2254,13 @@ const BASE_WEIGHTS = {
   //   · the TOTAL is the invariant, and it is **1.50** — exactly the ceiling, and the reason
   //     `verify-059` asserts `total <= SIGNAL_WEIGHT_SUM_MAX` on the shipped table rather than
   //     leaving it to a pin;
-  //   · ⚠ the largest terms are now **`top1` (0.23) and `goodPool` (0.23) TIED**, then `sharp`
+  //   · ⚠ the largest term is now **`goodPool` (0.27), alone**, then `top1` (0.23) and `sharp`
   //     (0.22). 0.5.3 and 0.5.7 both had `out` on top at 0.27; 0.5.7-Alpha cut it to 0.12 and lifted
-  //     `top1` to sole first place (0.23 vs `goodPool`'s 0.19); 1.0.7 续 §一 takes `goodPool` to
-  //     0.23 as well, so the wiki's 「最大的一项」 claim has to say **并列** and `verify-058`'s pin
-  //     (`W.top1 >= max(others)`) stays true rather than being special-cased.
+  //     `top1` to sole first place (0.23 vs `goodPool`'s 0.19); 1.0.7 续 §一 tied the two at 0.23;
+  //     **1.0.7 快照六号 §一** moves `winBlunder`'s 0.04 here, which puts the pool in sole first.
+  //     ⚠ `verify-058`'s pin used to be `W.top1 >= max(others)` and that is now false BY DESIGN —
+  //     the pin has to name `goodPool` (or say "the largest term is one of the two intended ones")
+  //     rather than being special-cased back to `top1`.
   //
   // The three families, and where each term came from:
   //   · 基础六项 (top1/acpl/sharp/out/desperate/time) — the 0.4.2 statistics, **0.75** together
@@ -2320,7 +2322,15 @@ const BASE_WEIGHTS = {
   // archive written by an older build still carries `thinkMs`. A missing key and a zero key are
   // not the same thing anywhere in this codebase — see the ⚠ in the block above about the learner.
   top1: 0.23, acpl: 0.10, sharp: 0.22, out: 0.12, desperate: 0.08, time: 0,
-  evasion: 0.08, winBlunder: 0.04,
+  // ⚠⚠ 1.0.7 快照六号 §一 — `winBlunder` goes 0.04 → **0** and the 0.04 moves to `goodPool`
+  // (0.23 → **0.27**, now the table's LARGEST term, above `top1`'s 0.23). The key is KEPT at 0 for
+  // the same reason `time` / `noBlunder` / `probeMatch` are: `WEIGHT_KEYS` drives the panel's row
+  // list, `riskOfSub` / `sideAggregate` both look the table up by key, `evasionStats` still counts
+  // it and the report still carries `winBlunderCount`. A missing key and a zero key are not the same
+  // thing anywhere in this codebase. Consequence, stated rather than discovered: `learn.js`'s
+  // `group()` gates its 0.02 AUC floor on `dw[k] > 0`, so a zero-default key is correctly excluded
+  // from the behaviour budget instead of silently taking a share of it.
+  evasion: 0.08, winBlunder: 0,
   uselessFour: 0.08,
   sharpStreak: 0.09,
   sharpTotal: 0.09,
@@ -2333,7 +2343,10 @@ const BASE_WEIGHTS = {
   // "stable and directional" choice, NOT the most discriminative one. See the release note above.
   // **1.0.7 续 §一 takes it to 0.23** — the share the five parked keys were holding comes back to
   // the terms that actually fire, which puts the pool level with `top1` (see note 5 above).
-  goodPool: 0.23,
+  // **1.0.7 快照六号 §一 takes it to 0.27** — the 0.04 given up by `winBlunder`, so this is now the
+  // table's largest single term. It is also one of the four UNBOUNDED terms (see below): its score
+  // can reach 3× its weight at full activation, which is `top1`'s ceiling times three.
+  goodPool: 0.27,
   // §1.2's 活三 pool. 0.5.3: 0.03; 1.0.7 续 §一: **0.06** — the only other term that fires on both
   // groups with the right sign, so it takes the second-largest slice of the returned 0.12.
   liveThree: 0.06,
@@ -2373,6 +2386,34 @@ const BASE_WEIGHTS = {
   // a `bestWR < 0.20` position and never earn the sample factor), not of the curve. Left as is.
   noBlunder: 0, steadyLost: 0.08, probeMatch: 0,
 };
+
+// ---------- 1.0.7 快照六号 §二/§三 — 无上限计分法 ----------
+//
+// Four terms score on a different curve from the other thirteen. Their ACTIVATION is unchanged
+// (§三 is explicit about this: the subscore formula stays exactly what it was, or `learn.js`'s
+// `subscoresForSide` would drift away from `sideAggregate`); what changes is how activation becomes
+// points. Above 60% activation every further percentage point re-triggers the term once, and each
+// trigger multiplies the term by 1.05:
+//
+//     n     = floor((a − 0.60) × 100)          // 0 ≤ n ≤ 40; one unit per percentage point
+//     score = wEff × a × (1 + 5·n/100)         // multiplier 1.00 → 3.00 as a goes 0.60 → 1.00
+//
+// ⚠ The multiplier ceiling is **3.0**, not infinity. `a` is already clamped to [0,1], so n cannot
+// exceed 40; 「无上限」 names the SHAPE (the term is no longer capped at its own weight), not an
+// unbounded number. §六.5 says the same thing.
+//
+// ⚠⚠ `UNBOUNDED_KEYS` is a KEY WHITELIST, not a calculation rule. The rule lives in exactly one
+// place — `sideAggregate`'s scoring loop — and `learn.js` carries a byte-identical copy because it
+// cannot import this file (THE MIRROR RULE; `verify-074` compares the two literals).
+const UNBOUNDED_KEYS = ['sharpStreak', 'sharpTotal', 'liveThree', 'goodPool'];
+const UNBOUNDED_THRESHOLD = 0.6;
+const UNBOUNDED_STEP = 5;
+// ⚠⚠ Floating-point guard, and it is NOT cosmetic. `(0.7 − 0.6) * 100` is `9.999999999999998` in
+// IEEE-754, so the bare `Math.floor` scores a=0.70 as n=9 (and a=0.65 as n=4) — a one-notch jump
+// that lands one point early every time the subtraction happens to round down. The epsilon is
+// seven orders of magnitude below the smallest real step (0.01 → 1.0), so it cannot promote a
+// genuine 4.99 to 5. `verify-074` pins a=0.65→5 and a=0.70→10, which redden without it.
+const UNBOUNDED_EPS = 1e-9;
 const BASE_THRESHOLDS = {
   // 0.4.3 §1.1: the ramp aTop1 now reads. `top1Lo`/`top1Hi` are kept because a pre-0.4.3
   // archive and the `opts.legacyTop1` comparison path still describe themselves with them,
@@ -3605,21 +3646,65 @@ function sideAggregate(steps, side, hasTime, params, opts) {
   // negative (storage clamps the sum, not each term), and a negative total would make the upper
   // bound smaller than 0 and turn the score into a constant. `Math.max(0, …)` covers it.
   const wSumEff = Object.keys(wEff).reduce((sum, k) => sum + wEff[k], simW);
-  const risk = clamp(100 * (wEff.top1 * aTop1 + wEff.acpl * aAcpl + wEff.sharp * aSharp + wEff.out * aOut
-                    + wEff.desperate * aDesperate + wEff.time * aTime + simW * aSim
-                    + wEff.evasion * aEvasion + wEff.winBlunder * aWinBlunder
-                    + wEff.uselessFour * aUselessFour
-                    + wEff.sharpStreak * aSharpStreak + wEff.sharpTotal * aSharpTotal
-                    + wEff.goodPool * aGoodPool + wEff.liveThree * aLiveThree
-                    // 1.0.7 §1.2 — 规避行为（深 low 点 + 高分环绕的节奏）。
-                    + wEff.evasiveBehavior * aEvasive
-                    // 0.5.7 §1.3 — the three low-end-AI terms. `wEff.time` is still in the sum above
-                    // and still multiplied by `aTime`; the shipped weight is 0, so the product is 0.
-                    // That is deliberate over deleting the term: the field, the computation and the
-                    // panel row all survive §1.2, and a pin that puts `time` back would be honoured
-                    // exactly as it is for every other signal.
-                    + wEff.noBlunder * aNoBlunder + wEff.steadyLost * aSteadyLost
-                    + wEff.probeMatch * aProbeMatch), 0, 100 * Math.max(0, wSumEff));
+
+  // ---------- 1.0.7 快照六号 §二 — 基础分 + 无上限加分 ----------
+  //
+  // The seventeen terms no longer share one arithmetic. Thirteen of them score `wEff × a`; the four
+  // in UNBOUNDED_KEYS score `wEff × a × (1 + 5n/100)` once `a` passes 0.60, so a term can be worth
+  // up to three times its own weight. §三 is explicit that the ACTIVATION formula does not move —
+  // the subscore is still whatever `aGoodPool` / `aSharpStreak` / … already computed; only the
+  // score built from it changes.
+  //
+  // ⚠⚠ This loop is the ONE place the rule exists. `contrib` is assembled from `linear + excess`
+  // rather than computed a second time: §4.1 asks for `contributions[k] === linear[k] + excess[k]`
+  // to hold exactly, and two independent expressions differ in the last bit — which is precisely
+  // the assertion (B6) that catches it. The same reason `risk` is summed from `baseSum/bonusSum`
+  // rather than re-walking the table.
+  const acts = {
+    top1: aTop1, acpl: aAcpl, sharp: aSharp, out: aOut, desperate: aDesperate, time: aTime,
+    evasion: aEvasion, winBlunder: aWinBlunder, uselessFour: aUselessFour,
+    sharpStreak: aSharpStreak, sharpTotal: aSharpTotal, goodPool: aGoodPool, liveThree: aLiveThree,
+    evasiveBehavior: aEvasive, noBlunder: aNoBlunder, steadyLost: aSteadyLost, probeMatch: aProbeMatch,
+  };
+  const contrib = {}, bonusByKey = {};
+  let baseSum = 0, bonusSum = 0;
+  for (const k in acts) {
+    const wgt = wEff[k] || 0;
+    const a = clamp(Number(acts[k]) || 0, 0, 1);
+    const lin = wgt * a;
+    let exc = 0;
+    if (UNBOUNDED_KEYS.indexOf(k) >= 0 && a > UNBOUNDED_THRESHOLD) {
+      const n = Math.floor((a - UNBOUNDED_THRESHOLD) * 100 + UNBOUNDED_EPS);
+      exc = wgt * a * (UNBOUNDED_STEP * n) / 100;
+    }
+    contrib[k] = lin + exc;
+    // ⚠ Keyed on `exc > 0`, not on membership in UNBOUNDED_KEYS: an activation in (0.60, 0.61)
+    // computes n=0 and therefore earns no bonus, and §4.1 says `bonusByKey` carries non-zero
+    // entries only. Listing it at 0 would print 「含加分 0.0」 on a side that has none.
+    if (exc > 0) bonusByKey[k] = exc * 100;
+    baseSum += lin;
+    bonusSum += exc;
+  }
+  // `sim` stays outside the loop and outside UNBOUNDED_KEYS — it is the one auxiliary term, it is
+  // never activated by a hand and it has no `wEff` entry (its share is `simW`, taken out of the
+  // other seventeen). Adding it to `baseSum` is what makes baseScore + bonusScore reproduce `risk`
+  // exactly whenever nothing is trimmed.
+  const simContribution = simW * aSim;
+  baseSum += simContribution;
+
+  const baseScore = baseSum * 100;
+  const bonusScore = bonusSum * 100;
+  // ⚠⚠ 1.0.7 续 ⑬ stays in force: the ceiling is 100 × ΣwEff (150 shipped, 145 with a feature
+  // library), NOT the 100 that 快照六号 §0.2 prints. The operator ruled on this on 2026-10-19 —
+  // the `0, 100` in that document predates ⑬ and would undo it. What the document's §0.2 really
+  // asks for (a `risk` that every existing consumer can keep reading) holds either way: this is
+  // still one number, still monotone in every activation, still what `riskBand` / `classifySide` /
+  // `shouldSkipArchive` compare against.
+  //
+  // Consequence, stated because it is a real one: the four unbounded terms can push the sum past
+  // the ceiling, and above it the bonus is trimmed while `bonusScore` still reports its untrimmed
+  // value. That is why §4.1's B5 asks for `baseScore + bonusScore ≥ risk` rather than `===`.
+  const risk = clamp(baseScore + bonusScore, 0, 100 * Math.max(0, wSumEff));
   const level = risk >= t.riskHigh ? '高风险' : (risk >= t.riskMid ? '可疑' : '低风险');
   return {
     side, n, top1, top3, top5, topProx, meanLoss, sharpHit, outTop5, desperateCount,
@@ -3671,17 +3756,23 @@ function sideAggregate(steps, side, hasTime, params, opts) {
     // off the aggregate rather than re-deriving it from `contributions`).
     aEvasive,
     contributions: {
-      top1: wEff.top1 * aTop1 * 100, acpl: wEff.acpl * aAcpl * 100, sharp: wEff.sharp * aSharp * 100,
-      out: wEff.out * aOut * 100, desperate: wEff.desperate * aDesperate * 100, time: wEff.time * aTime * 100,
-      sim: simW * aSim * 100,
-      evasion: wEff.evasion * aEvasion * 100, winBlunder: wEff.winBlunder * aWinBlunder * 100,
-      uselessFour: wEff.uselessFour * aUselessFour * 100,
-      sharpStreak: wEff.sharpStreak * aSharpStreak * 100, sharpTotal: wEff.sharpTotal * aSharpTotal * 100,
-      goodPool: wEff.goodPool * aGoodPool * 100, liveThree: wEff.liveThree * aLiveThree * 100,
-      evasiveBehavior: wEff.evasiveBehavior * aEvasive * 100,
-      noBlunder: wEff.noBlunder * aNoBlunder * 100, steadyLost: wEff.steadyLost * aSteadyLost * 100,
-      probeMatch: wEff.probeMatch * aProbeMatch * 100,
+      // 1.0.7 快照六号 §4.1 — every entry is the term's TOTAL (linear + any excess), so the rows
+      // still add up to `risk` exactly whenever nothing is trimmed at the ceiling.
+      top1: contrib.top1 * 100, acpl: contrib.acpl * 100, sharp: contrib.sharp * 100,
+      out: contrib.out * 100, desperate: contrib.desperate * 100, time: contrib.time * 100,
+      sim: simContribution * 100,
+      evasion: contrib.evasion * 100, winBlunder: contrib.winBlunder * 100,
+      uselessFour: contrib.uselessFour * 100,
+      sharpStreak: contrib.sharpStreak * 100, sharpTotal: contrib.sharpTotal * 100,
+      goodPool: contrib.goodPool * 100, liveThree: contrib.liveThree * 100,
+      evasiveBehavior: contrib.evasiveBehavior * 100,
+      noBlunder: contrib.noBlunder * 100, steadyLost: contrib.steadyLost * 100,
+      probeMatch: contrib.probeMatch * 100,
     },
+    // 1.0.7 快照六号 §4.1 — the split, and the per-term bonus the UI prints in parentheses.
+    // All three are 0–100 scale, same unit as `contributions`, so a reader can add them without a
+    // conversion. `bonusByKey` holds only terms that actually earned something (see the loop).
+    baseScore, bonusScore, bonusByKey,
     risk, level,
   };
 }

@@ -14714,10 +14714,27 @@
           '<div class="lab">' + T('viewer|未分析') + '</div>';
       }
       else {
+        // 1.0.7 快照六号 §5.1 — the split line, and only when there is something to add.
+        // ⚠ `!= null` on `bonusScore`, because an archive written before this build has NO such
+        // field and §5.1 asks it to keep the old 「n=42」 shape; a measured 0 is suppressed by the
+        // `>= 1` test instead, which is the same visual outcome but a different reason — and the
+        // two must not be conflated, because `bonusByKey` above distinguishes them.
+        // ⚠ 「封顶」 is decided by comparing against `risk`, NOT against a literal 100: the ceiling
+        // is 100 × ΣwEff (150 / 145, see ⑬), the viewer has no copy of that table, and `risk` is
+        // already the trimmed number. `> 0.05` absorbs the rounding of the two `.toFixed(1)`s.
+        // §5.1's `> 100.5` is the same test against the ceiling that document assumed; this form
+        // stays correct if the ceiling moves again.
+        var sLine = 'n=' + x.n;
+        if (x.bonusScore != null && x.bonusScore >= 1) {
+          var bs = x.baseScore != null ? x.baseScore : 0;
+          var capped = (bs + x.bonusScore) - x.risk > 0.05;
+          sLine += ' · ' + T('viewer|基础 {b} + 加分 {x}', { b: bs.toFixed(1), x: x.bonusScore.toFixed(1) }) +
+            (capped ? T('viewer|（封顶）') : '');
+        }
         div.innerHTML = '<div class="player-name">' + esc(playerNameLine(p, x.side)) + '</div>' +
           '<div class="big lv-' + x.level + '">' + x.risk.toFixed(0) + '</div>' +
           '<div class="lab">' + TO('level', x.level) + '</div>' +
-          '<div class="contrib">n=' + x.n + '</div>';
+          '<div class="contrib">' + sLine + '</div>';
       }
       box.appendChild(div);
     });
@@ -14737,7 +14754,14 @@
       // silently vanishes from the breakdown is worse than one with an ugly name.
       return '<div style="margin-bottom:6px"><b>' + sideName(x.side) + '</b> ' +
         Object.keys(c).map(function (k) {
-          return (CONTRIB_TXT[k] ? T('learn.weight.' + k) : k) + ' ' + c[k].toFixed(1);
+          // 1.0.7 快照六号 §5.2 — the parenthetical only on terms that actually earned a bonus.
+          // ⚠ Threshold is `>= 0.1`, not `> 0`: the row prints one decimal, so 「含加分 0.0」 would
+          // claim an addition that is invisible in the same line's own number.
+          var bn = (x.bonusByKey && x.bonusByKey[k] != null) ? Number(x.bonusByKey[k]) : 0;
+          return (CONTRIB_TXT[k] ? T('learn.weight.' + k) : k) + ' ' + c[k].toFixed(1) +
+            (isFinite(bn) && bn >= 0.1
+              ? '（' + esc(T('viewer|含加分 {x}', { x: bn.toFixed(1) })) + '）'
+              : '');
         }).join(' · ') +
         tw + '</div>';
     }).join('');

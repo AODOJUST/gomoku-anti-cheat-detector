@@ -5492,9 +5492,25 @@
     // on BOTH cards whenever any adjustment existed: the unadjusted card then paired a number that
     // had not moved with an annotation claiming it had, contradicting §13.3's 「只影响对手」.
     var adjusted = !!(side && side === chatAdjSide() && chat.total);
+    // 1.0.7 快照六号 §5.1 — the base/bonus split, same rules as the viewer's card: only when the
+    // side actually earned something (`>= 1`), never on a pre-六号 report (`bonusScore == null`).
+    // ⚠ 「封顶」 compares against the UNTRIMMED sum minus `risk`, not against a literal 100: the
+    // ceiling is 100 × ΣwEff (150 / 145, see ⑬) and this file has no copy of the weight table.
+    // §5.1 prints `> 100.5` because that document assumed a 100 ceiling; this form survives the
+    // ceiling moving again, which it already has once.
+    // ⚠ These are `panel|` keys, a deliberate second dictionary entry beside the viewer's — this
+    // file already keeps its own namespace for the one sentence it shares with the replay pane
+    // (`panel|手` beside `viewer|手`), so shortening the popover copy does not move that pane's.
+    var split = '';
+    if (agg.bonusScore != null && agg.bonusScore >= 1) {
+      var bs = agg.baseScore != null ? agg.baseScore : 0;
+      var capped = (bs + agg.bonusScore) - agg.risk > 0.05;
+      split = ' · ' + esc(T('panel|基础 {b} + 加分 {x}', { b: bs.toFixed(1), x: agg.bonusScore.toFixed(1) })) +
+        (capped ? esc(T('panel|（封顶）')) : '');
+    }
     return '<div class="card"><div class="v" style="color:' + riskColor(agg.level) + '">' +
       risk + '</div><div class="k">' + esc(k) + ' · ' + esc(TO('level', agg.level)) + '</div>' +
-      '<div class="s">' + agg.n + ' ' + esc(T('panel|手')) +
+      '<div class="s">' + agg.n + ' ' + esc(T('panel|手')) + split +
         (adjusted ? ' · ' + esc(T('panel|交流 {d}', { d: (chat.total > 0 ? '+' : '') + chat.total })) : '') +
       '</div></div>';
   }

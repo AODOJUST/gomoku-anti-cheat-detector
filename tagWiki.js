@@ -436,8 +436,8 @@ var GM_TAG_WIKI = (function () {
         meaning: '实际走法与引擎首选的一致程度。不是「命中率」那么简单——0.4.3 起用的是'
              + '分档接近度：首选记 1.0、2–5 名记 0.80、6–8 名记 0.50，再取均值后过斜坡。',
         usage: '最基础的一项。它单独说明不了什么，但它是所有其他信号的对照组。',
-        impact: '权重 {w}，基础统计六项之一，也是整张权重表里最大的一项 —— 与「好点池」并列'
-              + '（0.5.7-Alpha 起它单独居首，1.0.7 续 把好点池提到同一个数）。',
+        impact: '权重 {w}，基础统计六项之一。0.5.7-Alpha 起它单独居首；1.0.7 续 曾与好点池'
+              + '同为 0.23；1.0.7 快照六号 起好点池单独居首（0.27 对 0.23），本项退为第二。',
       },
       en: {
         meaning: 'How closely the played moves match the engine\'s first choice. Not a plain hit rate — since 0.4.3 it reads a graded proximity: top-1 scores 1.0, ranks 2–5 score 0.80, ranks 6–8 score 0.50, and the mean goes through a ramp.',
@@ -573,12 +573,17 @@ var GM_TAG_WIKI = (function () {
       zh: {
         meaning: '唯一手连中：连续命中唯一手的最长段。0.5.2 起改为指数曲线——连得越长，增量越大（3 段约 0.14，十段封顶）。',
         usage: '人类偶尔猜中唯一手是常事，连着猜中不是。指数曲线的意义在于「第 6 次」比「第 2 次」更可疑。',
-        impact: '权重 {w}，行为信号之一。无唯一手连中时为 0。',
+        impact: '权重 {w}，行为信号之一。无唯一手连中时为 0。'
+              + '激活值超过 60% 后，每多 1% 触发一次 ×1.05 的乘数，最高 3 倍'
+              + '（激活值 = 100% 时），因此本项在高激活区可以超过其权重本身。',
       },
       en: {
         meaning: 'The longest run of consecutive unique-move hits. Exponential since 0.5.2 — the longer the run, the bigger the increment (a 3-run is worth about 0.14, ten saturates).',
         usage: 'A human guessing a unique move once is ordinary; guessing it repeatedly is not. The exponential curve is what makes the 6th hit more suspicious than the 2nd.',
-        impact: 'Weight {w}, one of the behaviour signals. Zero with no streak.',
+        impact: 'Weight {w}, one of the behaviour signals. Zero with no streak. '
+              + 'Beyond an activation of 60%, every additional 1% applies a ×1.05 multiplier, '
+              + 'up to 3× at 100% activation — so at high activation this term can contribute more '
+              + 'than its own weight.',
       },
     },
     {
@@ -587,12 +592,17 @@ var GM_TAG_WIKI = (function () {
       zh: {
         meaning: '唯一手累计：命中唯一手的总次数，同样是指数曲线。',
         usage: '补「连中」的漏洞——一个从不断长段、但反复命中唯一手的一方，靠这一项被抓出来。',
-        impact: '权重 {w}，行为信号之一。无唯一手命中时为 0。',
+        impact: '权重 {w}，行为信号之一。无唯一手命中时为 0。'
+              + '激活值超过 60% 后，每多 1% 触发一次 ×1.05 的乘数，最高 3 倍'
+              + '（激活值 = 100% 时），因此本项在高激活区可以超过其权重本身。',
       },
       en: {
         meaning: 'The total number of unique-move hits, also exponential.',
         usage: 'Covers the gap left by the streak term — a side that never runs long but keeps finding the only move is caught here.',
-        impact: 'Weight {w}, one of the behaviour signals. Zero with no hits.',
+        impact: 'Weight {w}, one of the behaviour signals. Zero with no hits. '
+              + 'Beyond an activation of 60%, every additional 1% applies a ×1.05 multiplier, '
+              + 'up to 3× at 100% activation — so at high activation this term can contribute more '
+              + 'than its own weight.',
       },
     },
     {
@@ -607,7 +617,10 @@ var GM_TAG_WIKI = (function () {
         impact: '权重 {w}，行为信号之一。没有好点时占比项为 0。0.5.7-Alpha 把权重从 0.03 提到 0.19 ——'
               + '实测它是「覆盖广（80% 的方）且方向正（机器 0.566 / 人类 0.304）」的行为项。'
               + '1.0.7 续 再把它提到 0.23：五个在本语料上恒为 0 的项把份额让了回来，好点池接的'
-              + '是最大的一份，因此它与基础统计里那一项并列整张表的最大项。'
+              + '是最大的一份。1.0.7 快照六号 又把「将胜乱下」的 0.04 转给它，于是 0.27 成为'
+              + '整张表最大的单项。'
+              + '激活值超过 60% 后，每多 1% 触发一次 ×1.05 的乘数，最高 3 倍'
+              + '（激活值 = 100% 时），因此本项在高激活区可以超过其权重本身。'
               // ⚠ 这里刻意不写那一项的显示名：标签百科的搜索按**显示名**命中条目，
               //   把「Top1 吻合」写进别的条目会让搜它的人一次搜出两条（verify-056 钉着这件事）。
       },
@@ -619,7 +632,7 @@ var GM_TAG_WIKI = (function () {
              + 'good points rather than whether any single hand hit the top choice. Nothing scores '
              + 'below a 55% share, and a run shorter than three costs nothing — a short run fails to '
              + 'add, it does not eat the share\'s contribution.',
-        impact: 'Weight {w}, one of the behaviour signals. Zero with no good points at all. 0.5.7-Alpha raised it from 0.03 to 0.19: measured, it is the behaviour term that both fires widely (80% of sides) and points the right way (machine 0.566 against human 0.304), so it took the share that 不漏防 and 探针匹配 gave up. 1.0.7 续 raised it again to 0.23 — the share five corpus-zero terms handed back — which leaves it TIED with the base statistics term for the largest in the table (the entry deliberately does not spell that term\'s display name out: the wiki search hits on display names, and a second copy would make it two results).',
+        impact: 'Weight {w}, one of the behaviour signals. Zero with no good points at all. 0.5.7-Alpha raised it from 0.03 to 0.19: measured, it is the behaviour term that both fires widely (80% of sides) and points the right way (machine 0.566 against human 0.304). 1.0.7 续 raised it again to 0.23 — the share five corpus-zero terms handed back. 1.0.7 快照六号 moves the 0.04 that 将胜乱下 gave up here, making 0.27 the largest single term in the table (the entry deliberately does not spell out any other term\'s display name: the wiki search hits on display names, and a second copy would make it two results). Beyond an activation of 60%, every additional 1% applies a ×1.05 multiplier, up to 3× at 100% activation — so at high activation this term can contribute more than its own weight.',
       },
     },
     {
@@ -629,12 +642,17 @@ var GM_TAG_WIKI = (function () {
         meaning: '活三好手：活三防点连续走成引擎首选的最长段（≥2 段起算），指数曲线。',
         usage: '0.5.2 引入。单次把活三防点走成首选是正常水平——活三往往只有一两个可选点；'
              + '连续两次在两个方向里都选对，才不是运气。',
-        impact: '权重 {w}，行为信号之一。无此池时为 0。',
+        impact: '权重 {w}，行为信号之一。无此池时为 0。'
+              + '激活值超过 60% 后，每多 1% 触发一次 ×1.05 的乘数，最高 3 倍'
+              + '（激活值 = 100% 时），因此本项在高激活区可以超过其权重本身。',
       },
       en: {
         meaning: 'Live-three defence played as the engine\'s first choice, longest run (counted from 2), on an exponential curve.',
         usage: 'Added in 0.5.2. Blocking a live three with the top choice once is ordinary — there are usually only one or two candidate points. Doing it twice in a row, with two directions to choose from, is not luck.',
-        impact: 'Weight {w}, one of the behaviour signals. Zero with no such pool.',
+        impact: 'Weight {w}, one of the behaviour signals. Zero with no such pool. '
+              + 'Beyond an activation of 60%, every additional 1% applies a ×1.05 multiplier, '
+              + 'up to 3× at 100% activation — so at high activation this term can contribute more '
+              + 'than its own weight.',
       },
     },
     // ---- 0.5.7 §1.3: the three low-end-AI signals -------------------------------------------

@@ -65,9 +65,13 @@
   // sharpTotal +0.03 (behaviour takes +0.08 of it). Total still exactly 1.50, no code changed.
   // ⚠ The comment two paragraphs down claiming the behaviour group carries "the majority of the
   // budget" was a 0.5.6–0.5.7 reading; the split is now exactly level (0.75 / 0.75).
+  // ⚠ 1.0.7 快照六号 §一 keeps it level: `winBlunder` 0.04 → 0, `goodPool` 0.23 → 0.27, a transfer
+  // wholly inside the behaviour family. Re-read the two sums below rather than trusting this
+  // paragraph — base 0.23+0.10+0.22+0.12+0.08+0 = 0.75; behaviour 0.08+0+0.08+0.09+0.09+0.27+
+  // 0.06+0+0+0.08+0 = 0.75.
   var FALLBACK_WEIGHTS = {
     top1: 0.23, acpl: 0.10, sharp: 0.22, out: 0.12, desperate: 0.08, time: 0,
-    evasion: 0.08, winBlunder: 0.04,
+    evasion: 0.08, winBlunder: 0,
     uselessFour: 0.08,
     sharpStreak: 0.09,
     sharpTotal: 0.09,
@@ -77,7 +81,9 @@
     // (they are 0 on the operator's corpus), not a fit — see app.js BASE_WEIGHTS note 3.
     // 1.0.7 续 §一 unparked it: those keys give 0.12 back and the pool ends at 0.23 (level with
     // `top1`) — see app.js BASE_WEIGHTS note 5.
-    goodPool: 0.23,
+    // 1.0.7 快照六号 §一 then takes the 0.04 `winBlunder` gave up, so the pool is 0.27 and is the
+    // table's largest term. It is also one of the four UNBOUNDED keys below.
+    goodPool: 0.27,
     liveThree: 0.06,
     // ⚠⚠ 1.0.7 §1.2 — **0**, deliberately. THE MIRROR RULE: equal to app.js BASE_WEIGHTS /
     // storage.js DEFAULT_WEIGHTS. The mechanism is implemented and mirrored in `subscoresForSide`
@@ -164,6 +170,22 @@
   // 0.5.7's three. One list so the normalisation and the panel's third heading cannot disagree about
   // which keys are in the group.
   var BEHAVIOUR_KEYS = EVASION_KEYS.concat(LOWEND_KEYS);
+
+  // 1.0.7 快照六号 §三 — 无上限计分法的四项与两条常量，刻意与 app.js 逐字相同。
+  //
+  // ⚠ It is a KEY WHITELIST, not the rule; the rule lives once, in `sideAggregate`'s scoring loop,
+  // and is mirrored here only because this file cannot import app.js (THE MIRROR RULE — the same
+  // reason `LIVE_POOL_MIN` and the GOOD_* constants above are repeated). `verify-074` B8 reads both
+  // sources and asserts the three literals agree and that `riskOfSub` equals `sideAggregate` on the
+  // same (sub, weights) pair. Anything less and `optimizeRiskCuts` searches thresholds on a score
+  // the detector never computes — which is the exact drift the mirror exists to prevent.
+  //
+  // ⚠ `UNBOUNDED_EPS` is not decoration: `(0.7 - 0.6) * 100` is 9.999999999999998 in IEEE-754, so
+  // the bare floor scores a=0.70 one notch early. See the longer note beside app.js's copy.
+  var UNBOUNDED_KEYS = ['sharpStreak', 'sharpTotal', 'liveThree', 'goodPool'];
+  var UNBOUNDED_THRESHOLD = 0.6;
+  var UNBOUNDED_STEP = 5;
+  var UNBOUNDED_EPS = 1e-9;
 
   // 0.5.2 §1.1/§1.2 — the 活三 pool's threshold, mirrored from app.js (LIVE_POOL_MIN). learn.js is
   // a separate module and cannot import app.js, so it is repeated here; the suite asserts the two
@@ -1005,10 +1027,23 @@
 
   function riskOfSub(sub, weights) {
     var r = 0, sum = 0;
+    // 1.0.7 快照六号 §二/§三 — same per-term rule as app.js `sideAggregate`, term for term.
+    // The four UNBOUNDED keys score `w × a × (1 + 5n/100)` above 60% activation; the other
+    // thirteen stay linear. `sum` is still the plain Σ weights (the clamp's basis), NOT the
+    // augmented total: the ceiling is 100 × Σw in both files, so a bonus can be trimmed at the
+    // top exactly the way the detector trims it. Changing this to Σ(w·multiplier) would make the
+    // learner's clamp looser than the detector's, and every cut it fits above that point would be
+    // fitted on a score no side can reach.
     WEIGHT_KEYS.forEach(function (k) {
       var w = weights[k] || 0;
+      var a = clamp(Number(sub[k]) || 0, 0, 1);
       sum += w;
-      r += w * sub[k];
+      if (UNBOUNDED_KEYS.indexOf(k) >= 0 && a > UNBOUNDED_THRESHOLD) {
+        var n = Math.floor((a - UNBOUNDED_THRESHOLD) * 100 + UNBOUNDED_EPS);
+        r += w * a * (1 + UNBOUNDED_STEP * n / 100);
+      } else {
+        r += w * a;
+      }
     });
     // Clamped to mirror app.js sideAggregate() exactly. The table is no longer normalised to 1.00
     // (补增 §三: the shipped table is exactly the ceiling — 1.30 then, **1.50 since 0.5.7 §1** — and

@@ -2654,12 +2654,16 @@
     // `sharpStreak` 0.07 → 0.09, `sharpTotal` 0.06 → 0.09. Still exactly 1.50 — see note 5 in
     // app.js BASE_WEIGHTS for the cost (scores on the same record go up 2–3 points, so an archived
     // `risk` from before this table is not comparable with one analysed after it).
+    // ⚠⚠ 1.0.7 快照六号 §一 — `winBlunder` 0.04 → **0**, `goodPool` 0.23 → **0.27** (now sole
+    // largest). A pure transfer inside the behaviour family, so both group budgets stay 0.75 / 0.75
+    // and the total stays exactly 1.50. THE MIRROR RULE: term-for-term equal to app.js
+    // BASE_WEIGHTS and learn.js FALLBACK_WEIGHTS; `verify-074` B1 pins all three plus the sum.
     top1: 0.23, acpl: 0.10, sharp: 0.22, out: 0.12, desperate: 0.08, time: 0,
-    evasion: 0.08, winBlunder: 0.04,
+    evasion: 0.08, winBlunder: 0,
     uselessFour: 0.08,
     sharpStreak: 0.09,
     sharpTotal: 0.09,
-    goodPool: 0.23,
+    goodPool: 0.27,
     liveThree: 0.06,
     // ⚠⚠ 1.0.7 §1.2 — **0**, deliberately. The mechanism is implemented and reported (see
     // app.js BASE_WEIGHTS and `evasiveActivation()`), but on the operator's 65 archives the
@@ -3377,6 +3381,20 @@
       defensive: isFinite(v.defensive) ? v.defensive : 0,
     };
   }
+
+  // 1.0.7 快照六号 §4.1 — `bonusByKey`'s key set is a dynamic subset of the four unbounded terms, so
+  // it cannot be a fixed field list like `copyFourRuns`. Only positive finite numbers survive: the
+  // viewer prints these straight into a card, and a NaN or a string there renders as 「含加分 NaN」.
+  function copyBonusByKey(v) {
+    var out = {};
+    if (!v || typeof v !== 'object') return out;
+    for (var k in v) {
+      if (!v.hasOwnProperty(k)) continue;
+      var n = Number(v[k]);
+      if (isFinite(n) && n > 0) out[k] = n;
+    }
+    return out;
+  }
   // 0.4.8 §1.3: the four-threes a counter-four answered. Rebuilt entry by entry off known
   // fields only, so the stored list is a plain array of plain objects and a hand-edited value
   // cannot introduce a shape (or a prototype) the viewer's renderer has never seen.
@@ -3523,6 +3541,18 @@
         losingLoss: a.losingLoss == null ? null : a.losingLoss,
         probeSeen: a.probeSeen == null ? null : a.probeSeen,
         probeHits: a.probeHits == null ? null : a.probeHits,
+        // 1.0.7 快照六号 §4.1/§4.2 — the base/bonus split and its per-term breakdown. Without this
+        // pass-through the archive keeps `risk` but loses the reason it is what it is, so reopening a
+        // saved game would show the old single-number card while the live pane showed two.
+        // ⚠ `!= null` rather than `|| 0`: a legitimate 0 (a side whose four unbounded terms all sat
+        // at or below 60%) must stay 0, not become null — the viewer distinguishes the two: null
+        // means 「this archive predates the split」 and suppresses the line, 0 means 「measured, nothing
+        // to add」 and... also suppresses the line, but for a different reason. Keep them distinct
+        // anyway, because `bonusByKey` and the export both need to tell them apart.
+        baseScore: a.baseScore != null ? Number(a.baseScore) : null,
+        bonusScore: a.bonusScore != null ? Number(a.bonusScore) : null,
+        bonusByKey: (a.bonusByKey && typeof a.bonusByKey === 'object')
+          ? copyBonusByKey(a.bonusByKey) : {},
         contributions: a.contributions || null,
       };
     };
