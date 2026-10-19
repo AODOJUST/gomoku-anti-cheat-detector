@@ -4,6 +4,8 @@
 
 > 名字取自棋盘上最难看清的那一方。
 
+**最新版本：v1.0.7**（[下载](https://github.com/AODOJUST/gomoku-anti-cheat-detector/releases/latest)）
+
 ## 它做什么
 
 观战或对弈时，扩展自动读取棋盘落子序列，对局结束后在本地跑引擎逐手复盘，输出黑白双方的 AI 嫌疑度：
