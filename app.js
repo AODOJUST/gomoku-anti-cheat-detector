@@ -3917,6 +3917,26 @@ const TYPE_OF_BAND = { suspect: 'suspectAi', pro: 'pro', expert: 'expert', norma
 const LOWEND_NO_BLUNDER_MIN = 0.8;
 const LOWEND_STEADY_MIN = 0.7;
 
+// ---------- 1.0.7 续 ⑮ — 证据门槛 ----------
+// 分数是「加权激活之和」，而**每一个激活值都是比率**（命中率、ACPL、离开 Top5 的比例、
+// 好点池的连续手数……）。比率的方差随分母增大而减小，所以同一条 65 分线在 n=3 和 n=30
+// 上根本不是同一件事：n=3 时换一手棋就能把 top1 从 33% 抬到 67%。
+//
+// 实测（`_tools/_probe-075-tune.cjs`，19 个真实对局 / 31 侧，标签取 `learn.js sideRole`）：
+//   n<8  的 13 侧：AUC 33.3%（**比抛硬币还差**），判 AI 的精度 2/10
+//   n≥8  的 18 侧：AUC 78.6%，判 AI 的精度 9/11
+//   把「n<8 不判 AI」加进去：准确率 61.3% → **77.4%**，精确 57.9% → 90.0%，
+//   召回 73.3% → 60.0%（掉的那两次是 n=4 的两侧，它们仍留在「疑似」里，分数一点没变）
+//
+// ⚠ 这是对**判词**的约束，不是对分数的改动：`risk` 一位小数都不变，所以已有的分档、阈值、
+//   存档、卡片断言全部不受影响。测试 `verify-075` 把这条「分数不动」钉成断言 —— 否则
+//   下一个人很容易把它改成一个乘到分数上的系数，而那会让同一条 65 线在不同 n 上有不同含义。
+// ⚠⚠ 门槛值 8 是**本库上的拐点**（G=7 → 71.0%、G=8 → 77.4%、G=9 → 74.2% 但召回掉到 46.7%），
+//   不是从天上掉的：8 手时单个比率的振幅约 12.5%，再少一手棋就能把一项激活推翻一档。
+// ⚠ 只对 `band === 'ai'` 生效 ⇒ 「疑似 / 职业 / 高手」这几个词一个都没被碰过，PRO/EXPERT
+//   的低端AI降级分支照旧。
+const MIN_AI_HANDS = 8;
+
 function classifySide(risk, segments, steps, side, thresholds, acts) {
   const band = riskBand(risk, thresholds);
   if (band !== 'ai') {
@@ -3930,6 +3950,11 @@ function classifySide(risk, segments, steps, side, thresholds, acts) {
       return { suspect: 'suspect', type: 'lowEndAi', auto: true, lowSteps: 0 };
     }
     return { suspect: band, type: TYPE_OF_BAND[band] || 'normal', auto: true, lowSteps: 0 };
+  }
+  // 1.0.7 续 ⑮ — 手太少就不宣布 AI（理由与两个数字见 MIN_AI_HANDS）。`acts` 缺失时放行，
+  // 与 §1.5 的降级同一约定：没有聚合值的老调用方拿到的是它一直拿到的那份答案。
+  if (acts && acts.n != null && acts.n < MIN_AI_HANDS) {
+    return { suspect: 'suspect', type: 'suspectAi', auto: true, lowSteps: 0, shortEvidence: acts.n };
   }
   const lowRuns = [];
   let lowTotal = 0;
@@ -4100,6 +4125,8 @@ if (typeof module !== 'undefined' && module.exports) {
     // for the same reason — a test that had to re-implement segmentSide() to check it would
     // be testing its own copy, and the two could drift.
     stepProximity, segmentSide, riskBand, classifySide, TYPE_OF_BAND, MIN_SEGMENT,
+    // 1.0.7 续 ⑮ — 证据门槛。导出的是**一个**数，UI 文案里的「8 手」由它算出来，不另抄一份。
+    MIN_AI_HANDS,
     // ⚠ 1.0.7 续 ⑨ — `TYPE_OF_BAND` 导出是为了让套件能直接读这张映射表，而不是在套件里
     // 再抄一份（`verify-069` 原来比的是夹具快照里的 type，阈值一下移它就和实现脱钩了）。
     // 同一张表只有这一份。

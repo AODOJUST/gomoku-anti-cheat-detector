@@ -3430,6 +3430,10 @@
         // as a JSON error.
         lowRuns: isFinite(x.lowRuns) ? x.lowRuns : 0,
         lowMax: isFinite(x.lowMax) ? x.lowMax : 0,
+        // 1.0.7 续 ⑮: 被判词门槛挡下来的那一侧，把它的有效手数一并带进存档 —— 界面要说的
+        // 那句话是「分数高，但只有 N 手」，N 只能从这儿来。`!= null` 而不是 `isFinite`：
+        // 0 手是合法值（一手都没分析出来），而「没有这个字段」是另一件事（旧档案）。
+        shortEvidence: x.shortEvidence != null ? Number(x.shortEvidence) : null,
       };
     });
     return out;

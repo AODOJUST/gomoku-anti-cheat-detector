@@ -14725,6 +14725,13 @@
         // §5.1's `> 100.5` is the same test against the ceiling that document assumed; this form
         // stays correct if the ceiling moves again.
         var sLine = 'n=' + x.n;
+        // 1.0.7 续 ⑮ — 分数高、判词却只到「疑似」时，这里必须给出原因，否则读者看到的是
+        // 「97 分 · 疑似AI」这种自相矛盾的两行。`shortEvidence` 只在门槛挡下来时存在，
+        // 所以这一行等于「判词被门槛挡住了」，不是一个独立的分数说明。
+        // ⚠ 不再把 N 印一遍：`shortEvidence` 与左边那个 `x.n` 是**同一个数**（门槛读的就是
+        // 聚合值上的 n），印两遍会让读者以为是两个不同的计数。
+        var se = rep.types && rep.types[side] && rep.types[side].shortEvidence;
+        if (se != null) sLine += ' · ' + T('viewer|证据不足 · 不判 AI');
         if (x.bonusScore != null && x.bonusScore >= 1) {
           var bs = x.baseScore != null ? x.baseScore : 0;
           var capped = (bs + x.bonusScore) - x.risk > 0.05;

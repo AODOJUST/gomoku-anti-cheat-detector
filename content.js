@@ -5371,9 +5371,15 @@
     }
 
     var rep = cur && (cur.report || cur.summary);
+    // 1.0.7 续 ⑮ — `rep` 可能是 `cur.summary`（精简摘要），那种对象上没有 `types`；
+    // 用 `&&` 一路取到数，缺哪一层都只是不印，不抛。
+    var shortEv = function (side) {
+      var t = rep && rep.types && rep.types[side];
+      return t && t.shortEvidence != null ? t.shortEvidence : null;
+    };
     h += '<div class="cards">' +
-      card(T('panel|黑方'), rep && rep.black, CARD_TXT, null, 'B') +
-      card(T('panel|白方'), rep && rep.white, CARD_TXT, null, 'W') +
+      card(T('panel|黑方'), rep && rep.black, CARD_TXT, null, 'B', shortEv('B')) +
+      card(T('panel|白方'), rep && rep.white, CARD_TXT, null, 'W', shortEv('W')) +
       card(T('panel|豁免'), rep ? String(rep.forcedCount || 0) : '—', CARD_MUT, T('panel|冲四强制应手')) +
       card(T('panel|时间模式'), rep ? (rep.hasTime ? T('panel|真实间隔') : T('panel|固定预算')) : '—', CARD_MUT,
            GMStorage.modeLabel(S.mode)) +
@@ -5478,7 +5484,7 @@
   // is folded in here, at the display, because `agg.risk` is Rapfi's own measurement and must
   // stay untouched (see the §七~§十四 note above).
   var CARD_TXT = 'var(--gm-txt)', CARD_MUT = 'var(--gm-mut)', CARD_DIM = 'var(--gm-dim)';
-  function card(k, agg, color, sub, side) {
+  function card(k, agg, color, sub, side, shortEv) {
     if (!agg) return '<div class="card"><div class="v" style="color:' + CARD_DIM + '">—</div><div class="k">' + esc(k) + '</div></div>';
     if (typeof agg === 'string') {
       return '<div class="card"><div class="v" style="color:' + color + ';font-size:13px">' + esc(agg) + '</div>' +
@@ -5511,6 +5517,9 @@
     return '<div class="card"><div class="v" style="color:' + riskColor(agg.level) + '">' +
       risk + '</div><div class="k">' + esc(k) + ' · ' + esc(TO('level', agg.level)) + '</div>' +
       '<div class="s">' + agg.n + ' ' + esc(T('panel|手')) + split +
+        // 1.0.7 续 ⑮ — 判词被证据门槛挡下来时，卡片自己的两行就已经自相矛盾（大字 97、
+        // 判词「疑似」），所以原因必须印在同一行里。`shortEv` 只在被挡时非 null。
+        (shortEv != null ? ' · ' + esc(T('panel|证据不足 · 不判 AI')) : '') +
         (adjusted ? ' · ' + esc(T('panel|交流 {d}', { d: (chat.total > 0 ? '+' : '') + chat.total })) : '') +
       '</div></div>';
   }

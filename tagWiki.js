@@ -309,14 +309,19 @@ var GM_TAG_WIKI = (function () {
       id: 'type-lowai', cat: 'type', nameNs: 'type', nameVal: 'lowAi', applied: true,
       bandLo: 'typeAiMin', bandHi: null,
       zh: {
-        meaning: '风险分 ≥ {lo}，且全程没有掉出前 5 候选的着手——一条 low 段都没有。',
+        meaning: '风险分 ≥ {lo}，且全程没有掉出前 5 候选的着手——一条 low 段都没有。'
+               + '1.0.7 续 ⑮ 起另有一条硬门槛：该侧有效手数必须 ≥ 8，否则分数再高也不判 AI。',
         usage: '最直白的一类 AI：整局都走在引擎的候选里，没有试图掩饰。',
-        impact: '决定归档与界面展示的结论类型。归档筛选按此分类所在的风险分判断。',
+        impact: '决定归档与界面展示的结论类型。归档筛选按此分类所在的风险分判断。'
+              + '不足 8 手的侧会落到「疑似AI」，卡片上注明「证据不足 · 不判 AI」。',
       },
       en: {
-        meaning: 'Risk ≥ {lo} with no dip below the top-5 candidates anywhere — not a single low run.',
+        meaning: 'Risk ≥ {lo} with no dip below the top-5 candidates anywhere — not a single low run. '
+               + 'Since 1.0.7 续 ⑮ there is also a hard floor: the side must have at least 8 scored hands, '
+               + 'or no AI verdict is given however high the score is.',
         usage: 'The plainest kind of AI: it stays inside the engine\'s candidates the whole game and never tries to hide.',
-        impact: 'Sets the verdict shown in the archive and the UI. Archive filtering keys off the risk score this band sits in.',
+        impact: 'Sets the verdict shown in the archive and the UI. Archive filtering keys off the risk score this band sits in. '
+              + 'A side with fewer than 8 hands lands in 疑似AI instead, and its card says 「not enough evidence」.',
       },
     },
     {
@@ -358,14 +363,19 @@ var GM_TAG_WIKI = (function () {
       id: 'type-suspect', cat: 'type', nameNs: 'type', nameVal: 'suspectAi', applied: true,
       bandLo: 'typeSuspectMin', bandHi: 'typeAiMin',
       zh: {
-        meaning: '风险分 ≥ {lo} 且 < {hi}。',
-        usage: '不足以断定是 AI，但明显不像随手下的棋。这一档最需要人工复核。',
+        meaning: '风险分 ≥ {lo} 且 < {hi}。还有一种情况会落到这一档：分数已经进了 AI 档，'
+               + '但该侧有效手数不足 8 —— 证据不足，不下 AI 结论（见「低级AI」那条的门槛）。',
+        usage: '不足以断定是 AI，但明显不像随手下的棋。这一档最需要人工复核。'
+             + '判词被手数门槛挡住时，卡片上会写「证据不足 · 不判 AI」，分数照原样显示。',
         impact: '决定归档与界面展示的结论类型。默认回放过滤的上界（54）就落在这档之下，'
              + '所以默认设置不会把「可疑」拦下来。',
       },
       en: {
-        meaning: 'Risk ≥ {lo} and < {hi}.',
-        usage: 'Not enough to call it AI, but clearly not casual play either. This is the band that most needs a human look.',
+        meaning: 'Risk ≥ {lo} and < {hi}. One other case lands here: the score is already in the AI band '
+               + 'but the side has fewer than 8 scored hands, so there is not enough evidence for an AI verdict '
+               + '(see the 低级AI entry for the floor).',
+        usage: 'Not enough to call it AI, but clearly not casual play either. This is the band that most needs a human look. '
+             + 'When the hand floor holds the verdict down, the card says 「not enough evidence」 while the score stays as it is.',
         impact: 'Sets the verdict shown in the archive and the UI. The default archive filter\'s ceiling (54) sits just below this band, so the default setting never blocks a 可疑 game.',
       },
     },
