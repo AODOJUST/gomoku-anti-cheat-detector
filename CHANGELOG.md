@@ -358,6 +358,24 @@ Every entry below is the original prose, verbatim — only the headings and blan
 
 ⑥ 改了哪些文件：content.js（staleContext()、失败提示、清错、ps 守卫）、app.js（摘要的 opts）、viewer.js（两处 null 守卫）、learn.js（滤 null）+ 3 条文案 × 12 列。**版本号仍是 1.0.7**：重新加载 unpacked 之后**一定要刷新对局页**，否则页上仍然是旧的 content script。
 
+【三十三、同版本补丁：局终给出的是半局，两张卡都印「—」（不升版本号）】上一节落地之后，用户回话：还是不行 —— 对局已经结束，边框还是待机呼吸灯，两张卡一张数字都没有，状态行停在「收尾分析中」。这次先复现，没有再猜。
+
+① **复现**：真 Edge + 真 unpacked 扩展 + 把 gomoku.com 路由到一张假页，跑 20 手一局（`_probe-078-live-panel.cjs`）。实测：局终时实时会话只算完 8 手，而且**这 8 手全在开局排除里** ⇒ 两侧 `sideAggregate` 都是 null ⇒ 两张卡「—」；队列里 11 手被 `finalizeGame` 直接丢掉，归档成「20 手 / 0 手可统计」。用户那一局是同一现象的另一端：**一手都没算完**，所以进度停在 0%。
+
+② **根因一：`chrome.runtime.sendMessage` 可以永不回音**。offscreen 的 listener 对每条 `gm-*` 都 `return true`（异步回），一旦它自己卡住，callback 既不触发也不报 `lastError` ⇒ Promise 永远 pending ⇒ `liveJob._busy` 恒真 ⇒ 面板永远「分析中」。这不是「没报错」，是「**没有终点**」。修法：新增 `sendDeadline(message, ms)`，`askOffscreen(..., deadlineMs)` 带上截止时间，`stepDeadlineMs() = max(90s, thinkMs×4 + 45s)`；连续两次超时 ⇒ 停掉实时会话并写 note「引擎 N 秒没有响应」。状态行在等待超过 5 秒时印「第 i 手，已等待 s」。
+
+③ **根因二：局终不拿半局当报告**。`finalizeGame` 原本在 `if (liveJob)` 分支里认为「实时会话已经有全部要算的东西」，把 `_queue` 直接丢了。现在先量落后：`behind >= max(3, ceil(total × 0.25))` ⇒ 退掉实时会话、走「没有实时会话 ⇒ 用快照补报告」那条**既有**路径（不新开一条），note 写「实时会话落后 N 手，收尾改为整局重新分析」。剩下那点队列也不再无声丢弃：`liveFinish` 在队列没算完时写「局终时还有 N 手在队列里没算完：报告只覆盖前 M 手」。
+
+④ **根因三：「—」是答案，但它不说为什么**。`sideAggregate` 零手返回 null，两处都印「—」，而零手本身是**有原因**的。`card()` 新增 `emptyNote` 参数，把「0 手可统计（20 手里 8 手在开局排除内）」印出来 ——「没有这一栏」和「读数是 0」在屏幕上长得像、含义相反。
+
+⑤ **早退必须退场**。`liveFinish` 抢号失败时原本裸 `return`，`liveJob` 留着、`job._busy` 恒真，面板就再也不动了。现在写「这一局已被其它收尾任务接管」并把会话置空。⚠ 这条的断言**必须钉可达性**：三句退场代码在文件里不等于能被执行 —— `_diag-078-redgreen` 的 M4 第一版没红，原因正是我在它们前面插了 `return;` 之后它们成了死代码，而字符串检查看不见这件事。这是本仓库**第二次**踩同一个坑。
+
+⑥ **另一处沉默**：`liveErr` 上那句 `&& !ended` 去掉了 —— 局终之后错误照样要印；页面上一旦出现两块 `#__gm_panel`（扩展被重新加载、旧 content script 还挂在页上），面板自报一句「页面上有 N 个检测器面板：请刷新本页（F5）」。那正是这次报告最可能的现场。
+
+⑦ 验收：`verify-078-silence`（80 条：截止时间 / 错误不被 ended 吞 / 连续超时停会话 / 早退必须退场（含可达性）/ 局终队列 / 落后就重算 /「—」是答案 / 两块面板 / 文案 12 列 / 判定口径不动）、`behave-078-panel`（14 条，真 Edge + 真扩展 + 20 手一局）：修前是两张「—」，修后是 `11.0 黑方 · 低风险 6 手` / `11.0 白方 · 低风险 6 手`、`已存档`、`data-bs=low`。`_diag-078-redgreen` 6 条变异逐一红、sha256 逐字节还原。
+
+⑧ 改了哪些文件：`content.js`（`sendDeadline` / `askOffscreen` / `stepDeadlineMs` / 连续超时 / `liveFinish` 早退与队列 / `finalizeGame` 落后判据 / `emptyNote` / `panelCopies` / `liveErr`）、`_tools/verify-077-liveerr.cjs`（两条**过时判据**：§C 钉的是带 `&& !ended` 的原句、§D 钉的是紧跟 `summary=` 的原句 ⇒ 改成新事实，并加 `notHas` 反向钉住）。新增 9 条文案 × 12 列，i18n 1716 → **1725** 键。**判定口径一个数没动**（65/35 阈值、17 项权重表、`MIN_AI_HANDS = 8`）。版本号仍是 1.0.7；重新加载 unpacked 之后**一定要刷新对局页（F5）** —— 现在面板自己会说这句话。
+
 ## 1.0.6
 
 1.0.6：设置微调、聊天室体验、消息撤回——十二项，一半是「看着不对」，一半是「用起来别扭」。

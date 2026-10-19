@@ -185,6 +185,8 @@
   var seqCounter = 0;
   var runningJob = null;   // one-shot job being analysed
   var liveJob = null;      // 实时逐步 session job
+  // 1.0.7 续 ⑱ — 这个页面上挂了几块面板。挂载之后数，装了两份扩展时会是 2。
+  var panelCopies = 1;
   // 0.3.5: the live session is finished for good. Set when a live four stops detection, and
   // kept AFTER liveJob is retired — otherwise the very next move would sail past the
   // `if (!liveJob) startLiveSession()` line and silently start a second session, re-scoring
@@ -2296,18 +2298,48 @@
     });
   }
 
-  function ensureOffscreen() {
-    return send({ type: 'gm-ensure-offscreen' });
+  // 1.0.7 续 ⑱ — 「必须有回音」的消息一律带截止时间。
+  //
+  // 为什么必须有：`chrome.runtime.sendMessage` 的回调在**对端拿到消息却永远不 sendResponse**
+  // 时不会触发，也不会报 lastError。offscreen 的 listener 对每一条 gm-* 都 `return true`（它要
+  // 异步回），于是那边一旦卡住，这边的 Promise 就**永远** pending：`liveJob._busy` 一直是 true，
+  // 后面每一手都只是塞进 `_queue`，面板上一条错误都没有。这就是「一直分析中、数据全空」。
+  //
+  // ⚠ 只给「答不上来就该判死」的消息加：`gm-analyze` / `gm-analyze-stepwise` 的**整条**分析本来
+  //   就要跑几分钟，它们的进展靠 `gm-progress` 广播，给它们加截止时间会把正常的长分析杀掉。
+  function sendDeadline(message, ms) {
+    if (!ms) return send(message);
+    return new Promise(function (resolve, reject) {
+      var done = false;
+      var timer = setTimeout(function () {
+        if (done) return;
+        done = true;
+        reject(new Error(T('panel|引擎 {s} 秒没有响应（{what}）',
+          { s: Math.round(ms / 1000), what: message.type })));
+      }, ms);
+      send(message).then(function (v) {
+        if (done) return;
+        done = true; clearTimeout(timer); resolve(v);
+      }, function (e) {
+        if (done) return;
+        done = true; clearTimeout(timer); reject(e);
+      });
+    });
+  }
+
+  function ensureOffscreen(ms) {
+    return sendDeadline({ type: 'gm-ensure-offscreen' }, ms || 0);
   }
 
   // One-shot request with retry: the browser may evict the offscreen document.
-  async function askOffscreen(message, attempts) {
-    await ensureOffscreen();
+  async function askOffscreen(message, attempts, deadlineMs) {
+    // 15s 是「起一个 offscreen 文档」的合法上限：真起不来的话，等下去也不会好。
+    await ensureOffscreen(deadlineMs ? Math.min(deadlineMs, 15000) : 0);
     var lastErr = T('panel|offscreen 文档没有响应（检查扩展是否已重新加载）');
     var n = attempts || 6;
     for (var i = 0; i < n; i++) {
       var resp = null;
-      try { resp = await send(message); }
+      try { resp = await sendDeadline(message, deadlineMs); }
       catch (e) { lastErr = String((e && e.message) || e); }
       if (resp && resp.ok) {
         if (resp.info) noteEngine(resp.info);
@@ -2520,6 +2552,12 @@
     return liveJob;
   }
 
+  // 一步的合法上限。冷启动要装 40MB 的 engine，pthread 起不来时还要先撞一次 12s 的静默、
+  // 再换单线程重来；这些都在 90s 以内。低于它会把手慢误判成手死，高于它则让一次僵死拖满整局。
+  function stepDeadlineMs() {
+    return Math.max(90000, (Number(S.thinkMs) || 2000) * 4 + 45000);
+  }
+
   async function liveStepFor(idx) {
     if (S.mode !== 'stepwise') return;
     if (runningJob) return;                       // 全局/回放正在跑 -> 让位
@@ -2539,6 +2577,9 @@
     if (liveJob._busy) { if (liveJob._queue.indexOf(idx) < 0) liveJob._queue.push(idx); return; }
 
     liveJob._busy = true;
+    // 1.0.7 续 ⑱ — 面板要能算出「这一步等了多久」。没有它，「慢」和「死」在屏幕上一样。
+    liveJob._busySince = Date.now();
+    liveJob._busyIdx = idx;
     try {
       var actualMove = moves[idx];
       var record = toRecord(moves.slice(0, idx + 1));
@@ -2587,12 +2628,13 @@
         recorded: record.times[pos],
         prejoinCount: countInferred(moves.slice(0, idx + 1)),
         opts: baseOpts(),
-      }, 3);
+      }, 3, stepDeadlineMs());
       liveJob._reset = false;
       if (resp.ok) {
         // 1.0.7 快照七号（补）— an error is about the LAST attempt, not about the session.
         // Leaving it set painted a warning for the rest of a game that had already recovered.
         liveJob.error = '';
+        liveJob._timeouts = 0;
         liveJob.summary = resp.summary;
         liveJob.progress = Math.min(99, 100 * (idx + 1) / Math.max(moves.length, 1));
         if (resp.step && resp.step.budgetMs != null) lastStepBudget = resp.step.budgetMs;
@@ -2621,10 +2663,23 @@
         liveJob.error = resp.error || '';
       }
     } catch (e) {
-      if (liveJob) liveJob.error = String((e && e.message) || e);
+      if (liveJob) {
+        liveJob.error = String((e && e.message) || e);
+        // 1.0.7 续 ⑱ — 一次超时可以重试，两次就说明这一局不会再出数了。继续挂着只是让操作者
+        // 盯着一块 0% 的板子等下去；收掉它，把已经算完的那几手做成报告，并且写明为什么停。
+        liveJob._timeouts = (liveJob._timeouts || 0) + 1;
+        if (liveJob._timeouts >= 2) {
+          liveJob.note = T('panel|连续 {n} 次没有回音：实时分析已停止，报告只覆盖已算完的手（点「重新分析」可整局重跑）',
+            { n: liveJob._timeouts });
+          setLiveStopped({ moveNo: idx + 1, reason: 'engineSilent' });
+          liveFinish();
+          return;
+        }
+      }
     } finally {
       if (liveJob) {
         liveJob._busy = false;
+        liveJob._busySince = 0;
         var next = liveJob._queue.shift();
         paint();
         if (next != null) liveStepFor(next);
@@ -2646,10 +2701,26 @@
     // and the panel's 「已存档」 both learn about this game from the session's own archive, not
     // only from a 收尾分析 job.
     var epoch = job._epoch != null ? job._epoch : gameEpoch;
-    if (!claimEpoch(epoch)) return;
+    // 1.0.7 续 ⑱ — 早退也必须把会话退掉。
+    //
+    // 这一行原来直接 `return`，会话就留在 `liveJob` 上：`running()` 一直为真，面板永远写
+    // 「分析中 / 收尾分析中」，队列里那一条永远是「分析中」，进度永远是 0 —— 而且**没有错误**，
+    // 因为谁都没失败，只是没人再管它了。号被别人拿走时这个会话已经不归任何人，留着只有坏处。
+    if (!claimEpoch(epoch)) {
+      liveJob = null;
+      job._busy = false;
+      job.status = '已中止';
+      job.note = T('panel|这一局已被其它收尾任务接管');
+      paint();
+      return;
+    }
     job._epoch = epoch;
+    // 局终时队列里还有没算完的手：报告只覆盖已经算完的那几手，这件事必须在面板上说出来，
+    // 否则「24 手的棋只算了 1 手」看起来就是检测器坏了。
+    var pending = job._queue ? job._queue.length : 0;
     liveJob = null;
     job._busy = false;
+    job._busySince = 0;
     // 0.4.7 §2.2: set BEFORE the await, and unconditionally. The old code only reached
     // `job.progress = 100` inside the `resp.ok` branch, so a failed finish (an offscreen round
     // trip that timed out, a channel that closed) left the job at whatever the last hand
@@ -2657,8 +2728,13 @@
     // reporting progress must never claim to be mid-way, whatever happened to the request.
     job.progress = 100;
     try {
-      var resp = await askOffscreen({ type: 'gm-step-finish', jobId: job.id }, 3);
+      // 收尾只需要把 offscreen 里已经存在的 steps 打包，没有引擎工作 —— 30s 还没回音就是死了。
+      var resp = await askOffscreen({ type: 'gm-step-finish', jobId: job.id }, 3, 30000);
       if (resp.ok) {
+        if (pending) {
+          job.note = T('panel|局终时还有 {n} 手在队列里没算完：报告只覆盖前 {m} 手',
+            { n: pending, m: (resp.report && resp.report.totalMoves) || 0 });
+        }
         job.report = resp.report;
         job.status = '已完成';
         await archiveFromJob(job);
@@ -2740,6 +2816,25 @@
     // Everything above either declined (nothing to archive, or too short — both already settled)
     // or deferred: the `!S.autoAnalyze` branch deliberately leaves a normal ending for the manual
     // button, and a later force=true call is still allowed to take it.
+    // 1.0.7 续 ⑱ — 实时会话落后太多就不要它了。
+    //
+    // 「落后」的量是队列长度（正在跑的那一手也算一件）。落后一手很常见，为它把整局重算一遍
+    // 是得不偿失；但落后到四分之一以上，这份报告已经**不代表这一局**了 —— 实测一局 20 手只有
+    // 前 8 手算完，而那 8 手又全在开局排除里，归档出来就是「20 手的棋 / 0 手可统计」。
+    // 那种报告比没有报告更糟：它看着像结论。
+    if (liveJob) {
+      var behind = (liveJob._queue ? liveJob._queue.length : 0) + (liveJob._busy ? 1 : 0);
+      var slack = Math.max(3, Math.ceil(total * 0.25));
+      if (behind >= slack) {
+        var staleJob = liveJob;
+        liveJob = null;
+        staleJob.status = '已中止';
+        staleJob._busy = false;
+        staleJob.note = T('panel|实时会话落后 {n} 手，收尾改为整局重新分析', { n: behind });
+        console.log('[detector] 实时会话落后 ' + behind + ' 手（阈值 ' + slack +
+                    '），收尾改为整局重新分析：' + total + ' 手');
+      }
+    }
     if (liveJob) {
       // The live session already holds everything it scored; let it produce the report.
       liveJob._snap = snap;
@@ -4217,6 +4312,8 @@
     refreshOverlayBg();
     renderShell();
     (document.body || document.documentElement).appendChild(host);
+    // 必须是**挂上之后**数：之前永远是 1。装了两份扩展时这里会数到 2（DOM 是共享的）。
+    try { panelCopies = document.querySelectorAll('#__gm_panel').length; } catch (e) { panelCopies = 1; }
 
     els.top = root.querySelector('[data-slot=top]');
     // 0.4.5 §二 — an open dropdown closes on a click anywhere outside the panel. composedPath()
@@ -5269,6 +5366,15 @@
     else if (running()) { state = T('panel|分析中 · {label}', { label: TO('jobLabel', running().label) }); pct = running().progress || 0; }
     else if (moves.length) { state = T('panel|采集中'); }
     else { state = T('panel|等待对局…'); }
+    // 1.0.7 续 ⑱ — 「卡住」必须在几秒内看得见。一步的预算通常是 2-3 秒，所以等过 5 秒就值得
+    // 说出来；否则一份 24 手的棋可以安安静静停在 0% 上十分钟。
+    if (liveJob && liveJob._busy && liveJob._busySince) {
+      var waitedS = Math.round((Date.now() - liveJob._busySince) / 1000);
+      if (waitedS >= 5) {
+        state += ' · ' + T('panel|第 {i} 手，已等待 {s}s',
+          { i: (liveJob._busyIdx || 0) + 1, s: waitedS });
+      }
+    }
 
     var names = playerNames();
     var nameTxt = (names.black || names.white)
@@ -5389,7 +5495,10 @@
     // job 上，没有任何读者，于是状态行继续印「分析中 · 实时逐步」、进度停在上一次成功的那
     // 一刻。那是「检测卡住了」，不是报告。这里把它印出来；当文本是「扩展重新加载过」这一类
     // 时再补一句可执行的建议 —— 那是唯一一个操作者自己能修的原因。
-    var liveErr = (liveJob && liveJob.error && !ended) ? String(liveJob.error) : '';
+    // ⚠ 这里原来还带一个 `!ended`：**对局一结束就不再印错误**。而「局终」恰恰是操作者
+    // 回来看面板的时刻 —— 上一版把唯一的诊断信息正好关在最需要它的那一刻（用户那张截图：
+    // 状态写着「对局已结束 · 收尾分析中」，整块面板一个字都不解释）。
+    var liveErr = (liveJob && liveJob.error) ? String(liveJob.error) : '';
     if (liveErr) {
       h += '<div class="note lk">⚠ ' + esc(T('panel|实时分析出错：{err}', { err: liveErr })) +
         (staleContext(liveErr)
@@ -5426,9 +5535,20 @@
       var t = rep && rep.types && rep.types[side];
       return t && t.shortEvidence != null ? t.shortEvidence : null;
     };
+    // 1.0.7 续 ⑱ — 「—」是一个**答案**，不是空白。一侧零手可统计时，原因几乎总是「全在开局
+    // 排除里」或「这一局只算了前几手」，而这两种都写在报告里（totalMoves / scoredCount）。
+    // 只印一根横线，读起来就是「检测器没数据」—— 用户报的就是这一句。
+    var emptyWhy = '';
+    if (rep) {
+      var _tot = rep.totalMoves != null ? Number(rep.totalMoves) : null;
+      var _sc = rep.scoredCount != null ? Number(rep.scoredCount) : null;
+      emptyWhy = (_tot != null && _sc != null && _tot > _sc)
+        ? T('panel|0 手可统计（{total} 手里 {open} 手在开局排除内）', { total: _tot, open: _tot - _sc })
+        : T('panel|0 手可统计');
+    }
     h += '<div class="cards">' +
-      card(T('panel|黑方'), rep && rep.black, CARD_TXT, null, 'B', shortEv('B')) +
-      card(T('panel|白方'), rep && rep.white, CARD_TXT, null, 'W', shortEv('W')) +
+      card(T('panel|黑方'), rep && rep.black, CARD_TXT, null, 'B', shortEv('B'), emptyWhy) +
+      card(T('panel|白方'), rep && rep.white, CARD_TXT, null, 'W', shortEv('W'), emptyWhy) +
       card(T('panel|豁免'), rep ? String(rep.forcedCount || 0) : '—', CARD_MUT, T('panel|冲四强制应手')) +
       card(T('panel|时间模式'), rep ? (rep.hasTime ? T('panel|真实间隔') : T('panel|固定预算')) : '—', CARD_MUT,
            GMStorage.modeLabel(S.mode)) +
@@ -5448,6 +5568,12 @@
           btn: S.mode === 'global' ? T('panel|分析当前对局') : T('panel|结束并出报告') }) + '</div>';
     }
     if (engineNote) h += '<div class="note' + (engineWarn ? ' warn' : '') + '">' + esc(TE(engineNote)) + '</div>';
+    // 1.0.7 续 ⑱ — 同一页上两块面板 = 装了两份扩展。面板看着只有一块（后挂的盖在上面），实际
+    // 两个 content script 都在跑：一边在算、另一边不动，谁也说不清谁是谁。DOM 是共享的，所以
+    // 这一句是唯一能自己发现它的地方。
+    if (panelCopies > 1) {
+      h += '<div class="note warn">⚠ ' + esc(T('panel|页面上有 {n} 个检测器面板：可能装了两份扩展，请到扩展管理页删掉旧的那一份', { n: panelCopies })) + '</div>';
+    }
     if (!running() && lastArchive) h += '<div class="ok">' + T('panel|已存档：{name}', { name: esc(lastArchive.name) }) + '</div>';
     // Mutually exclusive with 已存档: a skipped game must not leave the previous game's
     // confirmation on screen, which would read as "this one was saved".
@@ -5533,8 +5659,12 @@
   // is folded in here, at the display, because `agg.risk` is Rapfi's own measurement and must
   // stay untouched (see the §七~§十四 note above).
   var CARD_TXT = 'var(--gm-txt)', CARD_MUT = 'var(--gm-mut)', CARD_DIM = 'var(--gm-dim)';
-  function card(k, agg, color, sub, side, shortEv) {
-    if (!agg) return '<div class="card"><div class="v" style="color:' + CARD_DIM + '">—</div><div class="k">' + esc(k) + '</div></div>';
+  function card(k, agg, color, sub, side, shortEv, emptyNote) {
+    if (!agg) {
+      // 1.0.7 续 ⑱ — 零手可统计时说清楚**为什么**是零（见调用点的 emptyWhy）。
+      return '<div class="card"><div class="v" style="color:' + CARD_DIM + '">—</div><div class="k">' + esc(k) + '</div>' +
+        (emptyNote ? '<div class="s">' + esc(emptyNote) + '</div>' : '') + '</div>';
+    }
     if (typeof agg === 'string') {
       return '<div class="card"><div class="v" style="color:' + color + ';font-size:13px">' + esc(agg) + '</div>' +
              '<div class="k">' + esc(k) + '</div>' + (sub ? '<div class="s">' + esc(sub) + '</div>' : '') + '</div>';
