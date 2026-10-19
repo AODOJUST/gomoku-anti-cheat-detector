@@ -2590,6 +2590,9 @@
       }, 3);
       liveJob._reset = false;
       if (resp.ok) {
+        // 1.0.7 快照七号（补）— an error is about the LAST attempt, not about the session.
+        // Leaving it set painted a warning for the rest of a game that had already recovered.
+        liveJob.error = '';
         liveJob.summary = resp.summary;
         liveJob.progress = Math.min(99, 100 * (idx + 1) / Math.max(moves.length, 1));
         if (resp.step && resp.step.budgetMs != null) lastStepBudget = resp.step.budgetMs;
@@ -5215,6 +5218,17 @@
     return ' <span class="lk" data-act="force-save">' + T('panel|强制保存') + '</span>';
   }
 
+  // 1.0.7 快照七号（补）— 「这个错误是不是『扩展重新加载过，本页还挂着旧的 content script』」.
+  // Chrome 同一件事有几种说法（发消息时 / 回消息时 / 端口关闭时），全部认。认出来只是多一句
+  // 建议，不参与任何判定 —— 认错也不会改变面板说的事实。
+  function staleContext(msg) {
+    var s = String(msg || '');
+    return /Extension context invalidated/i.test(s) ||
+           /Receiving end does not exist/i.test(s) ||
+           /Could not establish connection/i.test(s) ||
+           /message port closed/i.test(s);
+  }
+
   function paintStatus() {
     if (!root) return;
     var moves = activeMoves();
@@ -5357,8 +5371,11 @@
     // viewer panes call (storage.js is the only layer all three of them load). A local copy would
     // be the 「同一答案两份实现」 failure this project has shipped wrong seven times.
     var paramRep = cur && (cur.report || cur.summary);
-    if (paramRep) {
-      var ps = GMStorage.reportParamsSummary(paramRep);
+    // ⚠ Take it, then test it. `reportParamsSummary` answers null for a falsy report, and a
+    // display line must never be able to throw its way out of paintStatus(): everything below
+    // this point (the compact face, the controls, the copy button) is painted by the same call.
+    var ps = paramRep ? GMStorage.reportParamsSummary(paramRep) : null;
+    if (ps) {
       h += '<div class="note" style="font-size:10px;opacity:.85">' +
         esc(T('panel|本次参数：开局排除 {o} · 怀疑 {s} · 规则 {r} · 思考 {t}ms · 权重和 {w}', {
           o: ps.openingCutoff != null ? ps.openingCutoff : '?',
@@ -5367,6 +5384,17 @@
           t: ps.thinkMs != null ? ps.thinkMs : '?',
           w: ps.weightsSum != null ? ps.weightsSum.toFixed(2) : '?',
         })) + '</div>';
+    }
+    // 1.0.7 快照七号（补）— 实时会话失败时，面板过去**一个字都不说**：`liveJob.error` 写在
+    // job 上，没有任何读者，于是状态行继续印「分析中 · 实时逐步」、进度停在上一次成功的那
+    // 一刻。那是「检测卡住了」，不是报告。这里把它印出来；当文本是「扩展重新加载过」这一类
+    // 时再补一句可执行的建议 —— 那是唯一一个操作者自己能修的原因。
+    var liveErr = (liveJob && liveJob.error && !ended) ? String(liveJob.error) : '';
+    if (liveErr) {
+      h += '<div class="note lk">⚠ ' + esc(T('panel|实时分析出错：{err}', { err: liveErr })) +
+        (staleContext(liveErr)
+          ? '<br>' + esc(T('panel|扩展已重新加载，请刷新本页（F5）后重新开始检测'))
+          : '') + '</div>';
     }
     if (inferred) {
       h += '<div class="note">' + T('panel|数据不完整：前 {n} 手缺失（检测器中途加入，由盘面还原），有效样本 n = <b>{known}</b> 手 / 原始 {total} 手（来源：{src}）。这些手不参与命中率/时间统计，只用于还原盘面。',

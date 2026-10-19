@@ -344,6 +344,20 @@ Every entry below is the original prose, verbatim — only the headings and blan
 
 ⑩ 改了哪些文件：`app.js`（`FOUR_RUN_EXEMPT_AFTER` / `markFourRunExempt` / `countsForSide` / `SMALL_N` / R4-R5 / `learned.weightsSum` / 三处接线）、`learn.js`（镜像）、`storage.js`（`slimStep` + `slimReport` + 两个摘要函数 + `optRule`）、`viewer.js`（徽标 / 参数行 / 对比 / 三处不再传快照）、`viewer.html`（`.b-exempt` + 两个参数行 + 两颗按钮）、`content.js`（浮层参数行）、`tagWiki.js`（连续冲四那一条的中英文）、`_tools/i18n-ui.js` + 13 份语言包、`run-054-sweep.sh`（注册两个新套件）。
 
+【三十二、同版本补丁：「面板在但一直不动」——失败必须看得见】症状是面板在、状态行一直「分析中 · 实时逐步」，进度停在上一次成功的那一刻。查下来这条链上有**三处沉默**，产品不该沉默。
+
+① **liveJob.error 写了没人读**。实时会话每一步失败都只落在 job 上，状态行照样印「分析中」。现在 paintStatus() 把它印成一条警示；当文本是「扩展重新加载过」那几种说法（context invalidated / no receiving end / could not establish / port closed）时，再补一句「请刷新本页（F5）后重新开始检测」——那是操作者唯一能自己修的原因，也是这次报告最可能的真因：**重新加载扩展之后没有刷新页面，旧的 content script 还挂在页上，每次发消息都失败**。
+
+② **成功的一步不清 error**。一次瞬时失败会给整局贴上标签，现在 resp.ok 分支先清 liveJob.error 再存摘要。
+
+③ **实时摘要里没有参数**。浮层那行「本次参数」在**实时会话**——它唯一存在的模式——里印的是「开局排除 ? · 规则 ? · 思考 ?ms」。summarizeSteps() 的返回补了一个只含四个标量（openingCutoff / suspect / rule / thinkMs）的 opts。⚠ 不能直接把 opts 塞进去：它带 shouldAbort 函数，chrome.runtime.sendMessage 序列化不了——在 Node 里一路绿，在真浏览器里是每一步都失败（behave-077-live 就是为这一条写的：真 Edge、真 engine、20 步 gm-step）。
+
+④ **R4 的两个下游漏点**（meanLoss 现在可以是 null）：viewer.js 两处 (meanLoss * 100).toFixed(1) —— null * 100 === 0，于是「没有损失样本」被印成 **0.0%**，正是 R4 要消灭的那个「没有样本 = 完美」；learn.js 的 mean() 把 null 当 0，会把学习器的两个 ACPL 锚点一起拖向人类侧，而检测器随后读的正是这两个锚点。都改成先滤 null、一侧没有样本就整条不拟合。
+
+⑤ 验收：verify-077-liveerr（46 条：摘要形状与可序列化 / 参数行不再是「?」/ 失败可见 / 清错 / 两处 null 守卫 / 文案 12 列）、behave-077-live（12 条：真浏览器 20 步）、_diag-077-redgreen（5 条变异，逐字节还原）。其中 M1 第一次**没红**——断言只钉了 T(...) 那一句，把 note 的 div 换掉照样绿；改成钉整条 append 之后才红。
+
+⑥ 改了哪些文件：content.js（staleContext()、失败提示、清错、ps 守卫）、app.js（摘要的 opts）、viewer.js（两处 null 守卫）、learn.js（滤 null）+ 3 条文案 × 12 列。**版本号仍是 1.0.7**：重新加载 unpacked 之后**一定要刷新对局页**，否则页上仍然是旧的 content script。
+
 ## 1.0.6
 
 1.0.6：设置微调、聊天室体验、消息撤回——十二项，一半是「看着不对」，一半是「用起来别扭」。

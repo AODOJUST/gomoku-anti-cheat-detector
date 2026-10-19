@@ -2171,6 +2171,17 @@ function summarizeSteps(steps, times, opts) {
     orderIssues: issues,
     hasTime,
     suspect: (opts && opts.suspect) || 'both',
+    // 1.0.7 快照七号（补）— the four scalars the panel's 「本次参数」 line prints, and ONLY
+    // those. Deliberately a new object rather than `opts`: `opts` carries `shouldAbort`, a
+    // function, and this summary crosses `chrome.runtime.sendMessage`, which cannot serialise
+    // one. Without it the overlay printed 「开局排除 ? · 规则 ? · 思考 ?ms」 for every live
+    // session — the one mode that line was written for.
+    opts: {
+      openingCutoff: opts && opts.openingCutoff != null ? opts.openingCutoff : null,
+      suspect: (opts && opts.suspect) || 'both',
+      rule: opts && opts.rule != null ? opts.rule : null,
+      thinkMs: opts && opts.thinkMs != null ? opts.thinkMs : null,
+    },
     black, white,
     segments,
     types: {

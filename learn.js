@@ -1025,9 +1025,15 @@
     var mn = mean(agg.neg.map(function (n) { return n.sub.rawTopProx; }));
     if (mp - mn > 0.02) { out.topProxLo = r3(mn); out.topProxHi = r3(Math.max(mn + 0.05, mp)); }
 
-    var lp = mean(agg.pos.map(function (p) { return p.sub.rawLoss; }));
-    var ln = mean(agg.neg.map(function (n) { return n.sub.rawLoss; }));
-    if (ln - lp > 0.002) { out.acplLo = r4(lp); out.acplHi = r4(ln); }
+    // 1.0.7 快照七号（补）— `rawLoss` is null when a side had no readable loss (R4), and
+    // `mean()` coerces null to 0 — the same 「no sample scores perfect」 step the detector just
+    // stopped taking, one layer down. It would drag BOTH anchors toward the human side and
+    // tighten the ramp the detector then reads. Filter the nulls; skip the fit if a class has none.
+    var lpA = agg.pos.map(function (p) { return p.sub.rawLoss; }).filter(function (v) { return v != null; });
+    var lnA = agg.neg.map(function (n) { return n.sub.rawLoss; }).filter(function (v) { return v != null; });
+    var lp = lpA.length ? mean(lpA) : null;
+    var ln = lnA.length ? mean(lnA) : null;
+    if (lp != null && ln != null && ln - lp > 0.002) { out.acplLo = r4(lp); out.acplHi = r4(ln); }
 
     var sp = agg.pos.filter(function (p) { return p.sub.hasSharp; });
     var sn = agg.neg.filter(function (n) { return n.sub.hasSharp; });

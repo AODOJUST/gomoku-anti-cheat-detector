@@ -13145,7 +13145,7 @@
         // about; the level word alone still reads as the verdict.
         '<div class="lab">' + TO('level', a.level) + '</div>' +
         '<div class="contrib">n=' + a.n + ' · T1=' + pct(a.top1) + ' · ' +
-          T('viewer|均损={p}%', { p: (a.meanLoss * 100).toFixed(1) }) + '</div>';
+          (a.meanLoss == null ? T('viewer|均损=—') : T('viewer|均损={p}%', { p: (a.meanLoss * 100).toFixed(1) })) + '</div>';
       box.appendChild(div);
     });
     // sideAggregate returns null when no move survives the filters. That is reachable
@@ -13258,7 +13258,7 @@
       '<tr><td>' + T('viewer|Top-1 吻合') + '</td><td>' + (rep.black ? pct(rep.black.top1) : '—') + '</td><td>' + (rep.white ? pct(rep.white.top1) : '—') + '</td></tr>' +
       '<tr><td>' + T('viewer|Top-3') + '</td><td>' + (rep.black ? pct(rep.black.top3) : '—') + '</td><td>' + (rep.white ? pct(rep.white.top3) : '—') + '</td></tr>' +
       '<tr><td>' + T('viewer|Top-5') + '</td><td>' + (rep.black ? pct(rep.black.top5) : '—') + '</td><td>' + (rep.white ? pct(rep.white.top5) : '—') + '</td></tr>' +
-      '<tr><td>' + T('viewer|ACPL（均损）') + '</td><td>' + (rep.black ? (rep.black.meanLoss * 100).toFixed(1) + '%' : '—') + '</td><td>' + (rep.white ? (rep.white.meanLoss * 100).toFixed(1) + '%' : '—') + '</td></tr>' +
+      '<tr><td>' + T('viewer|ACPL（均损）') + '</td><td>' + (rep.black && rep.black.meanLoss != null ? (rep.black.meanLoss * 100).toFixed(1) + '%' : '—') + '</td><td>' + (rep.white && rep.white.meanLoss != null ? (rep.white.meanLoss * 100).toFixed(1) + '%' : '—') + '</td></tr>' +
       '<tr><td>' + T('viewer|唯一手命中') + '</td><td>' + sharpHit(rep.black) + '</td><td>' + sharpHit(rep.white) + '</td></tr>' +
       // 0.4.8 §1.2 — the two streak rows sit directly under 唯一手命中 because they are the same
       // hands read a different way: the row above is the RATE, these two are the RUN. A side can
