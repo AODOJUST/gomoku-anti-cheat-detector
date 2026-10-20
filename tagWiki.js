@@ -310,18 +310,18 @@ var GM_TAG_WIKI = (function () {
       bandLo: 'typeAiMin', bandHi: null,
       zh: {
         meaning: '风险分 ≥ {lo}，且全程没有掉出前 5 候选的着手——一条 low 段都没有。'
-               + '1.0.7 续 ⑮ 起另有一条硬门槛：该侧有效手数必须 ≥ 8，否则分数再高也不判 AI。',
+               + '1.0.7 续 ⑮ 起另有一条硬门槛：该侧有效手数必须 ≥ {minHands}，否则分数再高也不判 AI。',
         usage: '最直白的一类 AI：整局都走在引擎的候选里，没有试图掩饰。',
         impact: '决定归档与界面展示的结论类型。归档筛选按此分类所在的风险分判断。'
-              + '不足 8 手的侧会落到「疑似AI」，卡片上注明「证据不足 · 不判 AI」。',
+              + '不足 {minHands} 手的侧会落到「疑似AI」，卡片上注明「证据不足 · 不判 AI」。',
       },
       en: {
         meaning: 'Risk ≥ {lo} with no dip below the top-5 candidates anywhere — not a single low run. '
-               + 'Since 1.0.7 续 ⑮ there is also a hard floor: the side must have at least 8 scored hands, '
+               + 'Since 1.0.7 续 ⑮ there is also a hard floor: the side must have at least {minHands} scored hands, '
                + 'or no AI verdict is given however high the score is.',
         usage: 'The plainest kind of AI: it stays inside the engine\'s candidates the whole game and never tries to hide.',
         impact: 'Sets the verdict shown in the archive and the UI. Archive filtering keys off the risk score this band sits in. '
-              + 'A side with fewer than 8 hands lands in 疑似AI instead, and its card says 「not enough evidence」.',
+              + 'A side with fewer than {minHands} hands lands in 疑似AI instead, and its card says 「not enough evidence」.',
       },
     },
     {
@@ -367,16 +367,16 @@ var GM_TAG_WIKI = (function () {
                + '但该侧有效手数不足 8 —— 证据不足，不下 AI 结论（见「低级AI」那条的门槛）。',
         usage: '不足以断定是 AI，但明显不像随手下的棋。这一档最需要人工复核。'
              + '判词被手数门槛挡住时，卡片上会写「证据不足 · 不判 AI」，分数照原样显示。',
-        impact: '决定归档与界面展示的结论类型。默认回放过滤的上界（54）就落在这档之下，'
+        impact: '决定归档与界面展示的结论类型。默认回放过滤的上界（{afMax}）就落在这档之下，'
              + '所以默认设置不会把「可疑」拦下来。',
       },
       en: {
         meaning: 'Risk ≥ {lo} and < {hi}. One other case lands here: the score is already in the AI band '
-               + 'but the side has fewer than 8 scored hands, so there is not enough evidence for an AI verdict '
+               + 'but the side has fewer than {minHands} scored hands, so there is not enough evidence for an AI verdict '
                + '(see the 低级AI entry for the floor).',
         usage: 'Not enough to call it AI, but clearly not casual play either. This is the band that most needs a human look. '
              + 'When the hand floor holds the verdict down, the card says 「not enough evidence」 while the score stays as it is.',
-        impact: 'Sets the verdict shown in the archive and the UI. The default archive filter\'s ceiling (54) sits just below this band, so the default setting never blocks a 可疑 game.',
+        impact: 'Sets the verdict shown in the archive and the UI. The default archive filter\'s ceiling ({afMax}) sits just below this band, so the default setting never blocks a 可疑 game.',
       },
     },
     {
@@ -826,6 +826,32 @@ var GM_TAG_WIKI = (function () {
     return null;
   }
 
+  // 1.0.8 快照一号 §二 — the evidence floor (app.js `MIN_AI_HANDS`). Same reason as `band()`:
+  // the prose below used to spell the figure out, so moving the floor from 8 to 6 left the wiki
+  // saying something the build no longer does. One reader, one number.
+  function minHands() {
+    try {
+      /* global MIN_AI_HANDS */
+      if (typeof MIN_AI_HANDS !== 'undefined' && typeof MIN_AI_HANDS === 'number') return MIN_AI_HANDS;
+    } catch (e) { /* same */ }
+    return null;
+  }
+
+  // 1.0.8 快照一号 §1.2 — the default replay-filter ceiling (storage.js DEFAULTS.archiveFilter.
+  // maxRisk). It moved 54 → 50 in the same release, so the 疑似AI entry would have been left
+  // describing a filter that no longer exists.
+  function afMax() {
+    try {
+      /* global GMStorage */
+      if (typeof GMStorage !== 'undefined' && GMStorage && GMStorage.DEFAULTS
+          && GMStorage.DEFAULTS.archiveFilter
+          && typeof GMStorage.DEFAULTS.archiveFilter.maxRisk === 'number') {
+        return GMStorage.DEFAULTS.archiveFilter.maxRisk;
+      }
+    } catch (e) { /* same */ }
+    return null;
+  }
+
   // ---------------------------------------------------------------------------------------
   // Placeholder filling. `{w}` is a weight and gets the raw table value; `{lo}`/`{hi}` are band
   // cuts and get rounded, because a cut is a whole number by intent and `BASE_THRESHOLDS` is
@@ -844,8 +870,21 @@ var GM_TAG_WIKI = (function () {
     if (out.indexOf('{lo}') >= 0 || out.indexOf('{hi}') >= 0) {
       var lo = band(entry && entry.bandLo);
       var hi = band(entry && entry.bandHi);
+      // `bandHi: null` means "no upper cut" and prints 100 — which is no longer the top of the
+      // scale (1.0.8 §一: the ceiling is the weight table, 150 as shipped). Kept as-is on
+      // purpose: for the AI bands the upper edge really is "and above", and the figure printed
+      // for an open band has always been the old scale top. See the band-table note in the
+      // 1.0.8 release notes.
       out = out.split('{lo}').join(lo == null ? '0' : String(Math.round(lo)));
       out = out.split('{hi}').join(hi == null ? '100' : String(Math.round(hi)));
+    }
+    if (out.indexOf('{minHands}') >= 0) {
+      var mh = minHands();
+      out = out.split('{minHands}').join(mh == null ? DASH : String(mh));
+    }
+    if (out.indexOf('{afMax}') >= 0) {
+      var am = afMax();
+      out = out.split('{afMax}').join(am == null ? DASH : String(am));
     }
     return out;
   }

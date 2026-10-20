@@ -108,14 +108,15 @@
     acplLo: 0.003, acplHi: 0.015,
     sharpHitLo: 0.65, sharpHitSpan: 0.35,
     outTop5Hi: 0.03,
-    riskHigh: 65, riskMid: 35,
+    riskHigh: 85, riskMid: 50,
     simWeight: 0.10,
     // 0.4.2 §4.3
     evasionLoss: 0.20, goodLoss: 0.05, evasionMin: 3, evasionReg: 0.35, winningWR: 0.85,
-    // 0.4.3 §1.6 — ⚠ 1.0.7 续 ⑨ 与 app.js 的 BASE_THRESHOLDS 逐字一致：两套阈值合并成一组，
-    // 「判 ai ⇒ ≥65」「判人类 ⇒ <35」在定义上恒成立。learn.js 因为 offscreen 不加载 storage.js
+    // 0.4.3 §1.6 — ⚠ 与 app.js 的 BASE_THRESHOLDS 逐字一致：两套阈值合并成一组，
+    // 「判 ai ⇒ ≥85」「判人类 ⇒ <50」在定义上恒成立。learn.js 因为 offscreen 不加载 storage.js
     // 而必须自带这份副本，所以**改一处就得改另一处**（THE MIRROR RULE）。
-    typeAiMin: 65, typeSuspectMin: 35, typeProMin: 28, typeExpertMin: 20,
+    // 1.0.8 快照一号 §0.2：85/50/40/30，与 app.js 同一次改。
+    typeAiMin: 85, typeSuspectMin: 50, typeProMin: 40, typeExpertMin: 30,
     // 0.4.7 §1.1
     fourVcfWR: 0.90, fourLostWR: 0.10,
   };
@@ -1084,8 +1085,9 @@
   }
 
   // The 高风险 cut, chosen as the F1-optimal split of the learned risk score across AI
-  // games vs human games. The 可疑 cut keeps the default 40:70 ratio — it is a "worth a
-  // second look" line, not a classification decision, so there is no F1 to maximise.
+  // games vs human games. The 可疑 cut keeps the default ratio of the two cuts (1.0.8:
+  // 50 / 85, read off `th` below rather than written here) — it is a "worth a second look"
+  // line, not a classification decision, so there is no F1 to maximise.
   function optimizeRiskCuts(samples, weights, thresholds) {
     var th = mergeKnown(defaultThresholds(), thresholds);
     var agg = collectAggregates(samples, th);
@@ -1093,8 +1095,11 @@
     var pos = agg.pos.map(function (p) { return { v: riskOfSub(p.sub, weights), w: p.w }; });
     var neg = agg.neg.map(function (n) { return { v: riskOfSub(n.sub, weights), w: n.w }; });
 
+    // ⚠ 1.0.8 快照一号 §一 —— 网格上界 95 → **145**。risk 的上限是 100 × Σw（⑬，出厂 150），
+    // 旧的上界 95 在 1.0.8 的分布上会把「最适合切在 100 以上」的语料硬切成 95，而那条线
+    // 落进 suspect 档里 —— 学出来的切点对着一张自己够不到的分数。下界 20 不动（低风险中部）。
     var grid = [];
-    for (var t = 20; t <= 95.0001; t += 1) {
+    for (var t = 20; t <= 145.0001; t += 1) {
       var tp = 0, fp = 0, fn = 0;
       for (var i = 0; i < pos.length; i++) { if (pos[i].v >= t) tp += pos[i].w; else fn += pos[i].w; }
       for (var j = 0; j < neg.length; j++) { if (neg[j].v >= t) fp += neg[j].w; }
@@ -1120,10 +1125,13 @@
     var dSus = th.typeAiMin - th.typeSuspectMin;
     var dPro = th.typeAiMin - th.typeProMin;
     var dExp = th.typeAiMin - th.typeExpertMin;
-    var aiMin = clamp(Math.round(riskHigh + dAi), 1, 99);
-    var susMin = clamp(aiMin - dSus, 1, 99);
-    var proMin = clamp(aiMin - dPro, 1, 99);
-    var expMin = clamp(aiMin - dExp, 1, 99);
+    // ⚠ 1.0.8 快照一号 —— 上界 99 → **149**。⑬ 之后 risk 可以超过 100，而这里原来把它压回 99：
+    // 语料若把切点学在 145，四条线会全部落到 99 以下，学出来的阶梯与产品实际比较的那几条线
+    // 相差 46 分。上界取 149 是把「最高一档仍在 150 之下」这条不变式写出来，不是新加的门。
+    var aiMin = clamp(Math.round(riskHigh + dAi), 1, 149);
+    var susMin = clamp(aiMin - dSus, 1, 149);
+    var proMin = clamp(aiMin - dPro, 1, 149);
+    var expMin = clamp(aiMin - dExp, 1, 149);
     if (aiMin > susMin && susMin > proMin && proMin > expMin) {
       out.typeAiMin = aiMin; out.typeSuspectMin = susMin;
       out.typeProMin = proMin; out.typeExpertMin = expMin;

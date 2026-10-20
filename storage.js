@@ -259,7 +259,10 @@
     // want filling the archive list: below 55 is 「职业选手」 and weaker (see classifySide), and
     // a low-risk game is the one they are least likely to come back to. `enabled: false` means
     // every game is archived, which is exactly 0.5.2's behaviour.
-    archiveFilter: { enabled: false, minRisk: 0, maxRisk: 54 },
+    // ⚠ 1.0.8 快照一号 §1.2 —— 54 → **50**。54 是旧「高手玩家」档的上限（旧 typeSuspectMin-1），
+    // 而新可疑档的下沿是 50：54 会切在可疑区间内部，一个 52 分的档案既不在「低风险」里、
+    // 也落不进默认过滤范围。50 让默认过滤正好覆盖低风险整档。
+    archiveFilter: { enabled: false, minRisk: 0, maxRisk: 50 },
     // 0.5.4 §一.3 — 存储过滤. The same "do not keep this game" decision as `archiveFilter`
     // above, asked about the SHAPE of the capture rather than about its score, and the two
     // compose (their judgement functions are both consulted; either one can refuse).
@@ -513,7 +516,10 @@
     var n = function (x, dflt) {
       var y = parseInt(x, 10);
       if (!isFinite(y)) return dflt;
-      return Math.max(0, Math.min(100, Math.round(y)));
+      // ⚠ 1.0.8 快照一号 §一 —— 上界 100 → 150，与 app.js sideAggregate 的 risk 上限
+      // （100 × ΣwEff，出厂 150）一致。100 是旧表的总和，不是天花板；留 100 会让
+      // 「过滤 120–150」这件本来就成立的事无法在设置里表达出来。
+      return Math.max(0, Math.min(150, Math.round(y)));
     };
     return {
       enabled: !!src.enabled,
@@ -2709,9 +2715,9 @@
     sharpHitLo: 0.65, sharpHitSpan: 0.35,
     outTop5Hi: 0.03,                // aOut ramp
     // ⚠⚠ 1.0.7 续 ⑨ — 这两条线必须与下面四条判词线**同一组数**，否则同一侧会出现
-    // 「76 分判 normal」「24 分判 ai」这种分数与判词互相打脸的情况（旧值是 70/40 对 75/55/45/30）。
-    // 现在是 65/35，与 app.js BASE_THRESHOLDS 逐字一致。
-    riskHigh: 65, riskMid: 35,      // 高风险 / 可疑 cut lines
+    // 「76 分判 normal」「24 分判 ai」这种分数与判词互相打脸的情况。
+    // 1.0.8 快照一号 §一：85/50，与 app.js BASE_THRESHOLDS 逐字一致（THE MIRROR RULE）。
+    riskHigh: 85, riskMid: 50,      // 高风险 / 可疑 cut lines
     simWeight: 0.10,                // share of the risk score the feature library may claim
     // 0.4.2 §4.3: the evasion thresholds, learnable through the same mechanism as the rest
     // (learn.js merges its own copy of this object key by key, and only for keys it knows).
@@ -2722,12 +2728,12 @@
     evasionReg: 0.35,               // stddev / mean ceiling for "a regular rhythm"
     winningWR: 0.85,                // "winning" for the 将胜乱下 signal
     // 0.4.3 §1.6: the four cut lines behind the five risk bands. Right-open on whole points —
-    // 65 is AI, 64 is 疑似AI. A band is a summary of the risk score, not a second opinion
+    // 85 is AI, 84 is 疑似AI. A band is a summary of the risk score, not a second opinion
     // about it: nothing here feeds back into the score.
-    // ⚠⚠ 1.0.7 续 ⑨ — 整体下移（75/55/45/30 → 65/35/28/20）。suspect 档变宽到 35~65 是为了
-    // 吃掉 35 与 65 之间那 30 分的真空带；四条线保持严格递减，`optimizeRiskCuts` 的阶梯
-    // 校验依赖这一点。与 app.js / learn.js 的那两份**必须逐字一致**。
-    typeAiMin: 65, typeSuspectMin: 35, typeProMin: 28, typeExpertMin: 20,
+    // ⚠⚠ 1.0.8 快照一号 §0.2 —— 85/50/40/30，与三档对齐（高风险 ⟺ 三种 AI，可疑 ⟺ suspectAi）。
+    // 50 与 85 之间那 35 分仍由 suspect 整档吃掉；四条线保持严格递减，`optimizeRiskCuts`
+    // 的阶梯校验依赖这一点。与 app.js / learn.js 的那两份**必须逐字一致**。
+    typeAiMin: 85, typeSuspectMin: 50, typeProMin: 40, typeExpertMin: 30,
     // 0.4.7 §1.1: the two win-rate bounds a four run is classified with — the value of the best
     // move in the position BEFORE the run started. >= fourVcfWR is a conversion (VCF, not
     // scored); <= fourLostWR is a lost player firing fours that change nothing (scored).

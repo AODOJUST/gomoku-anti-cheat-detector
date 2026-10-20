@@ -805,6 +805,12 @@
     setField($('setThinkMs'), S.thinkMs);
     setField($('setAiThinkMs'), (S.aiThinkMs == null ? '' : S.aiThinkMs));
     setField($('setOpening'), S.openingCutoff);
+    // 1.0.8 快照一号 §2.3 — 这个数是**双方合计**的总手数，不是每方手数。
+    // ⚠ 不写出来，下一位操作者会把 8 读成「每方 8 手」（代码里它是每方 4 手）。两个数都从
+    // 当前设置算，所以「改成 12」之后这里会自己说「每方约 6 手」。
+    var oc = Math.max(0, parseInt(S.openingCutoff, 10) || 0);
+    setTxt('setOpeningHint', T('viewer|前 {n} 手（双方合计）不参与评分；当前每方约 {each} 手。排除得越多，参与评分的手越少、判定越难下。',
+      { n: oc, each: Math.round(oc / 2) }));
     setField($('setThread'), S.threadNum);
     setField($('setMinMoves'), S.minArchiveMoves);
     setField($('setLang'), S.lang || 'auto');
@@ -1173,8 +1179,15 @@
   function buildSignalWeightsPanel() {
     var grid = $('swGrid');
     if (!grid) return;
-    setTxt('swHint', T('viewer|每项都是风险分的百分比权重：0 = 该项不参与评分，100 = 该项独占满分。十七项合计不得超过 150%，而出厂表已正好是 {d}%——想抬高某一项，得先降低另一项（合计栏会实时显示）。合计越高，同一局的分越高，也就越容易越过 65 / 35 两条线（这是把检测调得更严）；合计越低则相反。分数没有 100 的天花板：满分就是有效权重之和（出厂 150；装了特征库时 145），所以超过 100 是正常的高分。只记录你改动过的项，其余仍跟随出厂默认（清空某一项即为恢复默认）。',
-      { d: swShippedPct() }));
+    // 1.0.8 快照一号 §一 — 这句话里印的那两条线**不再写死**。写死过一次的代价很具体：阈值从
+    // 65/35 改成 85/50 时，文案会静默留在旧值上，而它说的正是「越过这线就等于把检测调严」。
+    // `GM_TAG_WIKI.band()` 是 tagWiki 里那个唯一读者（读 app.js 的 BASE_THRESHOLDS）；
+    // 取不到时印「—」，与 tagWiki 的 DASH 规则一致 —— 绝不印 0。
+    var cutHi = GM_TAG_WIKI.band('riskHigh'), cutMid = GM_TAG_WIKI.band('riskMid');
+    setTxt('swHint', T('viewer|每项都是风险分的百分比权重：0 = 该项不参与评分，100 = 该项独占满分。十七项合计不得超过 150%，而出厂表已正好是 {d}%——想抬高某一项，得先降低另一项（合计栏会实时显示）。合计越高，同一局的分越高，也就越容易越过 {hi} / {mid} 两条线（这是把检测调得更严）；合计越低则相反。分数没有 100 的天花板：满分就是有效权重之和（出厂 150；装了特征库时 145），所以超过 100 是正常的高分。只记录你改动过的项，其余仍跟随出厂默认（清空某一项即为恢复默认）。',
+      { d: swShippedPct(),
+        hi: cutHi == null ? '\u2014' : Math.round(cutHi),
+        mid: cutMid == null ? '\u2014' : Math.round(cutMid) }));
     setTxt('swReset', T('viewer|重置为默认'));
     var base = swBaseKeys(), low = swLowKeys(), group = null, html = '';
     swKeys().forEach(function (key) {
@@ -14297,7 +14310,7 @@
       h: { 'zh-CN': '4. 检测结果怎么看', en: '4. Reading the result' },
       b: {
         'zh-CN': [
-          '风险分：越高越可疑，没有 100 的天花板——满分就是有效权重之和（出厂 150；装了特征库 145）。一般低于 35 视为正常，35–65 可疑，65 以上高风险。',
+          '风险分：越高越可疑，没有 100 的天花板——满分就是有效权重之和（出厂 150；装了特征库 145）。一般低于 50 视为正常，50–85 可疑，85 以上高风险。',
           'AI 分类：把每一手归为「像人」「像 AI」「存疑」，看的是整局的分布而不是单步。',
           '分段：把连续同向的手数连成一段，一眼看清哪一段开始变了。',
           '回避手：明明该走却故意避开的选择，单独统计、不计入主要指标。',
@@ -14306,7 +14319,7 @@
           '跳四：间隔型的四（如 X_XXX / XX_XX）。它有且只有一个成五点，但那个点在四的中间，挡它的同一手也可能顺手挡掉活三，所以「跳四 + 活三」不按四三杀处理 —— 检测会继续，并在步骤里标出「跳四」。',
         ],
         en: [
-          'Risk score: higher is more suspicious, with no 100 ceiling — full marks is the sum of the effective weights (150 as shipped, 145 with a feature library). Below 35 is normally human, 35–65 suspect, 65+ high.',
+          'Risk score: higher is more suspicious, with no 100 ceiling — full marks is the sum of the effective weights (150 as shipped, 145 with a feature library). Below 50 is normally human, 50–85 suspect, 85+ high.',
           'AI classification: each move is labelled human-like, AI-like or doubtful. Read the distribution over the game, not one move.',
           'Segments: consecutive hands pointing the same way are joined into one bar, so you can see where the game changed.',
           'Evasion moves: choices that deliberately avoid the natural move. Counted separately and kept out of the main metrics.',
@@ -14575,14 +14588,19 @@
       rows.push([T('viewer|权重'), w == null ? GM_TAG_WIKI.DASH : String(w)]);
     }
     if (entry.bandLo || entry.bandHi) {
-      // `bandLo: null` means 0 and `bandHi: null` means 100 (tagWiki.js's own table comment) —
-      // unlike `weight()`, which returns null to mean "unreachable". Absent and unreadable are
-      // different answers, so only the absent side gets the documented default.
+      // `bandLo: null` means 0 and `bandHi: null` means "no upper cut" (tagWiki.js's own table
+      // comment) — unlike `weight()`, which returns null to mean "unreachable". Absent and
+      // unreadable are different answers, so only the absent side gets the documented default.
       var lo = entry.bandLo ? GM_TAG_WIKI.band(entry.bandLo) : 0;
-      var hi = entry.bandHi ? GM_TAG_WIKI.band(entry.bandHi) : 100;
       var d = GM_TAG_WIKI.DASH;
-      rows.push([T('viewer|区间'),
-        (lo == null ? d : String(Math.round(lo))) + ' \u2013 ' + (hi == null ? d : String(Math.round(hi)))]);
+      var loTxt = (lo == null ? d : String(Math.round(lo)));
+      // 1.0.8 快照一号 §一 — an OPEN upper band no longer prints a ceiling. It used to print
+      // 100, which was the top of the old scale; since ⑬ the scale's top is 100 × ΣwEff (150
+      // as shipped, 145 with a feature library), so "85 – 100" was both stale and too low.
+      // "85 +" says the only thing that is true at every weight table.
+      rows.push([T('viewer|区间'), entry.bandHi
+        ? loTxt + ' \u2013 ' + (GM_TAG_WIKI.band(entry.bandHi) == null ? d : String(Math.round(GM_TAG_WIKI.band(entry.bandHi))))
+        : loTxt + ' +']);
     }
     if (!rows.length) return '';
     return '<table class="impact-table">' + rows.map(function (r) {

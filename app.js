@@ -2500,10 +2500,17 @@ const BASE_THRESHOLDS = {
   outTop5Hi: 0.03,
   // 1.0.7 续 ⑨ — 两条「等级线」与下面四条「判词线」原本是两套数（70/40 对 75/55/45/30），
   // 于是同一侧可以「76 分 / 判 normal」和「24 分 / 判 ai」并存 —— 分数和判词互相打脸。
-  // 现在两套共用一组边界：高风险 ⟺ 判 AI（≥65），可疑 ⟺ 判疑似（≥35）。
-  // ⚠ 65 / 35 是产品口径，不是拟合结果：`_tools/_calib-loo.cjs` 已证明按样本重拟合权重会让
-  // 留出局变差（0.667 vs 1.000），所以这次只动边界、不动权重。
-  riskHigh: 65, riskMid: 35,
+  // 现在两套共用一组边界：高风险 ⟺ 判 AI，可疑 ⟺ 判疑似（数值见下）。
+  // ⚠ 边界是产品口径，不是拟合结果：`_tools/_calib-loo.cjs` 已证明按样本重拟合权重会让
+  // 留出局变差（0.667 vs 1.000），所以每一次动这里都只动边界、不动权重。
+  //
+  // ⚠⚠ 1.0.8 快照一号 §一 —— 三档重划：0–50 低风险 / 50–85 可疑 / 85–150 高风险。
+  //   这两个数**不是**旧值 ×1.5（按定稿记的 40/70，那会得 60 / 105），是操作者对新分布的显式裁决。
+  //   ⚠ 定稿的「旧」列写的是 70 / 40，而它落地时这两条线已经是 65 / 35（⑨ 下移过）——
+  //     本次改的是**新值**，旧值那一列只当历史读，别拿它推任何别的数。
+  //   ⚠ 「85–150」这句话在 1.0.8 里**真的可达**：risk 的物理上限是 100 × ΣwEff（⑬，出厂 150），
+  //     本库 127 侧里有 32 侧 ≥85（`_tools/_calib-108-reach.cjs` 量的）。
+  riskHigh: 85, riskMid: 50,
   simWeight: 0.10,
   // 0.4.2 §4.3: the evasion thresholds. Same mechanism as the rest — learn.js merges its own
   // copy key by key, and only for keys it knows — so all five are learnable. The defaults are
@@ -2523,24 +2530,26 @@ const BASE_THRESHOLDS = {
   // constants stay as the belt-and-braces default for a caller that passes no set at all.
   fourVcfWR: 0.90,      // at or above this, the four-run is a winning line (VCF)
   fourLostWR: 0.10,     // at or below this, it is 无用冲四 and it scores
-  // 0.4.3 §1.6: the five risk bands' four cut lines, all right-open (65 is AI, 64 is 疑似AI).
+  // 0.4.3 §1.6: the five risk bands' four cut lines, all right-open (85 is AI, 84 is 疑似AI).
   // The band a game lands in is a summary of the risk score, not a second opinion about it,
   // so these are configurable and learnable like every other cut but never feed back into the
   // score itself.
   //
-  // ⚠⚠ 1.0.7 续 ⑨ — 四条线整体下移，让「判词」与「分数」不再互相矛盾：
-  //     ai      ≥65   （原 75）
-  //     suspect 35~65 （原 55~75）  ← 唯一一条变宽的档，用来吃掉 35..65 这段
-  //     pro     28~35 （原 45~55）
-  //     expert  20~28 （原 30~45）
-  //     normal  <20   （原 <30）
-  // 这样「判为 ai ⇒ 分 ≥65」「判为 pro/expert/normal（人类）⇒ 分 <35」在**定义上**恒成立，
-  // 127 个存档侧面的实测违例数为 0/0。为什么必须留一个 suspect 档：35 与 65 之间有 30 分的
-  // 真空带，不设一档就必然有侧无处可去。
-  typeAiMin: 65,
-  typeSuspectMin: 35,
-  typeProMin: 28,
-  typeExpertMin: 20,
+  // ⚠⚠ 1.0.8 快照一号 §0.2 — 四条线与上面两条**同一组边界**，与三档一一对齐：
+  //     ai      ≥85   （= riskHigh，高风险档全部归三种 AI）
+  //     suspect 50~85 （= riskMid，可疑档全部归 suspectAi）
+  //     pro     40~50 （低风险上部）
+  //     expert  30~40 （低风险中部）
+  //     normal  <30   （低风险下部）
+  // 这样「判为 ai ⇒ 分 ≥85」「判为 pro/expert/normal（人类）⇒ 分 <50」在**定义上**恒成立。
+  // ⚠ 这是**对齐**，不是把旧值按 1.5 缩放（那会得 112.5 / 82.5 / 67.5 / 45，与需求字面矛盾）。
+  // ⚠ 50 与 85 之间那 35 分仍由 suspect 整档吃掉 —— ⑨ 那条「真空带必须留一档」还是同一个理由。
+  // ⚠ 三种 AI 内部（低 / 规避 / 强规避）由 segmentSide 决定，与这两个数无关，
+  //   只在 risk ≥ typeAiMin 时才进入其中之一。
+  typeAiMin: 85,
+  typeSuspectMin: 50,
+  typeProMin: 40,
+  typeExpertMin: 30,
 };
 
 // Resolve learnedParams into the two objects sideAggregate consumes. Unknown or
@@ -3588,9 +3597,11 @@ function sideAggregate(steps, side, hasTime, params, opts) {
   // shrinks: one lucky hand in three moves moves `topProx` by 0.33, one bad loss in five moves
   // moves `meanLoss` by more than its whole ramp. The neutral 0.5 says 「no reading」 — it neither
   // awards nor withholds, which is the only honest thing such a short sample supports.
-  // ⚠ The 65/35 verdict line is untouched: this moves the ACTIVATION, and only for sides short
-  // enough that the operator's own evidence floor (⑮, MIN_AI_HANDS = 8) already refuses to call
-  // them AI. `aTop1`'s legacy branch is gated too, so the comparison switch cannot drift apart
+  // ⚠ The 85/50 verdict line is untouched: this moves the ACTIVATION, and only for sides short
+  // enough that the operator's own evidence floor (⑮, MIN_AI_HANDS = 6) already refuses to call
+  // them AI. That containment is exact rather than lucky: this branch fires below SMALL_N (5),
+  // and 5 < 6, so every side it neutralises is one the floor would have refused anyway.
+  // (1.0.8 快照一号 §二 moved the floor 8 → 6; the containment still holds.) `aTop1`'s legacy branch is gated too, so the comparison switch cannot drift apart
   // from the live reading it exists to reproduce.
   const aTop1 = n < SMALL_N ? 0.5 : (legacy ? rampUp(top1, t.top1Lo, t.top1Hi)
                                             : rampUp(topProx, t.topProxLo, t.topProxHi));
@@ -3814,7 +3825,11 @@ function sideAggregate(steps, side, hasTime, params, opts) {
   const baseScore = baseSum * 100;
   const bonusScore = bonusSum * 100;
   // ⚠⚠ 1.0.7 续 ⑬ stays in force: the ceiling is 100 × ΣwEff (150 shipped, 145 with a feature
-  // library), NOT the 100 that 快照六号 §0.2 prints. The operator ruled on this on 2026-10-19 —
+  // library), NOT the 100 that 快照六号 §0.2 prints.
+  // ⚠ 1.0.8 快照一号 §0.1 asks for「clamp 上限从 100 改成 150」. That is what this expression
+  // ALREADY evaluates to on the shipped table — so the answer here is "no change", and hard-coding
+  // 150 would silently undo the 145 case for a side with a feature library. §0.1's premise (that
+  // the clamp still said 100) predates ⑬. The operator ruled on this on 2026-10-19 —
   // the `0, 100` in that document predates ⑬ and would undo it. What the document's §0.2 really
   // asks for (a `risk` that every existing consumer can keep reading) holds either way: this is
   // still one number, still monotone in every activation, still what `riskBand` / `classifySide` /
@@ -4061,7 +4076,16 @@ const LOWEND_STEADY_MIN = 0.7;
 //   不是从天上掉的：8 手时单个比率的振幅约 12.5%，再少一手棋就能把一项激活推翻一档。
 // ⚠ 只对 `band === 'ai'` 生效 ⇒ 「疑似 / 职业 / 高手」这几个词一个都没被碰过，PRO/EXPERT
 //   的低端AI降级分支照旧。
-const MIN_AI_HANDS = 8;
+//
+// ⚠⚠ 1.0.8 快照一号 §二 —— 8 → **6**。需求原文「原来是双方各下出 8 手有效手后给出判定结果，
+//   现在降低为 6 手」说的就是这个数：「有效手数」= countsForSide 数出来的 n，不是对局长度，
+//   也不是 `openingCutoff`（后者是「双方合计前 N 手不评分」，默认 8 手 = 每方 4 手）。
+//   实测（`_tools/_probe-108-thresholds.cjs`，31 侧带标签样本、排除夹具、阈值取 1.0.8 的 85/50）：
+//     MIN=8 → 判 AI  8 侧，准确 71.0%、精确 87.5%、召回 46.7%
+//     MIN=6 → 判 AI 12 侧，准确 58.1%、精确 58.3%、召回 46.7%
+//   ⚠ 准确率是**降**的：门槛越低，被放行的短样本越多，误报越多。这是「判定更早」的取舍，
+//     不是一次「更准」的调参 —— 写在这里是为了下一个人别再拿 8 当拐点用。
+const MIN_AI_HANDS = 6;
 
 function classifySide(risk, segments, steps, side, thresholds, acts) {
   const band = riskBand(risk, thresholds);

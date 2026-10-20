@@ -4,7 +4,7 @@
 
 > 名字取自棋盘上最难看清的那一方。
 
-**最新版本：v1.0.7**（[下载](https://github.com/AODOJUST/gomoku-anti-cheat-detector/releases/latest)）
+**最新版本：v1.0.8**（[下载](https://github.com/AODOJUST/gomoku-anti-cheat-detector/releases/latest)）
 
 ## 它做什么
 

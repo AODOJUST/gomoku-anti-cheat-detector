@@ -6721,7 +6721,12 @@
     // exceed 100, keeping a local 100 here does worse than being stale — it LOWERS a high score
     // (a 120 readout plus a +30 adjustment printed 100.0). The floor stays: a negative adjustment
     // must not drive a score below zero.
-    if (side === chatAdjSide() && chat.total) v = Math.max(0, v + chat.total);
+    //
+    // 1.0.8 快照一号 §1.1 — 「clamp 上限从 100 改成 150」。⑬ 当年把上限整个删了（留着它会把
+    // 120+30 印成 100.0），所以这里不是「把 100 改成 150」，而是**加回一个上界，且只有一个**：
+    // scale 自己的顶 150（SIGNAL_WEIGHT_SUM_MAX × 100）。低于它的调整一位不动 —— 120 + 10
+    // 仍然印 130，那正是 ⑬ 争的东西。
+    if (side === chatAdjSide() && chat.total) v = Math.max(0, Math.min(150, v + chat.total));
     return fmtRisk(v);
   }
 

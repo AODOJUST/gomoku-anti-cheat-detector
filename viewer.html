@@ -2213,9 +2213,9 @@
               </select>
             </div>
             <div class="fx hidden" id="fRiskCustom">
-              <input type="number" class="num" id="fRiskMin" placeholder="min" min="0" max="100">
+              <input type="number" class="num" id="fRiskMin" placeholder="min" min="0" max="150">
               <span class="hint">–</span>
-              <input type="number" class="num" id="fRiskMax" placeholder="max" min="0" max="100">
+              <input type="number" class="num" id="fRiskMax" placeholder="max" min="0" max="150">
             </div>
             <div class="fx">
               <select id="fRiskField">
@@ -3816,6 +3816,11 @@
         <div class="set-item">
           <label>开局排除手数</label>
           <div class="fx"><input type="number" id="setOpening" min="0" max="40"></div>
+          <!-- 1.0.8 快照一号 §2.3 — 必须显式写「双方合计」。这个数是**总手数**：
+               `playerIdxByMove[i] < openingCutoff`（app.js analyzeGame/analyzeStepwise）里的
+               下标是「双方玩家手数的混合计数」，所以 8 = 双方各 4 手，不是每方 8 手。
+               文案里的两个数由 viewer.js 按当前设置填（T() 带 {n}/{each}）。 -->
+          <span class="hint" id="setOpeningHint"></span>
         </div>
         <div class="set-item">
           <label>自动发送聊天</label>
@@ -4116,9 +4121,9 @@
         <div class="set-item">
           <label id="afRangeLabel">AI 率范围</label>
           <div class="fx">
-            <input type="number" id="afMin" min="0" max="100" step="1" style="width:80px">
+            <input type="number" id="afMin" min="0" max="150" step="1" style="width:80px">
             <span class="hint">–</span>
-            <input type="number" id="afMax" min="0" max="100" step="1" style="width:80px">
+            <input type="number" id="afMax" min="0" max="150" step="1" style="width:80px">
             <span class="hint">%</span>
           </div>
         </div>
