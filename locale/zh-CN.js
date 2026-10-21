@@ -180,17 +180,16 @@ GMI18n.register('zh-CN', {
   // ---- 复制输出模板 (§2.6, verbatim).
   'copy.prefix': '白身（Baishen）输出：',
   'copy.degraded': '（降级）',
-  'copy.blackTag': '（黑）',
-  'copy.whiteTag': '（白）',
+  'copy.side.black': "黑：",
+  'copy.side.white': "白：",
+  'copy.score.format': "（判定分：{score} 结果：{level}）",
   'copy.hands.simple': '{total}手',
   'copy.hands.withScored': '{total}手（有效{scored}手）',
   'copy.opening.unknown': '开局未识别',
   'copy.player.unknown': '未知',
   'copy.player.genericBlack': '黑方',
   'copy.player.genericWhite': '白方',
-  'copy.rate.format': '（AI率：{rate}%，{level}）',
   'copy.rate.unanalyzed': '（未分析）',
-  'copy.sides.sep': '，',
   'copy.done': '已复制到剪贴板',
   'copy.fail': '复制失败',
   'copy.noData': '尚无分析结果，无法复制',
@@ -215,7 +214,6 @@ GMI18n.register('zh-CN', {
   // 0.4.2 §2.3 — the two surcharges learned in their own budget. Reached RAW (no fallback) by
   // the viewer's contribution breakdown, so their absence here was visible, not latent.
   'learn.weight.evasion': '回避手',
-  'learn.weight.winBlunder': '将胜乱下',
   // 0.4.7 §1.1 — the third per-item surcharge.
   'learn.weight.uselessFour': '无用冲四',
   // 0.4.8 §1.2 — the streak pair, also a surcharge.
@@ -256,7 +254,6 @@ GMI18n.register('zh-CN', {
   'learn.threshold.goodLoss': '好棋损失上限',
   'learn.threshold.evasionMin': '规律性最小回避数',
   'learn.threshold.evasionReg': '规律性标准差上限',
-  'learn.threshold.winningWR': '将胜胜率阈值',
   // 0.4.3 §1.1/§1.6 — two re-anchored ramp cuts and the four AI-class band lines.
   'learn.threshold.topProxLo': '接近度下界',
   'learn.threshold.topProxHi': '接近度上界',

@@ -2665,7 +2665,9 @@
     // and the total stays exactly 1.50. THE MIRROR RULE: term-for-term equal to app.js
     // BASE_WEIGHTS and learn.js FALLBACK_WEIGHTS; `verify-074` B1 pins all three plus the sum.
     top1: 0.23, acpl: 0.10, sharp: 0.22, out: 0.12, desperate: 0.08, time: 0,
-    evasion: 0.08, winBlunder: 0,
+    // ⚠ 1.0.8 快照二号 §一.2 — `winBlunder` 已删除（不是归零）。THE MIRROR RULE：与 app.js
+    // BASE_WEIGHTS / learn.js FALLBACK_WEIGHTS 逐键一致，合计仍是精确 1.50（删掉的权重原本是 0）。
+    evasion: 0.08,
     uselessFour: 0.08,
     sharpStreak: 0.09,
     sharpTotal: 0.09,
@@ -2726,7 +2728,6 @@
     goodLoss: 0.05,                 // "a good hand": ceiling for the two neighbours
     evasionMin: 3,                  // fewest evasions before the rhythm score means anything
     evasionReg: 0.35,               // stddev / mean ceiling for "a regular rhythm"
-    winningWR: 0.85,                // "winning" for the 将胜乱下 signal
     // 0.4.3 §1.6: the four cut lines behind the five risk bands. Right-open on whole points —
     // 85 is AI, 84 is 疑似AI. A band is a summary of the risk score, not a second opinion
     // about it: nothing here feeds back into the score.
@@ -3268,6 +3269,9 @@
       // between 「counted」 and 「excluded」: without it, reopening a saved game re-counts hands the
       // report had already excluded, and the same game shows two scores in the same viewer.
       fourRunExempt: !!s.fourRunExempt,
+      // 1.0.8 快照二号 §一.1 — 远点无用冲四豁免。与 `fourRunExempt` 同样的理由必须落盘：这个
+      // 字段就是「算不算样本」的差别，丢了它重开存档会把报告已经排除的手重新计一次分。
+      farFourExempt: !!s.farFourExempt,
       // 0.4.7 §1.1 — the raw input the two fields above are DERIVED from: scoreStep() stamps it
       // from the board after the hand, markFourRuns() groups it into runs and labels them. Kept
       // for the same reason `prevBestWR` is: the archive claims to be re-derivable, and a reader
@@ -3560,12 +3564,10 @@
         topProx: a.topProx,
         sharpHit: a.sharpHit, sharpCount: a.sharpCount, outTop5: a.outTop5,
         desperateCount: a.desperateCount,
-        // 0.4.2 §二: how many of this side's hands were evasions, how regular their rhythm was
-        // (0..1), and how many were 将胜乱下. Excluded from n/top1/meanLoss above — that
-        // exclusion is the point of the signal, so the totals here and the percentages there
-        // deliberately count different hands.
+        // 0.4.2 §二: how many of this side's hands were evasions and how regular their rhythm
+        // was (0..1). Excluded from n/top1/meanLoss above — that exclusion is the point of the
+        // signal, so the totals here and the percentages there deliberately count different hands.
         evasionCount: a.evasionCount || 0,
-        winBlunderCount: a.winBlunderCount || 0,
         evasionRegularity: a.evasionRegularity || 0,
         // 0.4.7 §1.1: how many of this side's hands carried a useless-four run (one of the
         // terms the risk score was actually made of) and how many runs of each kind there

@@ -549,21 +549,6 @@ var GM_TAG_WIKI = (function () {
       },
     },
     {
-      id: 'signal-win-blunder', cat: 'signal', nameNs: 'learn.weight', nameVal: 'winBlunder',
-      applied: true, weightKey: 'winBlunder',
-      zh: {
-        meaning: '将胜乱下：已经胜势却走出明显劣着。3 次即满值。',
-        usage: '与「回避手」成对出现——一个是败势里突然走好，一个是胜势里突然走坏，'
-             + '都是「故意」的痕迹。',
-        impact: '权重 {w}，行为信号之一。无此形态时为 0。',
-      },
-      en: {
-        meaning: 'Blundering while winning: a clearly inferior move played from a won position. Three of them saturate it.',
-        usage: 'Pairs with 回避手 — one is suddenly playing well while lost, the other suddenly playing badly while winning. Both are traces of intent.',
-        impact: 'Weight {w}, one of the behaviour signals. Zero when the pattern is absent.',
-      },
-    },
-    {
       id: 'signal-useless-four', cat: 'signal', nameNs: 'learn.weight', nameVal: 'uselessFour',
       applied: true, weightKey: 'uselessFour',
       zh: {
@@ -571,14 +556,16 @@ var GM_TAG_WIKI = (function () {
         usage: '0.4.7 引入，比「将败冲四」更严格：不仅败势，还要连着冲。单次可能是诚实的挣扎，连着冲才是无谓。'
               + '⚠ 1.0.7 快照七号起另有一条计数规则：该方的连续冲四从**第 3 手起不再计入任何统计**'
               + '（本项也一样，回放里那几手带「连续冲四·不计」徽标）。一条转换序列是一个决定被走出来的样子，'
-              + '不是 N 个独立的决定；本项分类（vcf / 防守 / 无用）照旧保留，被豁免的只是「算不算样本」。',
+              + '不是 N 个独立的决定；本项分类（vcf / 防守 / 无用）照旧保留，被豁免的只是「算不算样本」。'
+              + '⚠ 1.0.8 快照二号 又加了一条：**远离引擎推荐点（切比雪夫距离 > 3）的无用冲四也不计入**，'
+              + '不论它是否连成串 —— 在无关位置冲四只会把 top1 / ACPL / 好点池一起拉黑，是污染而不是证据。',
         impact: '权重 {w}，行为信号之一。无此形态时为 0。',
       },
       en: {
         meaning: 'A run of 2+ consecutive four-chases played from a lost position (that side\'s best win rate ≤ 0.10). Two such runs saturate it.',
         usage: 'Added in 0.4.7 and stricter than 将败冲四: not just lost, but chasing repeatedly. A single one can be an honest attempt; a run cannot.'
               + ' ⚠ From 1.0.7 snapshot 7 there is also a counting rule: from the THIRD hand of one side\'s consecutive fours, the hand no longer counts in any statistic (this term included; the replay badges those hands 「连续冲四·不计」). A conversion sequence is one decision played out, not N independent decisions — the classification (vcf / defensive / useless) is still reported; only 「is this a sample」 changes.',
-        impact: 'Weight {w}, one of the behaviour signals. Zero when the pattern is absent.',
+        impact: 'Weight {w}, one of the behaviour signals. Zero when the pattern is absent. A 无用冲四 played more than three rings away from the engine\'s own recommendation is excluded from every statistic whether or not it came in a run: firing a four in an irrelevant place drags Top1 / ACPL / the good-point pool down alike, so it is pollution rather than evidence.',
       },
     },
     {
@@ -631,8 +618,8 @@ var GM_TAG_WIKI = (function () {
         impact: '权重 {w}，行为信号之一。没有好点时占比项为 0。0.5.7-Alpha 把权重从 0.03 提到 0.19 ——'
               + '实测它是「覆盖广（80% 的方）且方向正（机器 0.566 / 人类 0.304）」的行为项。'
               + '1.0.7 续 再把它提到 0.23：五个在本语料上恒为 0 的项把份额让了回来，好点池接的'
-              + '是最大的一份。1.0.7 快照六号 又把「将胜乱下」的 0.04 转给它，于是 0.27 成为'
-              + '整张表最大的单项。'
+              + '是最大的一份。1.0.7 快照六号 又给了它 0.04（那 0.04 原来在一个不触发的项上），'
+              + '于是 0.27 成为整张表最大的单项。'
               + '激活值超过 60% 后，每多 1% 触发一次 ×1.05 的乘数，最高 3 倍'
               + '（激活值 = 100% 时），因此本项在高激活区可以超过其权重本身。'
               // ⚠ 这里刻意不写那一项的显示名：标签百科的搜索按**显示名**命中条目，
@@ -646,7 +633,7 @@ var GM_TAG_WIKI = (function () {
              + 'good points rather than whether any single hand hit the top choice. Nothing scores '
              + 'below a 55% share, and a run shorter than three costs nothing — a short run fails to '
              + 'add, it does not eat the share\'s contribution.',
-        impact: 'Weight {w}, one of the behaviour signals. Zero with no good points at all. 0.5.7-Alpha raised it from 0.03 to 0.19: measured, it is the behaviour term that both fires widely (80% of sides) and points the right way (machine 0.566 against human 0.304). 1.0.7 续 raised it again to 0.23 — the share five corpus-zero terms handed back. 1.0.7 快照六号 moves the 0.04 that 将胜乱下 gave up here, making 0.27 the largest single term in the table (the entry deliberately does not spell out any other term\'s display name: the wiki search hits on display names, and a second copy would make it two results). Beyond an activation of 60%, every additional 1% applies a ×1.05 multiplier, up to 3× at 100% activation — so at high activation this term can contribute more than its own weight.',
+        impact: 'Weight {w}, one of the behaviour signals. Zero with no good points at all. 0.5.7-Alpha raised it from 0.03 to 0.19: measured, it is the behaviour term that both fires widely (80% of sides) and points the right way (machine 0.566 against human 0.304). 1.0.7 续 raised it again to 0.23 — the share five corpus-zero terms handed back. 1.0.7 快照六号 moves another term\'s 0.04 here, making 0.27 the largest single term in the table (the entry deliberately does not spell out any other term\'s display name: the wiki search hits on display names, and a second copy would make it two results). Beyond an activation of 60%, every additional 1% applies a ×1.05 multiplier, up to 3× at 100% activation — so at high activation this term can contribute more than its own weight.',
       },
     },
     {
@@ -707,12 +694,12 @@ var GM_TAG_WIKI = (function () {
       zh: {
         meaning: '败势不崩：败势手（已存胜率 < 20%）上「没有大亏」的程度 —— 看这些手的平均损失。',
         usage: '0.5.7 引入。浅层引擎的评估稳定，败势也败得有条理；人一旦认定要输，容易乱下'
-             + '（那正是「将胜乱下」的镜像）。败势手不足 3 时按比例折算。',
+             + '（那正是「回避手」的镜像）。败势手不足 3 时按比例折算。',
         impact: '权重 {w}，低端AI 检测三项之一。没有败势手时为 0。',
       },
       en: {
         meaning: 'Steady when losing: how little was lost on the hands already in a lost position (stored win rate below 20%) — read from those hands\' average loss.',
-        usage: 'Added in 0.5.7. A shallow engine\'s evaluation is stable, so it loses in an orderly way; a human who has decided the game is gone tends to flail, which is the mirror image of 将胜乱下. Fewer than three lost hands scale the figure rather than granting it in full.',
+        usage: 'Added in 0.5.7. A shallow engine\'s evaluation is stable, so it loses in an orderly way; a human who has decided the game is gone tends to flail, which is the mirror image of 回避手. Fewer than three lost hands scale the figure rather than granting it in full.',
         impact: 'Weight {w}, one of the three low-end-AI signals. Zero with no lost hands.',
       },
     },

@@ -71,7 +71,9 @@
   // 0.06+0+0+0.08+0 = 0.75.
   var FALLBACK_WEIGHTS = {
     top1: 0.23, acpl: 0.10, sharp: 0.22, out: 0.12, desperate: 0.08, time: 0,
-    evasion: 0.08, winBlunder: 0,
+    // ⚠ 1.0.8 快照二号 §一.2 — `winBlunder` 已**删除**（不是归零，见 app.js BASE_WEIGHTS）。
+    // THE MIRROR RULE：这里少一个键，app.js / storage.js 也必须少同一个。
+    evasion: 0.08,
     uselessFour: 0.08,
     sharpStreak: 0.09,
     sharpTotal: 0.09,
@@ -111,7 +113,7 @@
     riskHigh: 85, riskMid: 50,
     simWeight: 0.10,
     // 0.4.2 §4.3
-    evasionLoss: 0.20, goodLoss: 0.05, evasionMin: 3, evasionReg: 0.35, winningWR: 0.85,
+    evasionLoss: 0.20, goodLoss: 0.05, evasionMin: 3, evasionReg: 0.35,
     // 0.4.3 §1.6 — ⚠ 与 app.js 的 BASE_THRESHOLDS 逐字一致：两套阈值合并成一组，
     // 「判 ai ⇒ ≥85」「判人类 ⇒ <50」在定义上恒成立。learn.js 因为 offscreen 不加载 storage.js
     // 而必须自带这份副本，所以**改一处就得改另一处**（THE MIRROR RULE）。
@@ -145,7 +147,10 @@
   // panel's 时间规律 row and its `learn.weight.time` label away with it, and the operator is
   // entitled to see that the term they used to tune is now off rather than gone. It contributes 0
   // to the group's budget and — with the floor fixed below — 0 to the learned table.
-  var EVASION_KEYS = ['evasion', 'winBlunder', 'uselessFour', 'sharpStreak', 'sharpTotal',
+  // ⚠ 1.0.8 快照二号 §一.2 — `winBlunder` 从这张表里删掉之后，面板少一行、`WEIGHT_KEYS` 少一项、
+  // `group()` 的分组预算跟着少 0（它本来就是 0）。`verify-053` 比的是这张表与 locale 的标签集合，
+  // 所以 locale 里那两条 `learn.weight.winBlunder` / `learn.threshold.winningWR` 也必须一起删。
+  var EVASION_KEYS = ['evasion', 'uselessFour', 'sharpStreak', 'sharpTotal',
                       // 0.5.2 §1.1.4/§1.2.4 — the group budget is read off the defaults by
                       // `group()` below, so listing the two keys here is the whole wiring.
                       'goodPool', 'liveThree',
@@ -239,7 +244,7 @@
   var WEIGHT_LABEL = {
     top1: 'Top1 吻合', acpl: 'ACPL 均损', sharp: '唯一手', out: 'Top5 之外',
     desperate: '将败冲四', time: '时间规律',
-    evasion: '回避手', winBlunder: '将胜乱下',
+    evasion: '回避手',
     // 0.4.7 §1.1
     uselessFour: '无用冲四',
     // 0.4.8 §1.2
@@ -261,7 +266,6 @@
     riskHigh: '高风险线', riskMid: '可疑线', simWeight: '特征库权重',
     evasionLoss: '回避手损失阈值', goodLoss: '好棋损失上限',
     evasionMin: '规律性最小回避数', evasionReg: '规律性标准差上限',
-    winningWR: '将胜胜率阈值',
     // 0.4.3 §1.6
     typeAiMin: 'AI 档线', typeSuspectMin: '疑似AI 档线',
     typeProMin: '职业选手 档线', typeExpertMin: '高手玩家 档线',
@@ -594,7 +598,7 @@
   // side's whole scored sequence (evasions included); the caller passes it because the main
   // statistics use the sequence with the evasions taken OUT of it.
   function evasionFigures(all, th) {
-    var count = 0, winBlunders = 0, regularity = 0, i;
+    var count = 0, regularity = 0, i;
     for (i = 0; i < all.length; i++) if (all[i].evasion) count++;
     var minEv = th.evasionMin != null ? th.evasionMin : 3;
     if (count >= minEv) {
@@ -610,13 +614,8 @@
         regularity = gm > 0 ? clamp(1 - std / gm / Math.max(1e-6, regMax), 0, 1) : 0;
       }
     }
-    var winWR = th.winningWR != null ? th.winningWR : 0.85;
-    var lossMin = th.evasionLoss != null ? th.evasionLoss : 0.20;
-    for (i = 0; i < all.length; i++) {
-      var s = all[i];
-      if (s.bestWR != null && s.bestWR >= winWR && s.loss != null && s.loss >= lossMin) winBlunders++;
-    }
-    return { count: count, regularity: regularity, winBlunders: winBlunders };
+    // ⚠ 1.0.8 快照二号 §一.2 — 这里原本还数「将胜乱下」，随该项一起删除（见 app.js evasionStats）。
+    return { count: count, regularity: regularity };
   }
 
   // app.js's per-side sub-terms, recomputed here (see THE MIRROR RULE at the top).
@@ -627,7 +626,9 @@
              // app.js's countsForSide() applies (verify-070/verify-076 compare the two literally).
              // ⚠ Without it the learner would train on hands the detector refuses to look at, and
              // the two would drift apart while each stayed internally consistent.
-             !x.fourRunExempt;
+             !x.fourRunExempt &&
+             // 1.0.8 快照二号 §一.1 — 远点无用冲四，与 app.js countsForSide() 逐字同一条。
+             !x.farFourExempt;
     });
     // 0.4.2 §2.3: the main six are computed over the sequence WITHOUT the evasion hands, exactly
     // as sideAggregate() does. A sample archived before 0.4.2 has no `evasion` field at all, so
@@ -680,7 +681,6 @@
     var ev = evasionFigures(all, th);
     var aEvasion = clamp(ev.count / 5, 0, 1) * 0.5 +
                    ev.regularity * clamp(ev.count / 4, 0, 1) * 0.5;
-    var aWinBlunder = clamp(ev.winBlunders / 3, 0, 1);
     // 0.4.7 §1.1, mirrored from app.js sideAggregate(): the useless-four surcharge. Counted as
     // RUNS, not hands, so this has to walk the side's sequence and count transitions rather
     // than filter. Read off `fourRuns.useless` where the report carries it (0.4.7+), otherwise
@@ -752,7 +752,7 @@
     var aProbeMatch = probeMatchActivation(probeSeen, probeHits, probeMaxRun);
     return {
       top1: aTop1, acpl: aAcpl, sharp: aSharp, out: aOut, desperate: aDesperate, time: aTime,
-      evasion: aEvasion, winBlunder: aWinBlunder, uselessFour: aUselessFour,
+      evasion: aEvasion, uselessFour: aUselessFour,
       sharpStreak: aSharpStreak, sharpTotal: aSharpTotal,
       goodPool: aGoodPool, liveThree: aLiveThree,
       // 1.0.7 §1.2
@@ -763,7 +763,7 @@
       n: steps.length, rawTop1: top1, rawTopProx: topProx, rawLoss: meanLoss,
       rawSharpHit: sharpHit, rawOutTop5: outTop5,
       hasSharp: sharp.length >= 3,
-      evasionCount: ev.count, evasionRegularity: ev.regularity, winBlunderCount: ev.winBlunders,
+      evasionCount: ev.count, evasionRegularity: ev.regularity,
       uselessFourCount: steps.filter(function (x) { return x.fourKind === 'useless'; }).length,
       uselessFourRuns: uselessRuns,
       sharpStreakMax: ss.maxStreak, sharpStreakHits: ss.streakHits,
@@ -1243,7 +1243,7 @@
                         'top1Lo', 'top1Hi', 'acplLo', 'acplHi', 'sharpHitLo', 'sharpHitSpan',
                         'outTop5Hi', 'riskHigh', 'riskMid',
                         // 0.4.2 §4.3
-                        'evasionLoss', 'goodLoss', 'evasionMin', 'evasionReg', 'winningWR',
+                        'evasionLoss', 'goodLoss', 'evasionMin', 'evasionReg',
                         // 0.4.3 §1.6
                         'typeAiMin', 'typeSuspectMin', 'typeProMin', 'typeExpertMin',
                         // 0.4.7 §1.1

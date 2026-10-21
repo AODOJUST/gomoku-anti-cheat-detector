@@ -123,7 +123,7 @@
   // wording itself comes from i18n (`learn.weight.<key>`).
   var CONTRIB_TXT = {
     top1: 1, acpl: 1, sharp: 1, out: 1, desperate: 1, time: 1,
-    evasion: 1, winBlunder: 1, uselessFour: 1,
+    evasion: 1, uselessFour: 1,
     sharpStreak: 1, sharpTotal: 1, goodPool: 1, liveThree: 1,
     // 1.0.7 §1.2 — 规避行为. Adding it here is the whole display wiring: the label comes from
     // `learn.weight.evasiveBehavior`, the same runtime key the settings panel prints, so there is
@@ -767,7 +767,7 @@
     // 0.4.2 §2.5: the two detail panes are built entirely in JS — 指标汇总's rows, the step
     // table's <tbody>, the contribution list — so `apply(document)` above cannot reach them,
     // and `showView` only refreshes the LIST (`refreshArchives()`). The result was a
-    // half-translated view: the ▾ column menu switched to "Evasion" while 回避手 / 将胜乱下
+    // half-translated view: the ▾ column menu switched to "Evasion" while 回避手 / 将败冲四
     // two inches away stayed in the load-time language. Exactly the 0.4.1 §五.3 defect, in the
     // other pane. `renderDetail` dereferences `curArchive` unguarded (unlike
     // `renderSampleDetail`, which returns early), so the test has to be here.
@@ -13074,6 +13074,11 @@
     // signal would make the operator read an exclusion as a finding.
     if (s.fourRunExempt) badges.push('<span class="badge b-exempt" title="' +
       T('viewer|连续冲四第 3 手起不计入检测') + '">' + T('viewer|连续冲四·不计') + '</span>');
+    // 1.0.8 快照二号 §一.1 — 远点无用冲四：位置离引擎推荐点超过三圈，按污染处理、不计入统计。
+    // 与上一条同样是**空心徽标**，理由也一样：它说的是「这一手不算样本」，不是「这一手有问题」。
+    if (s.farFourExempt) badges.push('<span class="badge b-exempt" title="' +
+      T('viewer|远离引擎推荐点（三圈以外）的无用冲四不计入检测') + '">' +
+      T('viewer|远点冲四·不计') + '</span>');
     // 0.5.0 §1.1 — a 跳四 + 活三, which is deliberately NOT treated as a 四三杀 (the four's only
     // answer sits inside it, where one stone can also answer the three). The badge exists so the
     // operator can tell "the detector decided this was not a kill" apart from "the detector
@@ -13228,10 +13233,6 @@
     return n ? T('viewer|{n}次（规律性 {p}）', { n: n, p: (a.evasionRegularity || 0).toFixed(2) })
              : T('viewer|{n}次', { n: 0 });
   }
-  function wbCount(a) {
-    if (!a || a.winBlunderCount == null) return '—';
-    return T('viewer|{n}次', { n: a.winBlunderCount || 0 });
-  }
   // 0.4.7 §1.1 — the 冲四序列 breakdown, read straight out of the report. `side` omitted means
   // "both sides together", which is what the total row under 冲四序列 wants. `—` again means the
   // archive predates the field: `fourRuns` is absent on every 0.4.6-and-earlier record, and
@@ -13294,7 +13295,6 @@
       '<tr><td>' + T('viewer|规避节奏') + '</td><td>' + evasiveRhythmCell(rep.black) + '</td><td>' + evasiveRhythmCell(rep.white) + '</td></tr>' +
       '<tr><td>' + T('viewer|将败冲四') + '</td><td>' + desCount(rep.black) + '</td><td>' + desCount(rep.white) + '</td></tr>' +
       '<tr><td>' + T('viewer|回避手') + '</td><td>' + evCount(rep.black) + '</td><td>' + evCount(rep.white) + '</td></tr>' +
-      '<tr><td>' + T('viewer|将胜乱下') + '</td><td>' + wbCount(rep.black) + '</td><td>' + wbCount(rep.white) + '</td></tr>' +
       // 0.4.7 §1.1 — the four-run breakdown, one row per class. Sitting next to 将败冲四 is the
       // point: a 「无用冲四」 is what a 将败冲四 looks like when it repeats, and the two rows
       // together are how an operator sees the difference. VCF / 防御性 are reported for symmetry

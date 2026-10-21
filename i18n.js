@@ -139,10 +139,17 @@
   // learn.js — so they are stored untranslated and only the display goes through here. A
   // value with no entry (a legacy archive written before a label existed, or a user's custom
   // tag) is returned as-is rather than as a broken key.
-  function tOr(ns, value, vars) {
+  function tOr(ns, value, vars) { return tOrIn(current, ns, value, vars); }
+
+  // 1.0.8 快照二号 §二.2 — the same lookup in an EXPLICIT locale. The copy line can be written in
+  // a language the operator is not reading, and a level name is stored as an IDENTITY value
+  // (`高风险`), so it only becomes display text through here. Kept as the implementation `tOr`
+  // delegates to rather than a second copy of the lookup: two copies drift, one answer does not.
+  function tOrIn(locale, ns, value, vars) {
     if (value == null || value === '') return '';
     var k = ns + '.' + value;
-    return (has(k) || (dict[DEFAULT] && dict[DEFAULT][k])) ? t(k, vars) : String(value);
+    var known = !!(dict[locale] && dict[locale][k]) || !!(dict[DEFAULT] && dict[DEFAULT][k]);
+    return known ? tCore(locale, k, vars) : String(value);
   }
 
   function getLocale() { return current; }
@@ -424,6 +431,7 @@
     hasIn: hasIn,
     hasAny: hasAny,
     tOr: tOr,
+    tOrIn: tOrIn,
     fallback: fallback,
     locales: locales,
     resolveLang: resolveLang,

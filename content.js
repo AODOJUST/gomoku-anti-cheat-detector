@@ -3821,8 +3821,18 @@
   function askMenuLang() { return chat.questionLang || chat.lang || LANG; }
 
   // 'ask-q' is the second level of the ask menu: same box, same button, different contents.
-  function menuSlot(which) { return which === 'ask-q' ? 'askmenu' : which + 'menu'; }
-  function menuBtn(which) { return which === 'ask-q' ? 'ask' : which; }
+  function menuSlot(which) {
+    if (which === 'ask-q') return 'askmenu';
+    // 1.0.8 快照二号 §二.2 — 复制语言是复制抽屉的第二层，和 ask/ask-q 同一个形状：同一个 slot、
+    // 同一个按钮，只有内容不同。少写一个 slot 名，就少一处「画了没接」。
+    if (which === 'copy-lang') return 'copymenu';
+    return which + 'menu';
+  }
+  function menuBtn(which) {
+    if (which === 'ask-q') return 'ask';
+    if (which === 'copy-lang') return 'copy';
+    return which;
+  }
 
   // 0.4.11 §二.10 — the question as the operator reads it here, plus what it says in the
   // language they are READING.
@@ -3976,11 +3986,8 @@
     // ✓, no `aria-checked`. Built here so every menu is painted from one place (a language
     // change rebuilds the shell and this is what refills the text).
     var copyBox = root.querySelector('[data-slot=copymenu]');
-    if (copyBox) {
-      copyBox.innerHTML =
-        '<div class="it" data-act="copy-code">' + esc(T('panel|复制棋谱代码')) + '</div>' +
-        '<div class="it" data-act="copy-data">' + esc(T('panel|复制对局数据')) + '</div>';
-    }
+    // 1.0.8 快照二号 §二.2 — 复制抽屉也是两层（动作 / 语言），内容和提问选择器一样由函数给。
+    if (copyBox) copyBox.innerHTML = copyMenuHtml();
     // 1.0.7 快照三号 §二.6 — `trackmenu` is deliberately NOT painted here, and §5.8 asked for
     // this note so the next reader does not read the omission as 「画了没接」. Every other box is
     // a pure function of the current settings; the 定位 box holds TYPED TEXT, so repainting it on
@@ -4420,8 +4427,17 @@
       if (act === 'upd-dismiss') { dismissBanner(); return; }
       if (act === 'copy') { toggleMenu('copy'); return; }
       // 0.5.4 §4.1.2/§4.1.3 — the two rows of the drawer.
+      // 1.0.8 快照二号 §二.2 — 复制对局数据先开语言层，选完语言（`pick-copy-lang`）才真正复制。
+      // 复制棋谱代码不加这一步：它是一串坐标，没有任何需要翻译的字。
       if (act === 'copy-code') { closeMenus(); copyBoardCode(); return; }
-      if (act === 'copy-data') { closeMenus(); copyResult(); return; }
+      if (act === 'copy-data') { openMenu = 'copy-lang'; paintMenus(); return; }
+      if (act === 'pick-copy-lang') {
+        copyState.lang = hit.getAttribute('data-v');
+        saveCopyState();
+        closeMenus();
+        copyResult(copyState.lang);
+        return;
+      }
       // ---- 0.4.9 §一.6 ----
       if (act === 'blacklist') { toggleBlacklist(); return; }
       // ---- 0.4.10 §二.1/§二.3 ----
@@ -6970,68 +6986,115 @@
       : (hasBoard ? T('copy.codeOnly') : T('copy.noData')));
   }
 
-  // §2.2 template:
-  //   前缀 模型名-黑方名（黑） VS 白方名（白）-手数-开局名-黑方（AI率：n%，程度），白方（…）
-  // Everything that can be translated is; the engine build name is NOT (it is a file name and
-  // an operator comparing two reports needs the same token in every language).
+  // ---------- 1.0.8 快照二号 §二.1/§二.2 — 复制对局数据 ----------
   //
-  // NOTE the prefix is followed by the model directly, with no separator: `copy.prefix`
-  // already ends in '：' / ': ', and the worked examples in §2.2 show
-  // 「…输出：rapfi-multi-simd128-…」. §2.5's sketch inserts an extra '-' there, which would
-  // render 「…输出：-rapfi-…」; the examples win.
-  function buildCopyText() {
+  // §二.1 的新格式（操作者裁决）：
+  //   前缀 模型-开局类型-手数-黑：名字（判定分：145 结果：高风险） vs 白：名字（…）
+  // 与 0.3.6 §2.2 的旧模板相比有三处不同：开局挪到玩家前面、每侧不再印「AI率 n%」而是「判定分 n
+  // / 结果 等级」、黑/白从名字后的括号变成名字前的标签（操作者选的是「前置」，理由是不出现连续
+  // 两个括号）。⚠ 手数留在开局之后（操作者裁决），仍然区分「总手数」与「有效手数」。
+  //
+  // ⚠ 前缀与模型之间没有分隔符：`copy.prefix` 自己以「：」结尾，§2.2 的例子就是
+  // 「…输出：rapfi-…」。
+  //
+  // §二.2 — the LINE's language is chosen before copying, exactly like 提问 does. It is
+  // `copyState.lang`, NOT `settings.lang`: a panel read in Chinese can emit an English line, and
+  // §2.3's rule ("picking a language must not move the UI language") applies here too. Every
+  // translated piece therefore goes through `tIn(lang, …)` with the CHOSEN language, and the
+  // level name through `tOrIn(lang, 'level', …)`.
+  var COPY_STATE_KEY = 'copyState';
+  var copyState = { lang: null };
+
+  function copyMenuLang() { return copyState.lang || LANG; }
+
+  function loadCopyState() {
+    var area = sessionArea();
+    if (!area || !area.get) return;
+    try {
+      area.get([COPY_STATE_KEY], function (r) {
+        var st = (r && r[COPY_STATE_KEY]) || {};
+        if (st.lang) copyState.lang = st.lang;
+      });
+    } catch (e) { /* no storage (a stripped build) — the copy simply uses the UI language */ }
+  }
+
+  function saveCopyState() {
+    var area = sessionArea();
+    if (!area || !area.set) return;
+    try {
+      var o = {}; o[COPY_STATE_KEY] = { lang: copyState.lang };
+      area.set(o);
+    } catch (e) {}
+  }
+
+  // The drawer has two levels, like the 提问 picker: the two actions, then — for 复制对局数据 only —
+  // the language list. 复制棋谱代码 needs no language (it is a bare move string, no prose at all),
+  // so its row fires immediately from the first level.
+  function copyMenuHtml() {
+    if (openMenu === 'copy-lang') {
+      var cur = copyMenuLang();
+      var html = '<div class="cth">' + esc(T('panel|选择复制语言')) + '</div>';
+      // The extension's OWN locale list, not the question bank's: every word in the line comes out
+      // of these dictionaries (level names, opening name, 黑/白 and the score bracket), so offering
+      // a language the dictionaries lack would promise a line it cannot write.
+      GMI18n.LOCALES.forEach(function (code) {
+        var on = code === cur;
+        html += '<div class="it" data-act="pick-copy-lang" data-v="' + esc(code) + '"' +
+          ' role="menuitemradio" aria-checked="' + on + '">' +
+          '<span class="ck">' + (on ? '✓' : '') + '</span>' + esc(GMI18n.langLabel(code)) + '</div>';
+      });
+      return html;
+    }
+    return '<div class="it" data-act="copy-code">' + esc(T('panel|复制棋谱代码')) + '</div>' +
+           '<div class="it" data-act="copy-data">' + esc(T('panel|复制对局数据')) + '</div>';
+  }
+
+  function buildCopyText(lang) {
     var rep = currentReport();
     if (!rep) return null;
+    var L = lang || copyMenuLang();
+    function TT(key, vars) { return GMI18n.tIn(L, key, vars); }
 
     var names = playerNames();
     var eng = rep.engine || {};
     var model = eng.build ? String(eng.build).split('/').pop().replace(/\.js$/, '') : 'unknown';
-    if (eng.degraded) model += T('copy.degraded');
+    if (eng.degraded) model += TT('copy.degraded');
 
     // `originalTotalMoves` is the real game length; `scoredCount` is how many hands actually
-    // carry a verdict. They differ exactly when a live four cut detection short, which is the
-    // case the 过短 test had to be fixed for in 0.3.5 — the same distinction matters here.
+    // carry a verdict. They differ exactly when a live four cut detection short.
     var total = rep.originalTotalMoves || rep.totalMoves || 0;
     var scored = rep.scoredCount != null ? rep.scoredCount : (rep.totalMoves || 0);
     var handStr = (scored < total)
-      ? T('copy.hands.withScored', { total: total, scored: scored })
-      : T('copy.hands.simple', { total: total });
+      ? TT('copy.hands.withScored', { total: total, scored: scored })
+      : TT('copy.hands.simple', { total: total });
 
-    // 0.5.4 §4.2 — 「开局未识别」 on every single copy. The line below used to read
-    //   `rep.opening || (rep.record && rep.record.meta && rep.record.meta.opening)`
-    // and BOTH branches are empty by construction: `buildReport` never puts an `opening` on the
-    // report, and the report never carries a `record` (the record is a separate argument to
-    // `buildArchive`, not a field of the report). So the expression could only ever produce the
-    // fallback — the operator saw 「开局未识别」 for a game the panel had just named.
+    // 0.5.4 §4.2 — `buildReport` never puts an opening on the report and the report never carries
+    // the record, so this read has to go to the live snapshot.
     var opening = resolveOpening(
       (function () { var c = currentJob(); return c && c._snap ? c._snap.record : null; })());
-    var openingStr = opening ? (GMOpening.label(opening, LANG) || T('copy.opening.unknown'))
-                             : T('copy.opening.unknown');
+    var openingStr = opening ? (GMOpening.label(opening, L) || TT('copy.opening.unknown'))
+                             : TT('copy.opening.unknown');
 
-    var blackName = names.black || T('copy.player.unknown');
-    var whiteName = names.white || T('copy.player.unknown');
-    // Neither side identified: 「黑方」/「白方」 reads better than 「未知 VS 未知」 and still
-    // tells the operator which half of the line is which.
+    var blackName = names.black || TT('copy.player.unknown');
+    var whiteName = names.white || TT('copy.player.unknown');
     if (!names.black && !names.white) {
-      blackName = T('copy.player.genericBlack');
-      whiteName = T('copy.player.genericWhite');
+      blackName = TT('copy.player.genericBlack');
+      whiteName = TT('copy.player.genericWhite');
     }
 
-    function sideStr(side, name) {
+    function sideStr(side, name, tagKey) {
       var agg = side === 'B' ? rep.black : rep.white;
-      if (!agg) return name + T('copy.rate.unanalyzed');
-      return name + T('copy.rate.format', {
-        rate: Math.round(agg.risk),
-        level: TO('level', agg.level),
+      var head = TT(tagKey) + name;
+      if (!agg) return head + TT('copy.rate.unanalyzed');
+      return head + TT('copy.score.format', {
+        score: Math.round(agg.risk),
+        level: GMI18n.tOrIn(L, 'level', agg.level),
       });
     }
 
-    var head = T('copy.prefix') + model + '-' +
-               blackName + T('copy.blackTag') + ' VS ' +
-               whiteName + T('copy.whiteTag') + '-' +
-               handStr + '-' + openingStr + '-';
-
-    return head + sideStr('B', blackName) + T('copy.sides.sep') + sideStr('W', whiteName);
+    return TT('copy.prefix') + model + '-' + openingStr + '-' + handStr + '-' +
+           sideStr('B', blackName, 'copy.side.black') + ' VS ' +
+           sideStr('W', whiteName, 'copy.side.white');
   }
 
   // The clipboard write, in ONE place: §4.1.3 gives the button two outputs and both go through
@@ -7062,8 +7125,8 @@
     } catch (e) { fail(e); }
   }
 
-  function copyResult() {
-    var text = buildCopyText();
+  function copyResult(lang) {
+    var text = buildCopyText(lang);
     if (!text) { flashFoot(T('copy.noData')); return; }
     copyText(text);
   }
@@ -7448,6 +7511,7 @@
     // `na` and the match check simply retries, so a late arrival can only add information.
     hydrateBlacklist();
     loadChatState();
+    loadCopyState();
     resetChatForGame();
     setInterval(function () {
       startDomObserver();

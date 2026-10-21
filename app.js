@@ -1829,6 +1829,56 @@ function markFourRunExempt(steps) {
   return steps;
 }
 
+// ---------- 1.0.8 快照二号 §一.1 远点无用冲四 ----------
+//
+// 定稿原文：「对于引擎推荐点较远（三圈以外）的无用冲四，不计入检测，以防数据被污染」。
+//
+// 场景：作弊者在**无关的位置**冲四。这类手对局面毫无推进，却会把 top1/ACPL/好点池全部拉黑，
+// 于是同一局的风险分被自己的「劣着」稀释掉。1.0.7 快照七号 的连续冲四豁免只处理了「连着冲」
+// 的**长度**，没有处理「冲在哪里」—— 一手远点冲四不需要连着也能污染。
+//
+// 判据（一手一手看，不看 run）：
+//   · `s.four === true`                        —— 这一手之后本方手里有四（scoreStep 盖的章）
+//   · `s.bestWR != null && s.bestWR <= fourLostWR` —— 这是**无用**冲四：走之前就是必败势。
+//     ⚠ 这里直接读终局读数而不是 `fourKind === 'useless'`：后者要求 ≥2 手的 run（FOUR_RUN_MIN），
+//     而污染一手就能做，不必连成串。分类照旧保留，被豁免的只是「算不算样本」。
+//   · 引擎推荐点与实战落点**切比雪夫距离 > 3**（「三圈以外」）。用切比雪夫而不是曼哈顿，是因为
+//     棋盘上的「圈」是方形邻域（「三圈以内」= 8 邻域扩三次），曼哈顿会把斜向的远处算近。
+//   · `best` / `actual` 任一缺失 ⇒ **不豁免**：老档案没有 `best` 时退回旧行为（照常计分），
+//     这与 `fourRunExempt` 用 `!undefined` 兜底的取向一致 —— 判不了就不动。
+//
+// ⚠ 与 `fourRunExempt` 一样是**独立字段**，不塞进 `fourKind`：分类是关于 run 的信号（照旧报告），
+// 豁免是关于计数规则的裁决。两者可以同时为真，也可以各自单独为真。
+const FAR_FOUR_RINGS = 3;
+
+function ringsApart(a, b) {
+  if (!a || !b) return null;
+  const dr = Math.abs(a[0] - b[0]), dc = Math.abs(a[1] - b[1]);
+  return dr > dc ? dr : dc;
+}
+
+/**
+ * 1.0.8 快照二号 §一.1 —— one side's 无用冲四 played far from the engine's own recommendation is
+ * dropped from every statistic (`farFourExempt`), because it is pollution rather than evidence.
+ *
+ * Idempotent: resets the whole array first, like markDesperate / markEvasion / markFourRunExempt —
+ * this runs again on the same array on every live update and once more at 局终.
+ */
+function markFarUselessFour(steps, thresholds) {
+  const t = thresholds || BASE_THRESHOLDS;
+  const lostWR = t.fourLostWR != null ? t.fourLostWR : LOST_WR;
+  for (let i = 0; i < steps.length; i++) {
+    const s = steps[i];
+    s.farFourExempt = false;
+    if (!s || !s.analyzed || s.isOpening) continue;
+    if (!s.four) continue;
+    if (s.bestWR == null || s.bestWR > lostWR) continue;
+    const d = ringsApart(s.actual, s.best);
+    if (d != null && d > FAR_FOUR_RINGS) s.farFourExempt = true;
+  }
+  return steps;
+}
+
 // ---------- 0.4.7 §1.1: the win rate of the position BEFORE each hand ----------
 // `markFourRuns` classifies a run of fours by the value the engine gave the best move before
 // the run began, so every analysed step has to carry "what the best move was worth one of MY
@@ -1886,16 +1936,10 @@ function evasionStats(steps, side, thresholds) {
     }
   }
 
-  // §2.2 信号 C: 将胜乱下 — a big loss taken while already winning. Independent of the
-  // evasion flag: the hand does not need good neighbours to be worth reporting, because
-  // throwing away a won position is not something a strong player does by accident.
-  const winWR = t.winningWR != null ? t.winningWR : 0.85;
-  const lossMin = t.evasionLoss != null ? t.evasionLoss : 0.20;
-  const winBlunders = own.filter(s =>
-    s.bestWR != null && s.bestWR >= winWR &&
-    s.loss != null && s.loss >= lossMin).length;
-
-  return { count, regularity, winBlunders };
+  // ⚠ 1.0.8 快照二号 §一.2 — 这里原本还有 §2.2 信号 C「将胜乱下」的计数，已**删除**：必胜手在
+  // 落子那一刻就提前终止检测、评分也随之中止，胜势里的劣着在结构上不可能被记到这里。阈值
+  // `winningWR` 只服务这一项，随之删除。
+  return { count, regularity };
 }
 
 // Per-step engine time budget.
@@ -2084,6 +2128,8 @@ async function analyzeStepwise(record, opts, onProgress, onStep) {
   // stamped (markFourRuns only reads it too), and sideAggregate / the streak+pool walks must see
   // the verdict before they filter. Idempotent, so re-running it on a growing array is safe.
   markFourRunExempt(steps);
+  // 1.0.8 快照二号 §一.1 — 远点无用冲四豁免，紧跟四个 pass 之后、任何 walk 之前。
+  markFarUselessFour(steps, riskParams(learned).t);
   // 0.5.2 §1.1/§1.2: the two pool passes, after the four-run pass for the same reason it runs
   // after markEvasion — a hand's 冲四豁免 verdict has to be settled before markGoodPool decides
   // whether the hand joins the run, and the live-three flags read `cands`/`top1`/`top3`, which
@@ -2139,6 +2185,8 @@ function summarizeSteps(steps, times, opts) {
   // stamped (markFourRuns only reads it too), and the live summary the panel draws must see
   // the verdict before they filter. Idempotent, so re-running it on a growing array is safe.
   markFourRunExempt(steps);
+  // 1.0.8 快照二号 §一.1 — 远点无用冲四豁免，紧跟四个 pass 之后、任何 walk 之前。
+  markFarUselessFour(steps, riskParams(params).t);
   // 0.5.2 §1.1/§1.2 — same two passes as the finished report, same reason as the two above: the
   // live score has to equal the score the game ends with. Both reset their own fields, so they
   // are safe to re-run on every update.
@@ -2336,7 +2384,7 @@ const BASE_WEIGHTS = {
   // The three families, and where each term came from:
   //   · 基础六项 (top1/acpl/sharp/out/desperate/time) — the 0.4.2 statistics, **0.75** together
   //     since 1.0.7 续 §一 took 0.04 off `desperate`.
-  //   · 行为信号 (evasion/winBlunder/uselessFour/sharpStreak/sharpTotal/goodPool/liveThree) —
+  //   · 行为信号 (evasion/uselessFour/sharpStreak/sharpTotal/goodPool/liveThree) —
   //     0.4.2's evasion pair, 0.4.7's 无用冲四, 0.4.8's two 唯一手 runs, and 0.5.2/0.5.5's two
   //     pools. **0.67** together (0.63 before 1.0.7 续 §一 returned 0.04 to `goodPool` and
   //     0.03/0.02/0.03 to `liveThree`/`sharpStreak`/`sharpTotal` out of `evasion`/`uselessFour`).
@@ -2393,15 +2441,23 @@ const BASE_WEIGHTS = {
   // archive written by an older build still carries `thinkMs`. A missing key and a zero key are
   // not the same thing anywhere in this codebase — see the ⚠ in the block above about the learner.
   top1: 0.23, acpl: 0.10, sharp: 0.22, out: 0.12, desperate: 0.08, time: 0,
-  // ⚠⚠ 1.0.7 快照六号 §一 — `winBlunder` goes 0.04 → **0** and the 0.04 moves to `goodPool`
-  // (0.23 → **0.27**, now the table's LARGEST term, above `top1`'s 0.23). The key is KEPT at 0 for
-  // the same reason `time` / `noBlunder` / `probeMatch` are: `WEIGHT_KEYS` drives the panel's row
-  // list, `riskOfSub` / `sideAggregate` both look the table up by key, `evasionStats` still counts
-  // it and the report still carries `winBlunderCount`. A missing key and a zero key are not the same
-  // thing anywhere in this codebase. Consequence, stated rather than discovered: `learn.js`'s
-  // `group()` gates its 0.02 AUC floor on `dw[k] > 0`, so a zero-default key is correctly excluded
-  // from the behaviour budget instead of silently taking a share of it.
-  evasion: 0.08, winBlunder: 0,
+  // ⚠⚠ 1.0.8 快照二号 §一.2 — **`winBlunder`（将胜乱下）整项删除**，不是归零。
+  //
+  // 它自 1.0.7 快照六号 起权重就是 0（实测在这一项上不付钱），而 §一.2 给的是**机制**上的理由：
+  // 必胜手在落子那一刻就提前终止检测、`risk` 也不再往上加，所以「已经胜势却走劣着」这类样本
+  // 根本进不了统计 —— 留一个永远不触发的字段、一行面板、一条报告字段和权重表里的一个名额，
+  // 是在教后来的人以为它还在起作用。
+  //
+  // ⚠ 与 `time` / `noBlunder` / `probeMatch` 的「归零但保留」**刻意不同**：那三项归零是因为
+  // **在本语料上量出来是 0**，机制还在，换语料可能活过来；这一项是机制本身被删了。
+  //
+  // 连带删除（同一笔，缺一处就是「同一答案两份实现」）：`evasionStats` 的 `winBlunders`、
+  // `aWinBlunder`、报告里的 `winBlunderCount`、阈值 `winningWR`、`learn.js` 的镜像与学习网格、
+  // 标签百科的词条、viewer 的指标行、13 份 locale 的标签。
+  //
+  // ⚠ 权重表因此从 **17 项变成 16 项**，但合计仍是**精确 1.50**（删掉的这一项权重本来就是 0）
+  // ⇒ `100 × ΣwEff` 这个上限（出厂 150）、`verify-059` 的合计断言、以及 1.50 这个数都不动。
+  evasion: 0.08,
   uselessFour: 0.08,
   sharpStreak: 0.09,
   sharpTotal: 0.09,
@@ -2519,7 +2575,6 @@ const BASE_THRESHOLDS = {
   goodLoss: 0.05,       // "a good hand": ceiling for the two hands either side of it
   evasionMin: 3,        // fewest evasions before the rhythm score means anything
   evasionReg: 0.35,     // stddev / mean ceiling for "a regular rhythm"
-  winningWR: 0.85,      // "winning" for the 将胜乱下 signal
   // 0.4.7 §1.1: the two win-rate cuts that split a run of consecutive fours into VCF /
   // 防御性 / 无用. They MUST be listed here and not only as the module-level VCF_WR / LOST_WR
   // constants used as their fallback: `markFourRuns` prefers the value on the threshold set,
@@ -3021,6 +3076,8 @@ async function analyzeGame(record, opts, onProgress) {
   // stamped (markFourRuns only reads it too), and sideAggregate / the streak+pool walks must see
   // the verdict before they filter. Idempotent, so re-running it on a growing array is safe.
   markFourRunExempt(steps);
+  // 1.0.8 快照二号 §一.1 — 远点无用冲四豁免，紧跟四个 pass 之后、任何 walk 之前。
+  markFarUselessFour(steps, riskParams(learned).t);
   // 1.0.7 续 ⑩ — the two pool passes, which `markPoolSignals`' own note says both callers run.
   //
   // ⚠⚠ It did not. `markPoolSignals` was called by analyzeStepwise and summarizeSteps only, so a
@@ -3213,14 +3270,16 @@ function isExemptUnique(s) {
 // because they take the full step list and filter it themselves.
 //
 // The `!` (not `!== true`) is deliberate: a pre-1.0.7 archive has no `fourRunExempt` field at
-// all, `!undefined === true`, and the hand keeps counting — exactly the old behaviour.
+// all, `!undefined === true`, and the hand keeps counting — exactly the old behaviour. The same
+// reading applies to 1.0.8 快照二号's `farFourExempt`: a pre-1.0.8 archive has no such field, so
+// every archived hand counts exactly as it did, and only a fresh analysis can exempt one.
 //
 // It deliberately does NOT exclude evasions: sideAggregate stacks `!x.evasion` on top for the
 // six main figures, while the streak/pool/evasion walks have always seen them. That asymmetry
 // predates this patch and is left alone; folding it in here would move every archived score.
 function countsForSide(s, side) {
   return !!s && s.side === side && !!s.analyzed && !s.isOpening &&
-         !isExemptUnique(s) && !s.fourRunExempt;
+         !isExemptUnique(s) && !s.fourRunExempt && !s.farFourExempt;
 }
 
 // ---------- 0.4.8 §1.2 唯一手连续命中 ----------
@@ -3615,14 +3674,13 @@ function sideAggregate(steps, side, hasTime, params, opts) {
     const uncorr = clamp(1 - Math.abs(time.corrLoss), 0, 1);
     aTime = 0.6 * flat + 0.4 * uncorr;
   }
-  // 0.4.2 §2.3: the two evasion sub-scores. Both are exactly 0 when the side has no evasion
-  // hands and no 将胜乱下 hands — which is what keeps an ordinary game's risk score identical
-  // to 0.4.1's (§2.6 #6). `aEvasion` is half "how many" and half "how regular": a single
-  // blunder between two good hands is worth something, but a rhythm of them is worth more.
-  // A term reaches full weight at 5 evasions and a perfectly even rhythm.
+  // 0.4.2 §2.3: the evasion sub-score. Exactly 0 when the side has no evasion hands — which is
+  // what keeps an ordinary game's risk score identical to 0.4.1's (§2.6 #6). `aEvasion` is half
+  // "how many" and half "how regular": a single blunder between two good hands is worth
+  // something, but a rhythm of them is worth more. A term reaches full weight at 5 evasions and
+  // a perfectly even rhythm. (1.0.8 快照二号 §一.2 deleted the second one, 将胜乱下.)
   const aEvasion = clamp(ev.count / 5, 0, 1) * 0.5 +
                    ev.regularity * clamp(ev.count / 4, 0, 1) * 0.5;
-  const aWinBlunder = clamp(ev.winBlunders / 3, 0, 1);
   // 0.4.7 §1.1: the useless-four surcharge. Exactly 0 when the side never played a run of
   // consecutive fours from a lost position, which is what keeps every earlier release's score
   // reproducible — the same construction the two terms above use. Full weight at two such
@@ -3779,7 +3837,7 @@ function sideAggregate(steps, side, hasTime, params, opts) {
 
   // ---------- 1.0.7 快照六号 §二 — 基础分 + 无上限加分 ----------
   //
-  // The seventeen terms no longer share one arithmetic. Thirteen of them score `wEff × a`; the four
+  // The sixteen terms no longer share one arithmetic. Twelve of them score `wEff × a`; the four
   // in UNBOUNDED_KEYS score `wEff × a × (1 + 5n/100)` once `a` passes 0.60, so a term can be worth
   // up to three times its own weight. §三 is explicit that the ACTIVATION formula does not move —
   // the subscore is still whatever `aGoodPool` / `aSharpStreak` / … already computed; only the
@@ -3792,7 +3850,7 @@ function sideAggregate(steps, side, hasTime, params, opts) {
   // rather than re-walking the table.
   const acts = {
     top1: aTop1, acpl: aAcpl, sharp: aSharp, out: aOut, desperate: aDesperate, time: aTime,
-    evasion: aEvasion, winBlunder: aWinBlunder, uselessFour: aUselessFour,
+    evasion: aEvasion, uselessFour: aUselessFour,
     sharpStreak: aSharpStreak, sharpTotal: aSharpTotal, goodPool: aGoodPool, liveThree: aLiveThree,
     evasiveBehavior: aEvasive, noBlunder: aNoBlunder, steadyLost: aSteadyLost, probeMatch: aProbeMatch,
   };
@@ -3845,7 +3903,7 @@ function sideAggregate(steps, side, hasTime, params, opts) {
     sharpCount: sharp.length, time, simCount,
     // 0.4.2 §二. n / top1 / meanLoss above deliberately do NOT include these hands; these
     // three fields are the only place they are counted.
-    evasionCount: ev.count, evasionRegularity: ev.regularity, winBlunderCount: ev.winBlunders,
+    evasionCount: ev.count, evasionRegularity: ev.regularity,
     // 0.4.7 §1.1. Three numbers about the four runs: how many hands carried a useless run
     // (the thing that scores), and how many runs of each kind there were (reported, so an
     // operator can tell "one long run" from "three short ones" — the score cannot).
@@ -3855,6 +3913,10 @@ function sideAggregate(steps, side, hasTime, params, opts) {
     // six-hand forcing sequence」 from 「this side had six ordinary fours」, which the score cannot.
     // ⚠ By construction these hands are NOT in `n` — that is the whole point of the exemption.
     fourRunExemptCount: steps.filter(x => x.side === side && x.fourRunExempt).length,
+    // 1.0.8 快照二号 §一.1 — 同上，但豁免原因是「远离引擎推荐点」而不是「连续冲四第 3 手起」。
+    // 两个字段分开计数：同一手可能只满足其中一条，而操作者要能分清「一串冲四里的第 3 手」和
+    // 「一手孤立的远点冲四」—— 前者是长度，后者是位置。
+    farFourExemptCount: steps.filter(x => x.side === side && x.farFourExempt).length,
     // 0.4.8 §1.2. The two streak figures behind the terms above. `sharpStreakMax` is the
     // longest run of top-1 sharp hands, `sharpStreakHits` the total count — reported so the
     // detail table can say "唯一手最长连续命中 N 次 / 累计 M 次" without recomputing either.
@@ -3900,7 +3962,7 @@ function sideAggregate(steps, side, hasTime, params, opts) {
       top1: contrib.top1 * 100, acpl: contrib.acpl * 100, sharp: contrib.sharp * 100,
       out: contrib.out * 100, desperate: contrib.desperate * 100, time: contrib.time * 100,
       sim: simContribution * 100,
-      evasion: contrib.evasion * 100, winBlunder: contrib.winBlunder * 100,
+      evasion: contrib.evasion * 100,
       uselessFour: contrib.uselessFour * 100,
       sharpStreak: contrib.sharpStreak * 100, sharpTotal: contrib.sharpTotal * 100,
       goodPool: contrib.goodPool * 100, liveThree: contrib.liveThree * 100,
@@ -4276,8 +4338,8 @@ if (typeof module !== 'undefined' && module.exports) {
     // 0.4.7 §1.1: the four-run pass and the per-step value it classifies with. Exported for the
     // same reason as the two above — a test that re-derived `prevBestWR` itself would be
     // testing its own copy of the rule, and the two could drift.
-    markFourRuns, markFourRunExempt, countsForSide, recordPrevBestWR, FOUR_RUN_MIN,
-    FOUR_RUN_EXEMPT_AFTER, SMALL_N,
+    markFourRuns, markFourRunExempt, markFarUselessFour, countsForSide, recordPrevBestWR, FOUR_RUN_MIN,
+    FOUR_RUN_EXEMPT_AFTER, SMALL_N, FAR_FOUR_RINGS,
     // 0.4.7 §1.4: the candidate width the two analysis paths derive from the recorded interval.
     nbestFor, NBEST_DEFAULT, NBEST_EXTENDED, THINK_MS_EXTENDED,
     // 0.4.3 §1.1/§1.2/§1.5: the proximity grade, the segmenter and the classifier. Exported
