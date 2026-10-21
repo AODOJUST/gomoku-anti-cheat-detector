@@ -2471,8 +2471,10 @@ const BASE_WEIGHTS = {
   // **1.0.7 续 §一 takes it to 0.23** — the share the five parked keys were holding comes back to
   // the terms that actually fire, which puts the pool level with `top1` (see note 5 above).
   // **1.0.7 快照六号 §一 takes it to 0.27** — the 0.04 given up by `winBlunder`, so this is now the
-  // table's largest single term. It is also one of the four UNBOUNDED terms (see below): its score
-  // can reach 3× its weight at full activation, which is `top1`'s ceiling times three.
+  // table's largest single term. It is also one of the five UNBOUNDED terms (see below): its score
+  // can reach 3× its weight at full activation. ⚠ 1.0.8 快照四号 起 `top1` 也进了那张表，所以
+  // 「最大单项」这句话仍然成立（0.27 > 0.23），但两者的**兑现上限**都是 3× —— 谁的输出更高
+  // 取决于各自的激活值，不再由权重一个数决定。
   goodPool: 0.27,
   // §1.2's 活三 pool. 0.5.3: 0.03; 1.0.7 续 §一: **0.06** — the only other term that fires on both
   // groups with the right sign, so it takes the second-largest slice of the returned 0.12.
@@ -2516,7 +2518,16 @@ const BASE_WEIGHTS = {
 
 // ---------- 1.0.7 快照六号 §二/§三 — 无上限计分法 ----------
 //
-// Four terms score on a different curve from the other thirteen. Their ACTIVATION is unchanged
+// ⚠⚠ 1.0.8 快照四号 §一.1 — 「TOP1吻合」进这张表（四个 → **五个**），理由与其余四项不同：
+//   另外四项都是**行为信号**（连续 / 累计 / 活三 / 好点池），它们能被「下得好」解释；
+//   `top1` 是**引擎推荐点本身被踩中的比例**，是这套检测里最直接的一条证据，而它同时又最容易
+//   被满分侧顶到上限 —— 旧表里它被 `wEff × a` 压成一条直线，一个 topProx 0.95 的侧只能拿到
+//   0.23 × 0.95 = 21.9 分，和 topProx 0.60 的侧（12.8 分）差不到一倍。进表后 `a` 越高，
+//   每一档再加 5%，同一对侧变成 65.6 对 12.8 —— **这才是「吻合度越高越像引擎」该有的形状**。
+//   ⚠ 上限仍是 3.0 倍：`top1` 的满分贡献从 23.0 变成 69.0（见 `_tools/_probe-111-floor.cjs`
+//     在真语料上量出来的位移），权重没有动，动的是「同一权重的兑现曲线」。
+//
+// Five terms score on a different curve from the other eleven. Their ACTIVATION is unchanged
 // (§三 is explicit about this: the subscore formula stays exactly what it was, or `learn.js`'s
 // `subscoresForSide` would drift away from `sideAggregate`); what changes is how activation becomes
 // points. Above 60% activation every further percentage point re-triggers the term once, and each
@@ -2532,7 +2543,7 @@ const BASE_WEIGHTS = {
 // ⚠⚠ `UNBOUNDED_KEYS` is a KEY WHITELIST, not a calculation rule. The rule lives in exactly one
 // place — `sideAggregate`'s scoring loop — and `learn.js` carries a byte-identical copy because it
 // cannot import this file (THE MIRROR RULE; `verify-074` compares the two literals).
-const UNBOUNDED_KEYS = ['sharpStreak', 'sharpTotal', 'liveThree', 'goodPool'];
+const UNBOUNDED_KEYS = ['top1', 'sharpStreak', 'sharpTotal', 'liveThree', 'goodPool'];
 const UNBOUNDED_THRESHOLD = 0.6;
 const UNBOUNDED_STEP = 5;
 // ⚠⚠ Floating-point guard, and it is NOT cosmetic. `(0.7 − 0.6) * 100` is `9.999999999999998` in
@@ -3657,11 +3668,12 @@ function sideAggregate(steps, side, hasTime, params, opts) {
   // moves `meanLoss` by more than its whole ramp. The neutral 0.5 says 「no reading」 — it neither
   // awards nor withholds, which is the only honest thing such a short sample supports.
   // ⚠ The 85/50 verdict line is untouched: this moves the ACTIVATION, and only for sides short
-  // enough that the operator's own evidence floor (⑮, MIN_AI_HANDS = 6) already refuses to call
+  // enough that the operator's own evidence floor (⑮, MIN_AI_HANDS = 8) already refuses to call
   // them AI. That containment is exact rather than lucky: this branch fires below SMALL_N (5),
-  // and 5 < 6, so every side it neutralises is one the floor would have refused anyway.
-  // (1.0.8 快照一号 §二 moved the floor 8 → 6; the containment still holds.) `aTop1`'s legacy branch is gated too, so the comparison switch cannot drift apart
-  // from the live reading it exists to reproduce.
+  // and 5 < 8, so every side it neutralises is one the floor would have refused anyway.
+  // (The floor went 8 → 6 in 快照一号 and back to 8 in 快照四号; the containment held at both
+  // values, and would hold for any floor ≥ 5.) `aTop1`'s legacy branch is gated too, so the
+  // comparison switch cannot drift apart from the live reading it exists to reproduce.
   const aTop1 = n < SMALL_N ? 0.5 : (legacy ? rampUp(top1, t.top1Lo, t.top1Hi)
                                             : rampUp(topProx, t.topProxLo, t.topProxHi));
   const aAcpl = (meanLoss == null || n < SMALL_N) ? 0.5 : rampDown(meanLoss, t.acplLo, t.acplHi);
@@ -3815,11 +3827,11 @@ function sideAggregate(steps, side, hasTime, params, opts) {
   // The clamp below used to be a fixed `0, 100`. That ceiling was written when the table summed to
   // 1.00, where 「100」 MEANT 「every term fired」 — it was the top of the scale, not a cap on one.
   // The table has not summed to 1.00 since 补增 §三 (1.30 → 1.50 at 1.0.7 §一), so the same clamp
-  // stopped being a sanity bound and became a compressor: every side where nearly all seventeen
-  // signals fired printed the same 「100.0」, and the score could no longer say WHICH of them was
-  // worse. The operator's instruction (2026-10-18) is to make the effective weight sum the scale:
-  // full marks = 100 × Σ wEff, i.e. 145 with a feature library (`sim` takes 0.10 and the seventeen
-  // shrink by 1 − simW) and 150 without one. Nothing about the per-term arithmetic changes.
+  // stopped being a sanity bound and became a compressor: every side where nearly all of the
+  // table's signals fired printed the same 「100.0」, and the score could no longer say WHICH of
+  // them was worse. The operator's instruction (2026-10-18) is to make the effective weight sum
+  // the scale: full marks = 100 × Σ wEff, i.e. 145 with a feature library (`sim` takes 0.10 and
+  // the rest shrink by 1 − simW) and 150 without one. Nothing about the per-term arithmetic changes.
   //
   // ⚠ Consequences, both intended and both stated in the release notes:
   //   · a score above 100 is now possible, and it means 「more evidence than one full table's worth」
@@ -3837,7 +3849,7 @@ function sideAggregate(steps, side, hasTime, params, opts) {
 
   // ---------- 1.0.7 快照六号 §二 — 基础分 + 无上限加分 ----------
   //
-  // The sixteen terms no longer share one arithmetic. Twelve of them score `wEff × a`; the four
+  // The sixteen terms no longer share one arithmetic. Eleven of them score `wEff × a`; the five
   // in UNBOUNDED_KEYS score `wEff × a × (1 + 5n/100)` once `a` passes 0.60, so a term can be worth
   // up to three times its own weight. §三 is explicit that the ACTIVATION formula does not move —
   // the subscore is still whatever `aGoodPool` / `aSharpStreak` / … already computed; only the
@@ -3875,7 +3887,7 @@ function sideAggregate(steps, side, hasTime, params, opts) {
   }
   // `sim` stays outside the loop and outside UNBOUNDED_KEYS — it is the one auxiliary term, it is
   // never activated by a hand and it has no `wEff` entry (its share is `simW`, taken out of the
-  // other seventeen). Adding it to `baseSum` is what makes baseScore + bonusScore reproduce `risk`
+  // other terms). Adding it to `baseSum` is what makes baseScore + bonusScore reproduce `risk`
   // exactly whenever nothing is trimmed.
   const simContribution = simW * aSim;
   baseSum += simContribution;
@@ -3893,7 +3905,7 @@ function sideAggregate(steps, side, hasTime, params, opts) {
   // still one number, still monotone in every activation, still what `riskBand` / `classifySide` /
   // `shouldSkipArchive` compare against.
   //
-  // Consequence, stated because it is a real one: the four unbounded terms can push the sum past
+  // Consequence, stated because it is a real one: the five unbounded terms can push the sum past
   // the ceiling, and above it the bonus is trimmed while `bonusScore` still reports its untrimmed
   // value. That is why §4.1's B5 asks for `baseScore + bonusScore ≥ risk` rather than `===`.
   const risk = clamp(baseScore + bonusScore, 0, 100 * Math.max(0, wSumEff));
@@ -4147,7 +4159,15 @@ const LOWEND_STEADY_MIN = 0.7;
 //     MIN=6 → 判 AI 12 侧，准确 58.1%、精确 58.3%、召回 46.7%
 //   ⚠ 准确率是**降**的：门槛越低，被放行的短样本越多，误报越多。这是「判定更早」的取舍，
 //     不是一次「更准」的调参 —— 写在这里是为了下一个人别再拿 8 当拐点用。
-const MIN_AI_HANDS = 6;
+//
+// ⚠⚠ 1.0.8 快照四号 §一.2 —— 6 → **8**，回到 ⑮ 的原值。改回去的理由**不是**「6 不准」
+//   （上表两行都在，6 的取舍是当时的裁决），而是这一版把 `top1` 放进了无上限计分法：
+//   一条顶部激活被乘到 3 倍之后，**短样本的方差也被同样放大** —— n=6 时一手棋能把 topProx
+//   抬 1/6，而那 1/6 现在值 2～3 分而不是 1 分。⇒ 分数曲线变陡了，证据门槛就要回到
+//   与之匹配的位置，否则「6 手就宣布 AI」会变成「6 手里某一手落点好就宣布 AI」。
+//   ⚠ 这一条同样只约束**判词**：`risk` 一位不变，卡片上的大字与边框不会因为门槛变化而改变，
+//     只有「判 AI / 判疑似」这一步会（`_tools/_probe-111-floor.cjs` 把 130 侧的位移量出来了）。
+const MIN_AI_HANDS = 8;
 
 function classifySide(risk, segments, steps, side, thresholds, acts) {
   const band = riskBand(risk, thresholds);

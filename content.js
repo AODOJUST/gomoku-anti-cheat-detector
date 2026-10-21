@@ -3625,6 +3625,12 @@
             : '') +
           '<span class="lk" data-act="compact" title="' + esc(T('panel|缩略：只显示评估值')) + '">' +
             esc(T('panel|缩略')) + '</span>' +
+          // 1.0.8 快照四号 §二.1 — 「刷新」. 它重建浮层本身，不碰对局页面（见 reloadPanel）：
+          // 浮层坏掉时操作者原来的办法是 F5，而 F5 会连对局一起刷新。位置放在「缩略」旁边，
+          // 因为两者都是「这一块画面怎么显示」的控制，而不是「检测怎么跑」的控制。
+          '<span class="lk" data-act="reload" title="' +
+            esc(T('panel|重建浮层（不动对局；按住 Shift 点击 = 刷新整页）')) + '">' +
+            esc(T('panel|刷新')) + '</span>' +
           '<span class="lk" data-act="min" title="' +
             esc(T('panel|缩小为图标（点击恢复，按住可拖动）')) + '">—</span>' +
           '<span class="x" data-act="close" title="' +
@@ -3728,6 +3734,41 @@
     // Re-render happens on a language change too, and the banner's text (and therefore its
     // height, and therefore `--gm-ban`) moves with it.
     applyBanner();
+  }
+
+  // ---------- 1.0.8 快照四号 §二.1 — 「刷新」 ----------
+  //
+  // 它修的是「浮层坏了、对局还好着」这一类故障：节点丢了、菜单卡住收不回去、缩略/完整态画错、
+  // 某次重绘抛错之后整块画面再也不更新。做法是**原地重建** —— 换掉 shadow 树、重新绑事件、
+  // 再按内存里的状态画一遍 —— 全程不碰宿主页面，所以对局、任务队列、已经算完的报告都还在。
+  //
+  // ⚠ 它**修不了**「脚本自己的状态坏了」：后台广播断了、`liveJob` 卡在 running、`jobs` 里
+  // 留下一条永远「分析中」的幽灵任务 —— 那些只有把 content script 从头再跑一遍才有效，
+  // 也就是刷新整页。所以 `Shift + 点击` 走硬刷新。一条入口、两种力度，工具提示里写明白了：
+  // 只写「刷新」会让操作者在真正需要 F5 的场景里得到一个什么都不变的按钮。
+  //
+  // ⚠ 顺序是有意的：`renderShell()` 会替换整棵树，所以 `closeMenus()` 必须先跑（否则
+  // `openMenu` 指向的按钮已经不在树里）；`paintOverlay()` 要在 `paint()` 之前，它负责按当前
+  // 状态（mini / compact / normal）把尺寸与位置重新摆好，而 `paint()` 只填内容不摆盒子。
+  //
+  // ⚠ 夹一次位置：`ovClampPending` 平时只在「装好之后」跑一次（见 placeBox 的注释），但换过
+  // 显示器、缩过窗口之后那个位置可能已经在视口外 —— 而「浮层不见了」正是操作者会来点刷新
+  // 的那类故障之一。重建是唯一允许重新夹的时机，因为它本来就不该动操作者当前的摆放。
+  function reloadPanel(hard) {
+    if (hard) { location.reload(); return; }
+    if (!root) return;
+    closeMenus();
+    ovClampPending = true;
+    renderShell();
+    paintOverlay();
+    paint();
+    paintChatPanel();
+    // 引擎清单是这一页里的缓存（`customModels`），顺手问后台要一份新的；要不到就沿用旧的，
+    // 不阻塞任何东西 —— 一次刷新不该因为盘点没回来就显得「卡住了」。
+    refreshEngineList();
+    // 重建之后界面看起来和点之前一模一样（除非它本来就是坏的），所以必须有一句回执，
+    // 否则这个按钮读起来就是「点了没反应」。
+    try { GmToast.show(T('toast|浮层已重建'), 'success'); } catch (e) {}
   }
 
   // ---------- 0.4.5 §二: the 🌐 language / ⚙ rule dropdowns ----------
@@ -4445,6 +4486,9 @@
       if (act === 'min') { setOverlayState('mini'); return; }
       if (act === 'compact') { setOverlayState('compact'); return; }
       if (act === 'restore') { setOverlayState('normal'); return; }
+      // 1.0.8 快照四号 §二.1 — 见 reloadPanel。`ev.shiftKey` 是给「浮层救不回来」留的硬刷新，
+      // 它读的是**这一次点击**的修饰键，而不是一个要另外记住的模式。
+      if (act === 'reload') { reloadPanel(!!ev.shiftKey); return; }
       if (act === 'resize') return;   // handled by mousedown below, not by click
       if (act === 'open-viewer') { openViewer(); return; }
       if (act === 'upd-now') { oneClickUpdate(); return; }

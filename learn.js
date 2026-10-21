@@ -177,7 +177,7 @@
   // which keys are in the group.
   var BEHAVIOUR_KEYS = EVASION_KEYS.concat(LOWEND_KEYS);
 
-  // 1.0.7 快照六号 §三 — 无上限计分法的四项与两条常量，刻意与 app.js 逐字相同。
+  // 1.0.7 快照六号 §三 — 无上限计分法的五项与两条常量，刻意与 app.js 逐字相同。
   //
   // ⚠ It is a KEY WHITELIST, not the rule; the rule lives once, in `sideAggregate`'s scoring loop,
   // and is mirrored here only because this file cannot import app.js (THE MIRROR RULE — the same
@@ -186,9 +186,13 @@
   // same (sub, weights) pair. Anything less and `optimizeRiskCuts` searches thresholds on a score
   // the detector never computes — which is the exact drift the mirror exists to prevent.
   //
+  // ⚠ 1.0.8 快照四号 §一.1 — `top1` 也进这张表（四项 → 五项）。**两处必须同时改**：
+  //   `verify-074` 逐字比较两个字面量，漏一处就红；而漏的那一半会让学习器在一个
+  //   产品永远不会算出的分数上搜阈值。
+  //
   // ⚠ `UNBOUNDED_EPS` is not decoration: `(0.7 - 0.6) * 100` is 9.999999999999998 in IEEE-754, so
   // the bare floor scores a=0.70 one notch early. See the longer note beside app.js's copy.
-  var UNBOUNDED_KEYS = ['sharpStreak', 'sharpTotal', 'liveThree', 'goodPool'];
+  var UNBOUNDED_KEYS = ['top1', 'sharpStreak', 'sharpTotal', 'liveThree', 'goodPool'];
   var UNBOUNDED_THRESHOLD = 0.6;
   var UNBOUNDED_STEP = 5;
   var UNBOUNDED_EPS = 1e-9;

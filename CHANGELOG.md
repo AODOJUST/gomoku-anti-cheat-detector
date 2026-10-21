@@ -8,6 +8,11 @@ nobody ever read the history from there anyway.
 Every entry below is the original prose, verbatim — only the headings and blank lines are new.
 
 ## 1.0.8
+**快照四号（同版本补丁 · 两处算法 + 一颗键）**
+
+- **「TOP1 吻合」进无上限计分法**：`UNBOUNDED_KEYS` 四项 → **五项**（`top1` / `sharpStreak` / `sharpTotal` / `liveThree` / `goodPool`），`app.js` 与 `learn.js` 两份字面量逐字同步。权重表仍是 16 项、合计仍是 1.50、风险上限仍是 150 —— 改的是「谁能超过自己的权重」，不是权重值。
+- **证据门槛 6 → 8**：`MIN_AI_HANDS` 回到 ⑮ 的原值。理由是上一条把短样本的方差一起乘了 3 倍。重测四个组合（`_tools/_probe-112-spot.cjs`）：6+不加分 58.1%、6+加分 64.5%、8+不加分 71.0%、**8+加分 77.4%（精确 90.0% / 召回 60.0%）**，最后一行是本版。
+- **浮层「刷新」键**：重建浮层而不刷新对局页面；`Shift + 点击` = 刷新整页。新增 `behave-112-reload.cjs`（真浏览器 34 条：宿主只有一个、树真的换了、报告还在、形态与位置不变、普通点击不导航、Shift 真的导航）。
 **快照三号（同版本补丁 · 两处修复）**
 
 - **浮层边框没跟上三档重划**：快照一 把判词线改成 85 / 50，边框判据还停在 70 / 40 ⇒ 72 分的卡片写「可疑」而边框是红的、45 分的卡片写「低风险」而边框是橙的。修法是**删掉那份阈值副本**：边框改为读 `sideAggregate()` 已经判好的 `level`（与卡片同一个字段），「取较高风险分」也改成按等级取。

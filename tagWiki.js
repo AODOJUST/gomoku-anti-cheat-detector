@@ -423,14 +423,16 @@ var GM_TAG_WIKI = (function () {
     },
 
     // =====================================================================================
-    // 检测信号 — app.js BASE_WEIGHTS. The seventeen terms the risk score is summed from.
+    // 检测信号 — app.js BASE_WEIGHTS. The sixteen terms the risk score is summed from.
     //
     // The first six are the 基础统计 (0.4.2's top1/acpl/sharp/out/desperate/time, with `time` at 0
-    // since 0.5.7); the remaining eleven are the 行为信号, each exactly 0 on a game that shows no such
-    // pattern — seven from 0.4.2/0.5.2, three from 0.5.7 §1.3 (the first whose figures do not come
+    // since 0.5.7); the remaining ten are the 行为信号, each exactly 0 on a game that shows no such
+    // pattern — most from 0.4.2/0.5.2, three from 0.5.7 §1.3 (the first whose figures do not come
     // from the engine's candidate list at all), and one from 1.0.7 §1.2 (`evasiveBehavior`, shipped
-    // at 0 for the reason its own entry gives). Through 0.5.4 the six were
-    // the whole budget and the seven rode on top as surcharges; 0.5.5 §1.3 made the WHOLE table one
+    // at 0 for the reason its own entry gives). ⚠ 1.0.8 快照二号 §一.2 把将胜乱下整项删掉，所以
+    // 这里比 1.0.7 少一项：`weightKey` 读的是实时权重表，但这段散文里的数字是写死的，改表时
+    // 要一起改。Through 0.5.4 the six were
+    // the whole budget and the rest rode on top as surcharges; 0.5.5 §1.3 made the WHOLE table one
     // budget, 0.5.6 补增 §三 replaced that budget with the operator's own table, and 0.5.7 §1 raised
     // the ceiling from 130% to 150% and spent the difference on the three new signals — so as
     // shipped the table is exactly 1.50, which IS the whole ceiling, and an operator may not go
@@ -447,12 +449,14 @@ var GM_TAG_WIKI = (function () {
              + '分档接近度：首选记 1.0、2–5 名记 0.80、6–8 名记 0.50，再取均值后过斜坡。',
         usage: '最基础的一项。它单独说明不了什么，但它是所有其他信号的对照组。',
         impact: '权重 {w}，基础统计六项之一。0.5.7-Alpha 起它单独居首；1.0.7 续 曾与好点池'
-              + '同为 0.23；1.0.7 快照六号 起好点池单独居首（0.27 对 0.23），本项退为第二。',
+              + '同为 0.23；1.0.7 快照六号 起好点池单独居首（0.27 对 0.23），本项退为第二。'
+              + '1.0.8 快照四号 起它进了「无上限」那组：激活过 60% 之后每高 1 个百分点再多乘 5%'
+              + '（即 ×1.05 一档），满激活时是权重的 3 倍 —— 所以它的兑现上限不再等于 {w}。',
       },
       en: {
         meaning: 'How closely the played moves match the engine\'s first choice. Not a plain hit rate — since 0.4.3 it reads a graded proximity: top-1 scores 1.0, ranks 2–5 score 0.80, ranks 6–8 score 0.50, and the mean goes through a ramp.',
         usage: 'The most basic term. On its own it proves little, but it is the control group for everything else.',
-        impact: 'Weight {w}, one of the six base statistics — and, jointly with 好点池, the largest single term in the table. 0.5.7-Alpha put it alone on top (a title 出前五 held before it); 1.0.7 续 lifted the pool level with it.',
+        impact: 'Weight {w}, one of the six base statistics — and, jointly with 好点池, the largest single term in the table. 0.5.7-Alpha put it alone on top (a title 出前五 held before it); 1.0.7 续 lifted the pool level with it. Since 1.0.8 快照四号 it belongs to the unbounded group: past 60% activation it gains another 5% per point (a ×1.05 step), so at full activation it is worth 3× its weight and its ceiling is no longer {w}.',
       },
     },
     {
