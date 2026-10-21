@@ -4033,6 +4033,22 @@
     // 0-height reading would skip the flip-above-the-button branch entirely.
     box.classList.add('show');
     if (btn) btn.classList.add('on');
+    placeMenu(which);
+  }
+
+  // 1.0.8 快照三号 §一.2 — 显示之后的那一步：按盒子的**实际**尺寸放到按钮旁边。
+  //
+  // ⚠ 提出来的理由是「两层抽屉」。`toggleMenu` 只负责开/关，可复制抽屉还有第二层（语言表，
+  // 14 行）—— 换层不重开，于是高度变了而位置没变。这段测量原本写死在 `toggleMenu` 里，
+  // 第二个调用点要么抄一遍（第二份实现），要么让盒子一半在屏幕外。所以只有这一份。
+  //
+  // ⚠ 必须先 `classList.add('show')` 再调：`display:none` 的节点 `offsetHeight` 是 0，
+  // 读到 0 就会跳过「翻到按钮上方」那条分支。
+  function placeMenu(which) {
+    if (!root) return;
+    var box = root.querySelector('[data-slot=' + menuSlot(which) + ']');
+    if (!box) return;
+    var btn = root.querySelector('[data-act=' + menuBtn(which) + ']');
     var r = btn ? btn.getBoundingClientRect() : { right: 240, bottom: 40, top: 20 };
     var w = box.offsetWidth || 196, h = box.offsetHeight || 0;
     var vw = window.innerWidth || 1024, vh = window.innerHeight || 768;
@@ -4374,10 +4390,19 @@
       // field, whose clicks carry no `data-act`, so keying the whitelist on the actions alone
       // would close the box the instant the operator clicked into it — the panel would look
       // like a control that refuses to be typed into.
+      //
+      // ⚠⚠ 1.0.8 快照三号 §一.2 — `copy` / `copy-data` / `copy-code` / `pick-copy-lang` 必须在
+      // 这张白名单里。缺了 `copy-data` 的后果是**按钮彻底失效**（不是闪一下）：点它先被这条
+      // 规则 `closeMenus()`（抽屉收起、`openMenu = null`），紧接着 `openMenu = 'copy-lang'`
+      // 只改了状态与内容，**`.show` 不会回来** ⇒ 抽屉消失、什么都没复制。
+      // 快照二号之前 `copy-data` 是「点完就复制并关」，那一次 `closeMenus()` 正好是它自己想要
+      // 的，所以这条规则缺了它也没人发现 —— 改成「换层」之后才暴露出来。
       if (openMenu && act !== 'lang' && act !== 'rule' && act !== 'engine' && act !== 'ask' &&
           act !== 'track' && act !== 'track-go' && act !== 'track-menu' &&
           act !== 'pick-lang' && act !== 'pick-rule' && act !== 'pick-engine' &&
-          act !== 'pick-ask-lang' && act !== 'pick-ask-q') {
+          act !== 'pick-ask-lang' && act !== 'pick-ask-q' &&
+          act !== 'copy' && act !== 'copy-code' && act !== 'copy-data' &&
+          act !== 'pick-copy-lang') {
         closeMenus();
       }
       if (!act) {
@@ -4430,7 +4455,15 @@
       // 1.0.8 快照二号 §二.2 — 复制对局数据先开语言层，选完语言（`pick-copy-lang`）才真正复制。
       // 复制棋谱代码不加这一步：它是一串坐标，没有任何需要翻译的字。
       if (act === 'copy-code') { closeMenus(); copyBoardCode(); return; }
-      if (act === 'copy-data') { openMenu = 'copy-lang'; paintMenus(); return; }
+      if (act === 'copy-data') {
+        // 换层而不是重开：`.show` 与按钮的 `on` 保持不动，只换内容再**重新测量一次**位置。
+        // 动作层 2 行、语言层 14 行，同一只盒子高度翻四倍；不重测就会把下沿推出视口，
+        // 看起来又像「点了没反应」。
+        openMenu = 'copy-lang';
+        paintMenus();
+        placeMenu('copy-lang');
+        return;
+      }
       if (act === 'pick-copy-lang') {
         copyState.lang = hit.getAttribute('data-v');
         saveCopyState();
@@ -5084,7 +5117,9 @@
    * `ended` up front — so 「待机」 outranked the verdict it was supposed to sit beneath, and the
    * moment a game finished the border dropped whatever colour it was showing and went back to the
    * blue breathing. Reported from a real game: 黑方 73.5 · 高风险 / 白方 72.8 · 高风险 on the cards,
-   * blue breathing on the border.
+   * blue breathing on the border. (Those 73.5/72.8 read 高风险 because that report predates two
+   * later re-cuts of the bands — under 1.0.8's 85/50 they are 可疑. The numbers are kept as the
+   * report printed them; what this comment is about is the ordering, not the cut lines.)
    *
    * That is the exact failure `paintBorderState`'s own comment forbids two functions down — 「the
    * border is a second, glanceable readout of the same facts the status line spells out」 — and it
@@ -5101,12 +5136,22 @@
     var inGame = activeMoves().length > 0;
     var rep = (cur && (cur.report || cur.summary)) || null;
     if (rep && (inGame || ended)) {
-      // 「同时检测两位玩家时，取较高风险分」 — the max, not the suspected side, because the border
-      // is the panel's alarm and not the per-side verdict (which the cards carry).
-      var maxRisk = Math.max(rep.black ? Number(rep.black.risk) || 0 : 0,
-                             rep.white ? Number(rep.white.risk) || 0 : 0);
-      if (maxRisk >= 70) return BORDER_STATE.HIGH;
-      if (maxRisk >= 40) return BORDER_STATE.SUSPECT;
+      // 「同时检测两位玩家时，取较高风险分」 — the worst, not the suspected side, because the
+      // border is the panel's alarm and not the per-side verdict (which the cards carry).
+      //
+      // ⚠⚠ 1.0.8 快照三号 §一.1 — 这里**不再自己比阈值**。快照一 §一 把三档重划成
+      // 0–50 / 50–85 / 85–150，而这段代码还写着上个时代的 `>= 70` / `>= 40`。两个反例：
+      // 分数 **72** 的卡片判「可疑」（< 85）而边框判 HIGH（≥ 70）⇒ 边框红、卡片黄；
+      // 分数 **45** 的卡片判「低风险」（< 50）而边框判 SUSPECT（≥ 40）⇒ 边框橙、卡片绿。
+      // 两条边界的偏差方向还不一样，说明这不是「差 15 分」而是「两张表」。数字不许有第三份：
+      // `sideAggregate()` 已经把 `risk` 判成 `level`（存储身份值），卡片用
+      // `riskColor(agg.level)` 上色，边框读**同一个字段**即可 —— 从此改阈值只改 `app.js` 的
+      // `BASE_THRESHOLDS`，边框不可能再漏。
+      //
+      // ⚠ 比较的是**等级**而不是数值：等级有序（高风险 > 可疑 > 低风险），比数值少一份副本。
+      var worst = worstLevel(rep);
+      if (worst === '高风险') return BORDER_STATE.HIGH;
+      if (worst === '可疑') return BORDER_STATE.SUSPECT;
       return BORDER_STATE.LOW;
     }
     // 待机 covers BOTH "not in a game" and "the game is over": §2.1 lists them together, and with
@@ -5315,6 +5360,26 @@
 
   function riskColor(level) {
     return level === '高风险' ? '#e74c3c' : level === '可疑' ? '#f1c40f' : '#2ecc71';
+  }
+
+  // 1.0.8 快照三号 §一.1 — 「取较高风险分」现在按**判词**取，不按数值取。
+  //
+  // ⚠ 三个等级是**有序身份值**（`高风险` > `可疑` > `低风险`，app.js:sideAggregate 判的），
+  // 所以「哪一侧更严重」可以只比等级。比数值就要一份阈值副本，那就是这次要删掉的东西。
+  //
+  // ⚠ 缺 `level` 的读数（1.0.8 之前落盘、且没重算过的报告）在这里落到「低风险」—— 那些档案
+  // 的边框本来也只会是绿色，行为与改动前一致。报告、实时摘要、存档三处都带 `level`
+  // （`storage.js` 的 slim 报告也一样），所以这条分支只服务真正的老数据。
+  function worstLevel(rep) {
+    function rank(level) { return level === '高风险' ? 3 : level === '可疑' ? 2 : 1; }
+    var best = 0, out = null;
+    ['black', 'white'].forEach(function (k) {
+      var agg = rep && rep[k];
+      if (!agg) return;
+      var r = rank(agg.level);
+      if (r > best) { best = r; out = agg.level; }
+    });
+    return out;
   }
 
   // 0.5.5 §2.3.2 — the one 强制保存 entry, appended to ALL FOUR 「未存档」 notes: the length floor,

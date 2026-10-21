@@ -1065,7 +1065,7 @@
   // Sixteen numbers that are ONE table (thirteen before 0.5.7 §1). The requirement is 「每种检测
   // 信号都可以由操作者在设置中进行权重自定义」 with the custom total capped at 150%, and the two
   // halves are inseparable: the risk score is Σ weight × sub-score, so the TOTAL decides how
-  // easily a game crosses the 70/40 cuts, not any single term. Sixteen anonymous boxes would let
+  // easily a game crosses the 85/50 cuts, not any single term. Sixteen anonymous boxes would let
   // an operator raise one weight five-fold and never learn why every game now reads 高风险 —
   // hence the running total above the grid, and the refusal below it.
   //
