@@ -610,7 +610,10 @@
   // ⚠ The four remaining entries stay. §1.7.2 asks for the community and says nothing about 回放 /
   // 样本库 / 黑名单 — those read the operator's OWN local data through the same three tabs whether or
   // not a server exists, and §1.1's ❌ for them is unchanged.
-  var GATED_VIEWS = ['replay', 'samples', 'blacklist', 'profile', 'account'];
+    // 1.0.8 快照五号 §一 — 'viz' joins the gated set: every input it reads (存档 / 样本) is behind
+  // the same gate, so showing the tab to an unactivated build would offer a page that can only
+  // ever draw its empty state.
+  var GATED_VIEWS = ['replay', 'samples', 'blacklist', 'viz', 'profile', 'account'];
 
   /** The gate, in the one form this file asks it in. Sync, because `GMAuth.gateOpen()` is. */
   function activationOpen() { return !!(GMAuth.gateOpen && GMAuth.gateOpen()); }
@@ -647,6 +650,9 @@
     // its own compact sizing, and that is a different document anyway.
     if (name === 'replay') refreshArchives();
     if (name === 'samples') refreshSamples();
+    // 1.0.8 快照五号 §一 — the picker reads BOTH libraries on every entry (the operator may have
+    // just imported an archive in another tab), and prunes the selection down to what still exists.
+    if (name === 'viz') refreshViz();
     // 0.4.9 §一.7 — the blacklist is read fresh on every visit rather than cached at boot: the
     // panel's 🚫 button can have added a player since this page was opened, and a stale list
     // here would show 「不在黑名单」 for someone the operator just blocked.
@@ -8813,6 +8819,7 @@
     if ($('navReplay')) $('navReplay').classList.toggle('hidden', !viewAllowed('replay'));
     if ($('navSamples')) $('navSamples').classList.toggle('hidden', !viewAllowed('samples'));
     if ($('navBlacklist')) $('navBlacklist').classList.toggle('hidden', !viewAllowed('blacklist'));
+    if ($('navViz')) $('navViz').classList.toggle('hidden', !viewAllowed('viz'));
     // §1.3 — 「其他设置面板（检测、引擎、透明度、导入导出、回放过滤、存储过滤、背景）全部隐藏」.
     // Read off the markup so the two lists cannot drift; see viewer.html for why the flag lives there.
     Array.prototype.forEach.call(document.querySelectorAll('.set-panel[data-gate]'), function (p) {
@@ -15260,6 +15267,166 @@
       if (!$('sampleList').classList.contains('hidden')) renderSampleList();
     }, 150);
   });
+
+  // =====================================================================
+  // 1.0.8 快照五号 §一 — 数据可视化：勾选 → 导出
+  // =====================================================================
+  // 两个来源、一种产物。产物是一份**自包含 HTML**（`viz-export.js` 生成）：不联网、不带 CDN、
+  // 双击就能开，所以它可以发给别人看，也可以离线存档。
+  //
+  // ⚠ 单局与多局是**两个模板**，不是同一个模板的两种密度：
+  //   · 勾 1 局 → 单局页（分数卡 + 信号贡献 + 逐手时间轴 + 棋盘 + 判词依据 + 明细表）
+  //   · 勾 ≥2 局 → 汇总页（KPI + 风险排行 + 双方散点 + 全表 + 逐局摘要）
+  //   汇总页刻意不铺逐手图：N 局 × 60 手 × 两侧，一页就是几千个节点，打开就卡；要看逐手，
+  //   单局导出一份即可（页面里也写着这句话）。
+  var vizSrc = 'archive';       // 'archive' | 'sample'
+  var vizSel = {};              // id -> true
+
+  function vizItems() {
+    return vizSrc === 'archive' ? (archives || []) : (samples || []);
+  }
+  function vizIdOf(it) { return it && it.id ? it.id : null; }
+
+  function vizMaxRisk(it) {
+    var rep = it.report || {};
+    var b = rep.black ? Number(rep.black.risk) || 0 : 0;
+    var w = rep.white ? Number(rep.white.risk) || 0 : 0;
+    return Math.max(b, w);
+  }
+  function vizMoves(it) {
+    var rep = it.report || {};
+    var n = (rep.steps || []).length;
+    if (!n) n = it.totalMoves || 0;
+    if (!n && it.record && it.record.moves) n = it.record.moves.length;
+    return n || 0;
+  }
+  // 一局有两个等级，清单里只能写一个：取**较重的那一侧**，与 `maxRisk` / `maxLevel` 同口径。
+  var VIZ_LV_RANK = { '高风险': 3, '可疑': 2, '低风险': 1 };
+  function vizLevel(it) {
+    var rep = it.report || {};
+    var b = (rep.black && rep.black.level) || '';
+    var w = (rep.white && rep.white.level) || '';
+    return (VIZ_LV_RANK[w] || 0) > (VIZ_LV_RANK[b] || 0) ? w : (b || w);
+  }
+
+  function renderViz() {
+    var box = $('vizList');
+    if (!box) return;
+    var items = vizItems();
+    if (!items.length) {
+      // ⚠ 空态只说「没有」，不说原因：这里分不清「还没抓过一局」和「刚删光」，
+      //    而一句猜出来的原因正是本项目反复付学费的那种文案（兜底句不许命名原因）。
+      box.innerHTML = '<div class="vzempty">' +
+        esc(vizSrc === 'archive' ? T('viewer|还没有存档。') : T('viewer|还没有样本。')) + '</div>';
+      return;
+    }
+    var head = '<div class="vzhead"><span></span>' +
+      '<span>' + esc(vizSrc === 'archive' ? T('viewer|存档') : T('viewer|样本')) + '</span>' +
+      '<span class="num">' + esc(T('viewer|手数')) + '</span>' +
+      '<span class="num">' + esc(T('viewer|分数')) + '</span>' +
+      '<span>' + esc(T('viewer|等级')) + '</span></div>';
+    var rows = items.map(function (it) {
+      var id = vizIdOf(it);
+      var on = !!(id && vizSel[id]);
+      var rep = it.report || {};
+      var lvl = vizLevel(it);
+      var col = lvl === '高风险' ? 'var(--red)'
+        : (lvl === '可疑' ? 'var(--yellow)' : (lvl ? 'var(--green)' : 'var(--mut)'));
+      var analysed = !!(rep.steps && rep.steps.length);
+      var name = it.name || T('viewer|未命名');
+      return '<div class="vzrow' + (on ? ' on' : '') + '" data-id="' + esc(id || '') + '">' +
+        '<span class="tick">✓</span>' +
+        '<span class="nm2" title="' + esc(name) + '">' + esc(name) + '</span>' +
+        '<span class="num">' + vizMoves(it) + '</span>' +
+        '<span class="num" style="color:' + col + '">' + (analysed ? Math.round(vizMaxRisk(it)) : '—') + '</span>' +
+        '<span class="lvl" style="color:' + col + '">' + esc(lvl || '—') + '</span>' +
+      '</div>';
+    }).join('');
+    box.innerHTML = head + rows;
+  }
+
+  function paintVizMeta() {
+    var items = vizItems();
+    var n = 0;
+    for (var i = 0; i < items.length; i++) if (vizSel[vizIdOf(items[i])]) n++;
+    if ($('vzCount')) {
+      $('vzCount').textContent = T('viewer|已选 {n} 局 / 共 {total} 局', { n: n, total: items.length });
+    }
+    if ($('vzGo')) $('vzGo').disabled = n === 0;
+    if ($('vzTip')) {
+      $('vzTip').textContent = n > 1
+        ? T('viewer|勾了 {n} 局：导出一份汇总页（排行 / 散点 / 全表 / 逐局摘要）。逐手与棋盘请单独导出一局。', { n: n })
+        : T('viewer|勾一局 → 一份单局报告（分数卡 / 信号贡献 / 逐手档位 / 棋盘 / 判词依据 / 明细表）。');
+    }
+  }
+
+  async function refreshViz() {
+    // 两个库都读一遍：本次会话可能一次都没进过那两个视图，而这里要选的就是它们的内容。
+    archives = await G.loadArchives();
+    samples = await G.loadSamples();
+    // ⚠ 只保留**仍然存在**的 id。删掉一局再回到这里，`vizSel` 里会残留一个不存在的 id：
+    //    计数说有 3 局、文件里只有 2 局，而界面上没有任何东西能说明差的那一局去哪了。
+    var live = {};
+    vizItems().forEach(function (it) { var id = vizIdOf(it); if (id) live[id] = true; });
+    Object.keys(vizSel).forEach(function (id) { if (!live[id]) delete vizSel[id]; });
+    renderViz();
+    paintVizMeta();
+  }
+
+  function vizExport() {
+    var picked = vizItems().filter(function (it) { var id = vizIdOf(it); return id && vizSel[id]; });
+    if (!picked.length) { alert(T('viewer|还没有勾选对局。')); return; }
+    // ⚠ 「BUILD 必须 WIRE」——`viz-export.js` 没被脚本标签带上时，这里必须**说出来**，
+    //    而不是抛一个 `GMViz is not defined` 让按钮看起来点了没反应。
+    if (typeof GMViz === 'undefined') { alert(T('viewer|导出模块没有加载（viz-export.js）。')); return; }
+    var html;
+    try {
+      html = picked.length === 1
+        ? GMViz.buildSingle(picked[0], { fromSample: vizSrc === 'sample', lang: GMI18n.getLocale() })
+        : GMViz.buildMulti(picked, { lang: GMI18n.getLocale() });
+    } catch (e) {
+      // 生成器自己会拒绝「有效手数与报告不符」的报告 —— 那是数据的问题，不是按钮的问题，
+      // 所以原样把它的理由说出来，别吞成一句「生成失败」。
+      alert(T('viewer|生成失败：{err}', { err: TE(e.message || e) }));
+      return;
+    }
+    var d = new Date();
+    var pad = function (v) { return (v < 10 ? '0' : '') + v; };
+    var stamp = d.getFullYear() + pad(d.getMonth() + 1) + pad(d.getDate()) + '-' + pad(d.getHours()) + pad(d.getMinutes());
+    download('viz-' + picked.length + 'j-' + stamp + '.html', html, 'text/html');
+  }
+
+  (function wireViz() {
+    if (!$('view-viz')) return;
+    document.querySelectorAll('#view-viz .tab').forEach(function (t) {
+      t.onclick = function () {
+        vizSrc = t.dataset.vsrc === 'sample' ? 'sample' : 'archive';
+        document.querySelectorAll('#view-viz .tab').forEach(function (x) {
+          x.classList.toggle('active', x === t);
+        });
+        // 换来源必须清空：两个 id 空间互不相交，留着上一个来源的勾选只会让计数对不上。
+        vizSel = {};
+        renderViz();
+        paintVizMeta();
+      };
+    });
+    $('vizList').onclick = function (e) {
+      var row = e.target && e.target.closest ? e.target.closest('.vzrow') : null;
+      if (!row) return;
+      var id = row.dataset.id;
+      if (!id) return;
+      if (vizSel[id]) delete vizSel[id]; else vizSel[id] = true;
+      row.classList.toggle('on', !!vizSel[id]);
+      paintVizMeta();
+    };
+    $('vzAll').onclick = function () {
+      vizItems().forEach(function (it) { var id = vizIdOf(it); if (id) vizSel[id] = true; });
+      renderViz();
+      paintVizMeta();
+    };
+    $('vzNone').onclick = function () { vizSel = {}; renderViz(); paintVizMeta(); };
+    $('vzGo').onclick = vizExport;
+  })();
 
   // =====================================================================
   // 0.3.3 样本库

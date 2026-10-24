@@ -943,6 +943,11 @@ var GM_TAG_WIKI = (function () {
     // 0.5.6 补增 §三 — the operator's resolved table, handed in by the viewer before a paint.
     setWeightTable: setWeightTable,
     band: band,
+    // 1.0.8 快照五号 §一 — `minHands` was written as `band()`'s sibling in 快照一号 for the wiki's
+    // own prose, and stayed inside the closure. The export page needs the same number, and the
+    // alternative (reading `MIN_AI_HANDS` from a second place) is the 「同一答案两份实现」 this
+    // project has paid for six times. It is published here for the same reason `band` is.
+    minHands: minHands,
     fill: fill,
     resolve: resolve,
     matches: matches,

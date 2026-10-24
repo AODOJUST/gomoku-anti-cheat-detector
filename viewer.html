@@ -1926,6 +1926,28 @@
        so they need the same paper override or they print as a pale cream block. */
     .cm-gate{background:#fff;border-color:#ccc;border-inline-start-color:#a08000}
   }
+
+  /* ---- 1.0.8 快照五号 §一 — 数据可视化：一个可勾选的清单 ----
+     A plain five-column grid, not the card grid the two libraries use: this list is read as a
+     table (name · 手数 · 分 · 判词 · 勾) and a card per game would put the checkbox somewhere
+     different on every row. `grid-template-columns` keeps the checkbox column a fixed 30px so
+     the ticks line up down the page even when a name wraps — the same reason the step tables
+     use fixed widths rather than auto. */
+  .vzlist{max-height:min(60vh,560px);overflow:auto;margin-top:11px;border:1px solid var(--line);border-radius:var(--ui-detail-radius);background-color:var(--panel)}
+  .vzhead,.vzrow{display:grid;grid-template-columns:30px minmax(0,1fr) 62px 128px 104px;gap:10px;align-items:center;padding:7px 11px}
+  .vzhead{position:sticky;top:0;z-index:1;background-color:var(--inset);font-size:var(--ui-detail-small);color:var(--mut);border-bottom:1px solid var(--line)}
+  .vzrow{font-size:var(--ui-detail-small);border-bottom:1px solid var(--line-soft);cursor:pointer}
+  .vzrow:last-child{border-bottom:none}
+  .vzrow:hover{background-color:var(--inset)}
+  .vzrow.on{background-color:color-mix(in srgb,var(--blue) 9%,var(--panel))}
+  .vzrow .tick{width:15px;height:15px;border:1px solid var(--line);border-radius:4px;background-color:var(--panel);
+    display:flex;align-items:center;justify-content:center;font-size:11px;line-height:1;color:transparent}
+  .vzrow.on .tick{background-color:var(--blue);border-color:var(--blue);color:#fff}
+  .vzrow .nm2{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--txt)}
+  .vzrow .num{text-align:end;font-variant-numeric:tabular-nums;font-family:ui-monospace,Consolas,monospace;color:var(--txt-2)}
+  .vzrow .lvl{font-size:var(--ui-detail-small);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .vzrow .mv{text-align:end;font-variant-numeric:tabular-nums;color:var(--mut)}
+  .vzempty{padding:26px 12px;text-align:center;color:var(--mut);font-size:var(--ui-detail-small)}
 </style>
 </head>
 <body>
@@ -1948,6 +1970,13 @@
          the nav reads left-to-right in the order a game is actually worked through:
          detect it, replay it, curate it, configure. -->
     <button class="navbtn hidden" data-view="samples" id="navSamples">样本库</button>
+    <!-- 1.0.8 快照五号 §一 — 数据可视化. It sits immediately after the two libraries because it
+         CONSUMES them and nothing else: the page is a picker over 存档 + 样本 whose only output is
+         an offline HTML. Placed before 黑名单 for the same reading-order reason §1.2 gave the
+         three tabs above (detect → replay → curate → **export** → people → configure).
+         ⚠ `hidden` in the markup and gated in `viewAllowed` — it is not a feature an unactivated
+         build may reach, because every input it reads is behind the same gate. -->
+    <button class="navbtn hidden" data-view="viz" id="navViz">数据可视化</button>
     <!-- 0.4.9 §一.7 — the blacklist sits after the libraries: it is the same kind of thing (a
          local list the operator curates) and reading left to right it comes last because it is
          the one list that is about PEOPLE rather than about games. -->
@@ -2802,6 +2831,37 @@
           <tbody></tbody>
         </table></div>
       </div>
+    </div>
+  </section>
+
+  <!-- ======================= 数据可视化（1.0.8 快照五号 §一） ======================= -->
+  <!-- The picker behind 「数据可视化」. Three things make it a *page* rather than a button in the
+       list toolbars: the two sources (存档 / 样本) live in different views, the picker must survive a
+       filter change in either of them, and 「勾选 → 确认」 is the interaction §一.2 asks for — a
+       selection the operator can see and edit before anything is written to disk.
+
+       ⚠ The list is built by `renderViz()` from `vizItems()` and NOTHING else, for the same reason
+       `visibleArchivePage` routes through `filterArchives`: the rows on screen and the rows
+       「全选」 acts on have to be produced by one call, or a bulk action ticks rows nobody can see.
+       ⚠ No search / filter controls here on purpose — this is a chooser, not a second library.
+       Narrowing happens in the library it belongs to, and the picker shows what exists. -->
+  <section class="view" id="view-viz">
+    <div class="panel">
+      <div class="tabs">
+        <div class="tab active" data-vsrc="archive" id="vzTabArchive">存档</div>
+        <div class="tab" data-vsrc="sample" id="vzTabSample">样本</div>
+      </div>
+      <div class="filters-bar">
+        <span class="hint" id="vzCount">—</span>
+        <span class="sp"></span>
+        <button class="sec" id="vzAll">全选</button>
+        <button class="sec" id="vzNone">全不选</button>
+        <button class="sec" id="vzGo">导出</button>
+      </div>
+      <!-- The one sentence that explains what the two export shapes are. Kept OUT of the button's
+           title: an operator who never hovers would export three games expecting three reports. -->
+      <div class="hint" id="vzTip" style="margin-top:9px"></div>
+      <div class="vzlist" id="vizList"></div>
     </div>
   </section>
 
@@ -4444,6 +4504,12 @@
      figures would read as unreachable and every weight would print as an em dash. -->
 <script src="toast.js"></script>
 <script src="tagWiki.js"></script>
+<!-- 1.0.8 快照五号 §一 — 数据可视化导出器. After `tagWiki.js` because it asks that file for the
+     two numbers it must not spell out (`band('riskHigh'|'riskMid')`, `minHands()`), and before
+     `viewer.js` because the button reaches for `GMViz` the moment it is clicked. It also reads
+     `GMStorage.SIGNAL_WEIGHT_SUM_MAX` at call time, which storage.js publishes long before either
+     of these — all three lookups are lazy, so the order that matters is only "before viewer.js". -->
+<script src="viz-export.js"></script>
 <script src="cloud.js"></script>
 <script src="crypto.js"></script>
 <script src="auth.js"></script>

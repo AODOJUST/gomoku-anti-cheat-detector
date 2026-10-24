@@ -8,6 +8,18 @@ nobody ever read the history from there anyway.
 Every entry below is the original prose, verbatim — only the headings and blank lines are new.
 
 ## 1.0.8
+**快照五号（同版本补丁 · 一页新的导出器 + 一处接口补齐）**
+
+- **次级导航多了一页「数据可视化」**（「样本库」之后、「黑名单」之前，在激活门槛后面）。两个来源（存档 / 样本）各一张列表，点行勾选，顶上实时写「已选 n 局 / 共 m 局」，一局都没勾时「导出」禁用。
+- **勾 1 局 → 单局页**：分数卡（含基础分 / 无上限加分的拆分、有效手数与门槛判定）、信号贡献（逐项，金点标出真正兑现了加分的几项）、逐手档位时间轴、棋盘、低手数段、逐手明细表、「这一页怎么读」。**勾 ≥2 局 → 汇总页**：KPI、风险排行、黑方×白方散点、N 局全表、逐局摘要。
+- 产物是**自包含 HTML**（不联网、无 CDN、无外链图片，双击即开，可以直接发给别人），文件名带局数与时间：`viz-1j-20261024-1513.html` / `viz-2j-…`。
+- **数字一律现读，不抄第二份**：三档线 `GM_TAG_WIKI.band()`、证据门槛 `GM_TAG_WIKI.minHands()`、分数上限 `GMStorage.SIGNAL_WEIGHT_SUM_MAX`（所以印的是 150，不是旧表那个 100）、信号清单从 `report.<side>.contributions` 的键派生、无上限组用 `bonusByKey` 的键。**判词不复算**：等级读 `report.level`、类型读 `types` —— 分类器在段数表之前有一条「深度 × 节奏」早退分支，照着段数自己推会推错（65 手那局白方 `lowRuns = 2` 却判 `evasiveAi`）。
+- **镜像 + 对账**：`countsForSide()` 是 `app.js` 那条判据的镜像（五个条件逐条对应），镜像之后立刻用报告给的 n 对账，不符就拒绝生成并说明是哪一局、哪一侧、两边各是多少。
+- **汇总页刻意不铺逐手图**（N×60×2 个节点会把页面拖死），要看逐手请单独导出一局。
+- **修：`tagWiki.minHands()` 只写实现、没导出**（快照一号留下的），导出器一调就抛错 —— 现补进 `GM_TAG_WIKI` 公开接口（标签百科自己也用同一个数）。
+- **修：列表容器 `id="vzList"` 与代码里的 `vizList` 不一致** —— 症状是列表永远空白、三颗按钮全没接上（`renderViz` 静默返回、`wireViz` 抛 TypeError 打断整个 IIFE）。已统一。
+- 新增 `verify-113-viz.cjs`（静态 147 条：五个唯一出口、镜像六条件、反向 id、加载顺序、`keys.cjs` 白名单）与 `behave-113-viz.cjs`（真浏览器 66 条：点导航、切来源、勾选、导出两份产物并读回全文）。
+
 **快照四号（同版本补丁 · 两处算法 + 一颗键）**
 
 - **「TOP1 吻合」进无上限计分法**：`UNBOUNDED_KEYS` 四项 → **五项**（`top1` / `sharpStreak` / `sharpTotal` / `liveThree` / `goodPool`），`app.js` 与 `learn.js` 两份字面量逐字同步。权重表仍是 16 项、合计仍是 1.50、风险上限仍是 150 —— 改的是「谁能超过自己的权重」，不是权重值。
