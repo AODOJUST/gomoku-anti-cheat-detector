@@ -15294,10 +15294,12 @@
     return Math.max(b, w);
   }
   function vizMoves(it) {
-    var rep = it.report || {};
-    var n = (rep.steps || []).length;
+    // ⚠ 整局手数只有棋谱知道。`rep.steps` 只覆盖「扩展接管之后」的手 —— 拿它当手数，
+    //    局中接入的对局在列表里会少报一半（导出的棋盘也曾经因此少掉最开始的几颗子）。
+    var rec = it.record || {};
+    var n = (rec.moves || []).length;
+    if (!n) n = (it.report && it.report.steps || []).length;
     if (!n) n = it.totalMoves || 0;
-    if (!n && it.record && it.record.moves) n = it.record.moves.length;
     return n || 0;
   }
   // 一局有两个等级，清单里只能写一个：取**较重的那一侧**，与 `maxRisk` / `maxLevel` 同口径。

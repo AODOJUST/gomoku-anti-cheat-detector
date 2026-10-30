@@ -165,6 +165,61 @@
     return t;
   }
 
+  /* ---------------- 整局棋谱：`record` 才是权威，不是 `report.steps` ---------------- */
+  // ⚠⚠ **`rep.steps` 不是整局**。它只覆盖「扩展接管之后落下的手」：局中接入、刷新页面、
+  //     刚装扩展时，前面的手根本没有 step 行（引擎没被问过）。而 `record.moves` 是完整的。
+  //     把 steps 当整盘，导出的棋盘就会「没有最开始的几颗子」，时间轴的横轴也会把第 10 手
+  //     画在第 1 格 —— 图上看着完整，实际上前半局凭空消失。
+  //     `slimStep` 里那个 `i` 字段就是为这件事存在的（「25 手局中接入只画了前 13 颗」）。
+  function boardOf(entry, rep) {
+    var rec = (entry && entry.record) || {};
+    var mv = (rec.moves || []).filter(function (m) { return m && m.length === 2; });
+    var srcs = rec.sources || [];
+    var full = mv.length > 0;
+    if (!full) {
+      // 没有棋谱（很老的样本 / 手工导入）：退回到被分析的手。残缺但诚实 —— 调用方会在
+      // 说明里写清楚「这一局没有完整棋谱」。
+      mv = (rep.steps || []).filter(function (s) { return s && s.actual; }).map(function (s) { return s.actual; });
+      srcs = [];
+    }
+    var st = rec.stones || [];
+    var sides = [], nos = [], no = 0;
+    mv.forEach(function (_, i) {
+      var v = st[i];
+      // 记录的颜色优先；没有 `stones` 才按奇偶猜（`sources` 里有 ai-suggest 时会猜错，
+      // 所以这只是老数据的兜底）。
+      sides.push(v === 1 ? 'B' : (v === 2 ? 'W' : (i % 2 === 0 ? 'B' : 'W')));
+      // 手序：参考子（ai-suggest）不占号 —— 与 `app.js` 的 `noAt()` 同一规则。
+      if (srcs[i] === 'ai-suggest') { nos.push(null); }
+      else { no++; nos.push(no); }
+    });
+    return { moves: mv, sides: sides, nos: nos, full: full, n: mv.length };
+  }
+
+  // ⚠ 手序规则的第二份实现（第一份是 `app.js` 的 `noAt()`）。所以镜像之后**立刻对账**：
+  //   每个 step 都带着自己判的是第几颗子（`step.i`），两边的号必须一致，不一致就拒绝生成。
+  function assertMoveNo(rep, bd) {
+    var steps = rep.steps || [];
+    for (var i = 0; i < steps.length; i++) {
+      var s = steps[i];
+      if (typeof s.i !== 'number' || s.moveNo == null || s.i >= bd.n) continue;
+      if (bd.nos[s.i] !== s.moveNo) {
+        throw new Error('手序对不上：第 ' + (s.i + 1) + ' 颗子记作第 ' + s.moveNo + ' 手，棋谱算第 ' + bd.nos[s.i] + ' 手');
+      }
+    }
+  }
+
+  // 棋盘下标 → step。`i` 是权威；没有它（0.4 之前的档案）才按「覆盖的是最后几手」对齐。
+  function stepAt(rep, bd) {
+    var map = {}, steps = rep.steps || [];
+    var off = bd.n - steps.length;
+    steps.forEach(function (s, k) {
+      var i = typeof s.i === 'number' ? s.i : (off + k);
+      if (i >= 0 && i < bd.n) map[i] = s;
+    });
+    return map;
+  }
+
   /* ---------------- 单局：双方卡片 ---------------- */
   function sideCard(rep, k, pl, opts) {
     var a = rep[k === 'B' ? 'black' : 'white'];
@@ -284,14 +339,19 @@
   }
 
   /* ---------------- 单局：逐手时间轴 ---------------- */
+  // ⚠ 横轴是**整局手序**，不是 `steps` 的数组下标。用下标排 x，会把「第 10 手」画在第 1 格，
+  //   刻度 5 / 10 也跟着变成下标 —— 图看着像整局，其实整体错位（这也是「最开始的几颗子不见
+  //   了」的另一半：不是没画，是画到了别的位置上）。
   function secTimeline(rep, opts) {
     var steps = rep.steps || [];
-    if (!steps.length) return '';
+    var bd = opts.bd || null;
+    if (!steps.length || !bd || !bd.n) return '';
     var W = 1180, padL = 46, padR = 18;
     var plotW = W - padL - padR;
     var cut = rep.openingCutoff || 0;
-    var colW = plotW / steps.length;
+    var colW = plotW / bd.n;
     function X(i) { return padL + i * colW + colW / 2; }
+    function idxOf(s, k) { return typeof s.i === 'number' ? s.i : (bd.n - steps.length + k); }
 
     var wrTop = 30, wrH = 110;
     var bY = 168, wY = 200, barH = 24;
@@ -301,7 +361,8 @@
       var segs = [], k = 0;
       steps.forEach(function (s, i) {
         if (s[field] == null) return;
-        segs.push((k ? 'L' : 'M') + X(i).toFixed(1) + ',' + (wrTop + (1 - s[field]) * wrH).toFixed(1));
+        var x = X(idxOf(s, i));
+        segs.push((k ? 'L' : 'M') + x.toFixed(1) + ',' + (wrTop + (1 - s[field]) * wrH).toFixed(1));
         k++;
       });
       return segs.join(' ');
@@ -311,7 +372,7 @@
     steps.forEach(function (s, i) {
       var t = tierOf(s);
       var y = s.side === 'B' ? bY : wY;
-      var x = padL + i * colW;
+      var x = padL + idxOf(s, i) * colW;
       bands[s.side === 'W' ? 'W' : 'B'] += '<rect x="' + x.toFixed(1) + '" y="' + y + '" width="' + Math.max(colW - 1.2, 1) +
         '" height="' + barH + '" fill="' + C[t] + '" rx="1.5"><title>' +
         esc(T('viz|第 {m} 手', { m: s.moveNo }) + ' ' + (s.side === 'B' ? T('viz|黑') : T('viz|白')) + ' ' + (s.actualStr || '') +
@@ -319,10 +380,11 @@
     });
 
     var ticks = [];
-    for (var m = 5; m <= steps.length; m += 5) {
-      var i = m - 1;
-      ticks.push('<line x1="' + X(i) + '" y1="' + wrTop + '" x2="' + X(i) + '" y2="' + (wY + barH) + '" stroke="#eef1f6"/>' +
-        '<text x="' + X(i) + '" y="' + (H - 8) + '" text-anchor="middle" font-size="9.5" fill="#98a2b0">' + m + '</text>');
+    // 刻度按**手序**打，间距随整局手数走（不是随被分析的手数）。
+    var stepNo = bd.n <= 30 ? 5 : (bd.n <= 60 ? 10 : 20);
+    for (var m = stepNo; m <= bd.n; m += stepNo) {
+      ticks.push('<line x1="' + X(m - 1) + '" y1="' + wrTop + '" x2="' + X(m - 1) + '" y2="' + (wY + barH) + '" stroke="#eef1f6"/>' +
+        '<text x="' + X(m - 1) + '" y="' + (H - 8) + '" text-anchor="middle" font-size="9.5" fill="#98a2b0">' + m + '</text>');
     }
     var gridY = [0, 0.25, 0.5, 0.75, 1].map(function (v) {
       return '<line x1="' + padL + '" y1="' + (wrTop + (1 - v) * wrH) + '" x2="' + (W - padR) + '" y2="' + (wrTop + (1 - v) * wrH) + '" stroke="#f1f4f8"/>' +
@@ -343,10 +405,15 @@
       '<line x1="86" y1="12.5" x2="102" y2="12.5" stroke="#9aa6b6" stroke-width="1.4" stroke-dasharray="3 2"/>' +
       '<text x="106" y="16" font-size="10" fill="#6b7787">' + esc(T('viz|引擎首选')) + '</text></g>';
 
-    var cutX = cut > 0 ? X(cut - 0.5) : null;
+    // 开场截止线按**手序**画（cut 是每方的开局手数，手上是第 cut 手之后的边界）。
+    var cutX = cut > 0 ? (padL + Math.min(cut, bd.n) * colW) : null;
+    var gap = typeof steps[0].i === 'number' ? steps[0].i : (bd.n - steps.length);
     return '<section class="card">' +
       '<h2>' + esc(T('viz|二、{n} 手逐手看：落在哪一档', { n: steps.length })) + '</h2>' +
-      '<p class="note">' + T('viz|每格是一手棋。上面是实际手胜率（实线）与引擎首选兑现后的胜率（虚线），两条线的缝就是这一手亏掉的部分；下方两条色带是命中档位。灰色格是没被分析的。') + '</p>' +
+      '<p class="note">' + T('viz|每格是一手棋。上面是实际手胜率（实线）与引擎首选兑现后的胜率（虚线），两条线的缝就是这一手亏掉的部分；下方两条色带是命中档位。灰色格是没被分析的。') +
+        (gap > 0 ? ' ' + T('viz|横轴是整局手序（共 {n} 手）：最左边 {k} 格是空的 —— 那几手没有引擎数据，所以这一节只画得出第 {a} 手之后的部分。',
+          { n: bd.n, k: gap, a: (bd.nos[gap] == null ? gap + 1 : bd.nos[gap]) }) : '') +
+      '</p>' +
       '<svg viewBox="0 0 ' + W + ' ' + H + '" width="100%" role="img" aria-label="' + esc(T('viz|逐手档位')) + '">' +
         gridY +
         '<path d="' + pathOf('bestWR') + '" fill="none" stroke="#9aa6b6" stroke-width="1.2" stroke-dasharray="3 2"/>' +
@@ -361,9 +428,12 @@
   }
 
   /* ---------------- 单局：棋盘 ---------------- */
+  // ⚠ 棋盘画的是**整盘棋**（`record.moves`），不是被分析的那几手。`rep.steps` 只覆盖扩展
+  //   接管之后的手，用它当整盘会让前半局的子凭空消失 —— 见 `boardOf()` 的注释。
   function secBoard(rep, pl, opts) {
-    var steps = rep.steps || [];
-    if (!steps.length) return '';
+    var bd = opts.bd || null;
+    if (!bd || !bd.n) return '';
+    var at = stepAt(rep, bd);
     var N = 15, cell = 30, pad = 26;
     var W = pad * 2 + cell * (N - 1);
     function px(c) { return pad + c * cell; }
@@ -378,43 +448,55 @@
     }).join('');
 
     var termMove = (rep.terminal && rep.terminal.moveNo) || null;
-    var stones = steps.map(function (s) {
-      var pos = s.actual || [0, 0];
-      var t = tierOf(s);
-      var isB = s.side === 'B';
+    var stones = '';
+    for (var si = 0; si < bd.n; si++) {
+      var pos = bd.moves[si];
+      if (!pos) continue;
+      var s = at[si] || null;
+      var isB = bd.sides[si] === 'B';
+      var t = s ? tierOf(s) : null;
       var ring = t === 'top1' ? C.top1 : (t === 'out' ? C.out : null);
       var ringW = t === 'top1' ? 1.3 : 2.3;
       var ringO = t === 'top1' ? 0.5 : 0.95;
-      var isLast = s.moveNo === termMove;
-      return '<g><title>' + esc(T('viz|第 {m} 手', { m: s.moveNo }) + ' · ' +
-          (isB ? T('viz|黑方') : T('viz|白方')) + ' ' + (pl[isB ? 'black' : 'white'] || '') + ' · ' + (s.actualStr || '') +
-          ' / ' + (s.bestStr || '—') + ' · ' + tierLabel(t) +
-          (countsForSide(s, s.side) ? ' · ' + T('viz|计入') : ' · ' + T('viz|不计入'))) + '</title>' +
+      var no = bd.nos[si];
+      var isLast = no != null && no === termMove;
+      var tip = esc(no == null ? T('viz|参考子') : T('viz|第 {m} 手', { m: no })) + ' · ' +
+        (isB ? T('viz|黑方') : T('viz|白方')) + ' ' + (pl[isB ? 'black' : 'white'] || '') +
+        (s ? ' · ' + (s.actualStr || '') + ' / ' + (s.bestStr || '—') + ' · ' + tierLabel(t) +
+              (countsForSide(s, s.side) ? ' · ' + T('viz|计入') : ' · ' + T('viz|不计入'))
+           : ' · ' + T('viz|未分析'));
+      stones += '<g><title>' + tip + '</title>' +
         (ring ? '<circle cx="' + px(pos[1]) + '" cy="' + py(pos[0]) + '" r="13.6" fill="none" stroke="' + ring +
           '" stroke-width="' + ringW + '" opacity="' + ringO + '"/>' : '') +
         (isLast ? '<circle cx="' + px(pos[1]) + '" cy="' + py(pos[0]) + '" r="15.2" fill="none" stroke="#2b3038" stroke-width="1.2" stroke-dasharray="3 2"/>' : '') +
         '<circle cx="' + px(pos[1]) + '" cy="' + py(pos[0]) + '" r="11.6" fill="' + (isB ? '#24292f' : '#ffffff') +
-          '" stroke="' + (isB ? '#11151a' : '#b9c2cf') + '" stroke-width="1"/>' +
+          '" stroke="' + (isB ? '#11151a' : '#b9c2cf') + '" stroke-width="1"' +
+          (s ? '' : ' opacity="0.62"') + '/>' +
         '<text x="' + px(pos[1]) + '" y="' + (py(pos[0]) + 3.4) + '" text-anchor="middle" font-size="9.5" font-weight="600" fill="' +
-          (isB ? '#ffffff' : '#3b4657') + '" font-family="ui-monospace,Consolas,monospace">' + s.moveNo + '</text></g>';
-    }).join('');
+          (isB ? '#ffffff' : '#3b4657') + '" fill-opacity="' + (s ? 1 : 0.45) +
+          '" font-family="ui-monospace,Consolas,monospace">' + (no == null ? '' : no) + '</text></g>';
+    }
 
     function statBox(k) {
       var isB = k === 'B';
       var t = { top1: 0, top3: 0, top5: 0, out: 0, na: 0 };
-      var total = 0, counted = 0;
-      steps.forEach(function (s) {
-        if (s.side !== k) return;
-        total++;
-        t[tierOf(s)]++;
-        if (countsForSide(s, k)) counted++;
-      });
+      var played = 0, analysed = 0, counted = 0;
+      for (var i = 0; i < bd.n; i++) {
+        if (bd.sides[i] !== k) continue;
+        played++;
+        var ss = at[i];
+        if (!ss) continue;
+        analysed++;
+        t[tierOf(ss)]++;
+        if (countsForSide(ss, k)) counted++;
+      }
       var nm = isB ? pl.black : pl.white;
       return '<div class="bs ' + (isB ? 'b' : 'w') + '">' +
         '<div class="bs-h">' + esc((isB ? T('viz|黑方') : T('viz|白方')) + ' · ' + (nm || '—')) + '</div>' +
-        '<div class="bs-row"><span>' + esc(T('viz|总手数')) + '</span><span class="n">' + total + '</span></div>' +
+        '<div class="bs-row"><span>' + esc(T('viz|落子')) + '</span><span class="n">' + played + '</span></div>' +
+        '<div class="bs-row"><span>' + esc(T('viz|已分析')) + '</span><span class="n">' + analysed + '</span></div>' +
         '<div class="bs-row"><span>' + esc(T('viz|计入有效手数')) + '</span><span class="n">' + counted + '</span></div>' +
-        '<div class="bs-sep">' + esc(T('viz|档位分布（按全部手计）')) + '</div>' +
+        '<div class="bs-sep">' + esc(T('viz|档位分布（按已分析的手计）')) + '</div>' +
         ['top1', 'top3', 'top5', 'out', 'na'].map(function (key) {
           return '<div class="bs-row"><span><span class="dot" style="background:' + C[key] + '"></span>' +
             esc(tierLabel(key)) + '</span><span class="n">' + t[key] + '</span></div>';
@@ -424,9 +506,27 @@
 
     var meta = (opts.meta || {});
     var mm = meta.opening || {};
+    var an = Object.keys(at).map(Number).sort(function (a, b) { return a - b; });
+    var aFrom = an.length ? bd.nos[an[0]] : null;
+    var aTo = an.length ? bd.nos[an[an.length - 1]] : null;
+    // ⚠ 覆盖范围必须写出来。不写的话，一张只有后半局的棋盘看起来和整局一模一样 ——
+    //   而「子上的数字不连续」正是操作者唯一能自己发现的线索，所以连它一起说。
+    var cover = (bd.n > an.length && aFrom != null)
+      ? ' ' + T('viz|本局共 {n} 手，其中 {m} 手有引擎数据（第 {a} 手到第 {b} 手）；其余落子只上棋盘、不进统计，所以子上的数字不连续。',
+          { n: bd.n, m: an.length, a: aFrom, b: aTo })
+      : '';
+    var partial = bd.full ? '' : ' ' + T('viz|这一局没有完整棋谱，棋盘只画得出被分析的手。');
+    // ⚠ 棋谱也可能比这局短（记录在其中途才开始）—— 那种情况下棋盘画到第 n 手就没了，
+    //   而页面上别处还写着「终局 第 m 手」。不说出来的话，缺的那几颗子看起来就像「开局没下」。
+    var termNo = (rep.terminal && rep.terminal.moveNo) || 0;
+    if (bd.full && termNo > bd.n) {
+      partial += ' ' + T('viz|棋谱只记到第 {n} 手，而终局在第 {m} 手 —— 中间的手在记录里就没有。',
+        { n: bd.n, m: termNo });
+    }
     return '<section class="card">' +
-      '<h2>' + esc(T('viz|三、棋盘：{n} 手落点', { n: steps.length })) + '</h2>' +
-      '<p class="note">' + T('viz|子上的数字是手序。<b>金色外环</b>＝这一手就是引擎首选（TOP1），<b>红色外环</b>＝没进前五，虚线圆＝终局那一手。右侧的档位分布按<b>全部手</b>计，与卡片里的命中率不是同一个口径 —— 强制应手必然是 TOP1，而它们已被剔出有效手数。') +
+      '<h2>' + esc(T('viz|三、棋盘：{n} 手落点', { n: bd.n })) + '</h2>' +
+      '<p class="note">' + T('viz|子上的数字是手序。<b>金色外环</b>＝这一手就是引擎首选（TOP1），<b>红色外环</b>＝没进前五，虚线圆＝终局那一手。右侧的档位分布按<b>已分析的手</b>计，与卡片里的命中率不是同一个口径 —— 强制应手必然是 TOP1，而它们已被剔出有效手数。') +
+        cover + partial +
         (mm.fullName ? ' ' + esc(T('viz|开局')) + '：' + esc(mm.fullName) + '（' + esc(mm.category || '—') + ' · ' + esc(mm.code || '—') + '）。' : '') +
       '</p>' +
       '<div class="boardwrap">' +
@@ -443,14 +543,24 @@
   }
 
   /* ---------------- 单局：低手数段 ---------------- */
-  function secLowRuns(rep, pl) {
+  // ⚠ `segments` 的 `from`/`to` 是 **steps 的下标**，不是手序。steps 从半局开始时两者差着一截，
+  //   直接用 `from + 1` 印手序会把「第 10–12 手」写成「第 1–3 手」。这里一律换成棋谱下标。
+  function secLowRuns(rep, pl, opts) {
     var steps = rep.steps || [];
+    var bd = (opts && opts.bd) || null;
     var segs = rep.segments || {};
-    if (!steps.length || (!(segs.B || []).length && !(segs.W || []).length)) return '';
+    if (!steps.length || !bd || !bd.n || (!(segs.B || []).length && !(segs.W || []).length)) return '';
     var W = 1180, padL = 62, padR = 24, plotW = W - padL - padR;
-    var colW = plotW / steps.length;
+    var colW = plotW / bd.n;
     var rowH = 34, top = 40;
     var H = top + 2 * rowH + 40;
+
+    function iOf(k) {
+      var s = steps[k];
+      if (!s) return Math.max(0, Math.min(bd.n - 1, k));
+      return typeof s.i === 'number' ? s.i : (bd.n - steps.length + k);
+    }
+    function noOf(k) { var i = iOf(k); return bd.nos[i] == null ? i + 1 : bd.nos[i]; }
 
     function ranEvasive(side) {
       var ty = (rep.types || {})[side] || {};
@@ -463,13 +573,14 @@
       var ran = ranEvasive(side);
       var g = '';
       (segs[side] || []).forEach(function (sg) {
-        var x = padL + sg.from * colW;
-        var w = (sg.to - sg.from + 1) * colW;
+        var i0 = iOf(sg.from), i1 = iOf(sg.to);
+        var x = padL + i0 * colW;
+        var w = (i1 - i0 + 1) * colW;
         var low = sg.kind === 'low';
         g += '<rect x="' + x.toFixed(1) + '" y="' + y0 + '" width="' + w.toFixed(1) + '" height="' + (rowH - 12) + '" rx="3" fill="' +
           (low ? (isB ? '#dbe5f7' : '#f7dcd9') : '#eff2f7') + '" stroke="' + (low ? (isB ? '#b8cbec' : '#eec3bd') : 'none') + '">' +
           '<title>' + esc((isB ? T('viz|黑方') : T('viz|白方')) + ' ' + (low ? T('viz|低手数段') : T('viz|高手数段')) +
-            ' · ' + T('viz|第 {a}–{b} 手', { a: sg.from + 1, b: sg.to + 1 })) + '</title></rect>';
+            ' · ' + T('viz|第 {a}–{b} 手', { a: noOf(sg.from), b: noOf(sg.to) })) + '</title></rect>';
         if (low && ran) {
           var cnt = 0;
           for (var i = sg.from; i <= sg.to; i++) {
@@ -484,7 +595,7 @@
       });
       steps.forEach(function (s, i) {
         if (s.side !== side) return;
-        var cx = padL + i * colW + colW / 2;
+        var cx = padL + iOf(i) * colW + colW / 2;
         var counted = countsForSide(s, side);
         g += '<circle cx="' + cx.toFixed(1) + '" cy="' + (y0 + (rowH - 12) / 2) + '" r="' + (counted ? 2.6 : 1.6) + '" fill="' +
           (counted ? c : '#c3cbd7') + '" opacity="' + (counted ? 0.95 : 0.8) + '"><title>' +
@@ -524,7 +635,7 @@
       '<svg viewBox="0 0 ' + W + ' ' + H + '" width="100%" role="img" aria-label="' + esc(T('viz|低手数段')) + '">' +
         row('B', top) + row('W', top + rowH) +
         '<text x="' + padL + '" y="' + (H - 8) + '" font-size="9.5" fill="#98a2b0">' + esc(T('viz|手序 →')) + '</text>' +
-        '<text x="' + (W - padR) + '" y="' + (H - 8) + '" text-anchor="end" font-size="9.5" fill="#98a2b0">' + steps.length + '</text>' +
+        '<text x="' + (W - padR) + '" y="' + (H - 8) + '" text-anchor="end" font-size="9.5" fill="#98a2b0">' + bd.n + '</text>' +
       '</svg>' +
       '<div class="evrow">' + chip('B') + chip('W') + '</div></section>';
   }
@@ -547,15 +658,39 @@
     }).join('');
   }
 
-  function secTable(rep) {
-    var steps = rep.steps || [];
-    if (!steps.length) return '';
-    var rows = steps.map(function (s) {
+  // ⚠ 坐标的唯一出口是 `storage.js` 的 `coordToShare`（`app.js` 也是转给它）。这里只做转发，
+  //   不自己拼字母和数字 —— 那会变成第二份实现，列/行一旦反过来整个明细表都是错的。
+  function coordOf(p) {
+    var S = root.GMStorage;
+    if (S && typeof S.coordToShare === 'function') return S.coordToShare(p);
+    return '—';
+  }
+
+  // 明细表列**整局**。没被分析的手也有一行（位置与颜色来自棋谱），否则表格会像棋盘那样
+  // 从第 N 手开始 —— 而读者没有任何线索知道前面还有手。
+  function secTable(rep, bd) {
+    if (!bd || !bd.n) return '';
+    var at = stepAt(rep, bd);
+    var rows = '';
+    for (var i = 0; i < bd.n; i++) {
+      var s = at[i] || null;
+      var no = bd.nos[i];
+      var isB = bd.sides[i] === 'B';
+      if (!s) {
+        rows += '<tr class="dim">' +
+          '<td class="num">' + (no == null ? '—' : no) + '</td>' +
+          '<td><span class="side ' + (isB ? 'b' : 'w') + '">' + esc(isB ? T('viz|黑') : T('viz|白')) + '</span></td>' +
+          '<td class="mono">' + esc(coordOf(bd.moves[i])) + '</td>' +
+          '<td class="mono">—</td><td class="num">—</td><td class="num">—</td><td class="num">—</td>' +
+          '<td><span class="tier" style="--c:' + C.na + '">' + esc(T('viz|未分析')) + '</span></td>' +
+          '<td class="num"></td><td class="flags"></td></tr>';
+        continue;
+      }
       var t = tierOf(s);
       var inc = countsForSide(s, s.side);
       var loss = s.loss;
       var cls = loss == null ? '' : (loss >= 0.12 ? 'bad' : (loss >= 0.04 ? 'warn' : ''));
-      return '<tr class="' + (inc ? '' : 'dim') + '">' +
+      rows += '<tr class="' + (inc ? '' : 'dim') + '">' +
         '<td class="num">' + s.moveNo + '</td>' +
         '<td><span class="side ' + (s.side === 'B' ? 'b' : 'w') + '">' + esc(s.side === 'B' ? T('viz|黑') : T('viz|白')) + '</span></td>' +
         '<td class="mono">' + esc(s.actualStr || '') + '</td>' +
@@ -567,10 +702,12 @@
         '<td class="num">' + (inc ? '✓' : '') + '</td>' +
         '<td class="flags">' + flagChips(s) + '</td>' +
       '</tr>';
-    }).join('');
+    }
     return '<section class="card">' +
       '<h2>' + esc(T('viz|五、逐手明细')) + '</h2>' +
-      '<p class="note">' + T('viz|「损失」＝引擎首选胜率 − 实际手胜率，按百分点显示。灰色行不计入有效手数（开场 / 强制应手 / 四连豁免 / 远点豁免）—— 它们照常显示，只是不参与算分；「计入」列打勾的就是报表里那个 n 的组成。') + '</p>' +
+      '<p class="note">' + T('viz|「损失」＝引擎首选胜率 − 实际手胜率，按百分点显示。灰色行不计入有效手数（开场 / 强制应手 / 四连豁免 / 远点豁免）—— 它们照常显示，只是不参与算分；「计入」列打勾的就是报表里那个 n 的组成。') +
+        (bd.n > (rep.steps || []).length ? ' ' + T('viz|没有引擎数据的手也在表里（各列是「—」），所以这张表的行数就是这局的总手数。') : '') +
+      '</p>' +
       '<div class="tblwrap"><table><thead><tr>' +
         ['viz|手', 'viz|方', 'viz|落子', 'viz|引擎首选', 'viz|实际胜率', 'viz|首选胜率', 'viz|损失', 'viz|档位', 'viz|计入', 'viz|标记']
           .map(function (k) { return '<th>' + esc(T(k)) + '</th>'; }).join('') +
@@ -706,11 +843,15 @@
     if (!rep) throw new Error('report 缺失');
     var keys = sigKeys(rep);
     var hi = needBand('riskHigh'), mid = needBand('riskMid');
+    var bd = boardOf(entry, rep);
+    // ⚠ 手序是 `app.js` 那条规则的镜像，镜像完立刻对账（见 assertMoveNo）。
+    assertMoveNo(rep, bd);
     var o = {
       keys: keys,
       ceil: ceiling(),
       high: hi, mid: mid,
       minHands: needMinHands(),
+      bd: bd,
       meta: (entry.record && entry.record.meta) || {},
     };
     var pl = playersOf(entry);
@@ -731,7 +872,9 @@
     var bar = [
       [T('viz|房间'), meta.roomId || '—'],
       [T('viz|开局'), nm.fullName || nm.name || '—'],
-      [T('viz|总手数'), String((rep.steps || []).length) + ' / ' + T('viz|计分') + ' ' + (rep.scoredCount || 0)],
+      // ⚠ 这行曾经印 `steps.length`，于是同一页里「总手数 5」和「终局 第 14 手」并排出现。
+      //   整局手数只有棋谱知道，被分析的手数只有 report 知道 —— 两个数都印，谁也不冒充谁。
+      [T('viz|总手数'), String(bd.n) + ' ' + T('viz|手') + ' / ' + T('viz|已分析') + ' ' + (rep.steps || []).length + ' ' + T('viz|手')],
       [T('viz|终局'), term.moveNo ? T('viz|第 {m} 手', { m: term.moveNo }) + ' · ' + (term.reason || '—') : '—'],
       [T('viz|引擎'), (eng.name || '—') + (eng.threadNum ? ' · ' + eng.threadNum + T('viz|线程') : '')],
       [T('viz|机型判定'), meta.identity || '—'],
@@ -748,8 +891,8 @@
       (opts.signals === false ? '' : secSignals(rep, pl, o)) +
       (opts.timeline === false ? '' : secTimeline(rep, o)) +
       (opts.board === false ? '' : secBoard(rep, pl, o)) +
-      (opts.lowRuns === false ? '' : secLowRuns(rep, pl)) +
-      (opts.table === false ? '' : secTable(rep)) +
+      (opts.lowRuns === false ? '' : secLowRuns(rep, pl, o)) +
+      (opts.table === false ? '' : secTable(rep, bd)) +
       secHowTo(rep, o) +
       '<footer>' + T('viz|由 {id} 的 report 直接派生 · 引擎 Rapfi-WASM · 本报告信号 {k} 项 · 生成于 {at}',
         { id: entry.id || '—', k: keys.length, at: stamp(new Date().toISOString()) }) + '</footer>\n' +
@@ -776,8 +919,12 @@
       // 免得单局页把这一局拦下、汇总页却照印，两页对同一局给出不同的手数。
       try { assertCounts(rep, { B: b, W: w }); }
       catch (err) { throw new Error((e.name || T('viz|未命名')) + '：' + err.message); }
+      // ⚠ 手数列同样不能拿 `rep.steps.length`：那只数了被分析的手。整局手数只有棋谱知道。
+      var bd = boardOf(e, rep);
+      try { assertMoveNo(rep, bd); }
+      catch (err2) { throw new Error((e.name || T('viz|未命名')) + '：' + err2.message); }
       return { e: e, rep: rep, b: b, w: w, pl: pl, types: types, maxRisk: maxRisk,
-        moves: (rep.steps || []).length };
+        moves: bd.n, analysed: (rep.steps || []).length };
     }).sort(function (x, y) { return y.maxRisk - x.maxRisk; });
 
     var sideTotal = 0, sideHigh = 0, sideMid = 0, sideLow = 0, aiCalls = 0, sumRisk = 0;
