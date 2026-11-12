@@ -641,7 +641,12 @@
     if (!steps.length) return null;
     var top1 = mean(steps.map(function (x) { return x.top1 ? 1 : 0; }));
     var topProx = mean(steps.map(proximity));
-    var losses = steps.map(function (x) { return x.loss; }).filter(function (v) { return v != null; });
+    // ⚠ 1.0.8 快照六号 试过把 `bestWR === 0` 当「没有评估」、整列降级成 null —— **撤回**。
+    // `scoreStep` 只在 `bestWR != null` 时写 `loss`，所以「没有评估」的手拿到的是 null（R4 已转
+    // 中性），而 0 是「必败局面」这个合法读数。判据与撤回的理由留在 app.js `sideAggregate`
+    // 里同一处，这里只保证两边一致（THE MIRROR RULE）。
+    var losses = steps.map(function (x) { return x.loss; })
+      .filter(function (v) { return v != null; });
     // 1.0.7 快照七号 §二 R4, mirrored from app.js sideAggregate(): no loss sample is null, not 0.
     // `mean([])` is 0 here and `rampDown(0, …)` is 1, so an empty sample used to collect a FULL
     // aAcpl. The learner must move with the detector, or it fits weights against a curve the

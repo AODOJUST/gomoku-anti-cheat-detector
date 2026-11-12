@@ -3610,6 +3610,17 @@ function sideAggregate(steps, side, hasTime, params, opts) {
   // ways instead of asserting against a re-implementation of either.
   const legacy = !!(opts && opts.legacyTop1);
   const topProx = avg(s.map(stepProximity));
+  // ⚠⚠ 1.0.8 快照六号 —— 这里**刻意不特殊对待 `bestWR === 0`**，因为试过一次、是错的。
+  //
+  // 数据里确实有一局（`ciu7🐟 VS dennis96292`）`bestWR` 与 `loss` 整列都是 0，看起来像
+  // 「引擎没返回评估 ⇒ loss 是占位符 ⇒ aAcpl 白送满分」。但它不是占位符：`scoreStep` 只在
+  // `bestWR != null` 时才写 `loss`（见它上面那行 `if (bestWR != null)`），引擎没给评估的手
+  // 拿到的是 **null**，R4 已经把它转成中性 0.5。0 是一个**合法读数** —— 它表示「这个局面已经
+  // 必败」，此时 `loss = 0` 也是真的（本来就没有可失去的胜率）。
+  //
+  // 把它当缺失会同时改坏三件事：`verify-060` 的 all-zero 基线（acpl 10 → 5）、`verify-076`
+  // 的「真零损失拿满这一项」（10 → 5）、以及所有 bestWR 恰好为 0 的历史档案。⇒ 判据留在这里
+  // 而不是留在提交信息里，免得下一个人再按同一个直觉改一遍。
   const losses = s.map(x => x.loss).filter(v => v != null);
   // 1.0.7 快照七号 §二 R4 — no loss sample is NOT a perfect score.
   // `avg([])` is 0 in JavaScript and `rampDown(0, lo, hi)` is 1, so a side whose every hand came
@@ -3668,11 +3679,11 @@ function sideAggregate(steps, side, hasTime, params, opts) {
   // moves `meanLoss` by more than its whole ramp. The neutral 0.5 says 「no reading」 — it neither
   // awards nor withholds, which is the only honest thing such a short sample supports.
   // ⚠ The 85/50 verdict line is untouched: this moves the ACTIVATION, and only for sides short
-  // enough that the operator's own evidence floor (⑮, MIN_AI_HANDS = 8) already refuses to call
-  // them AI. That containment is exact rather than lucky: this branch fires below SMALL_N (5),
-  // and 5 < 8, so every side it neutralises is one the floor would have refused anyway.
-  // (The floor went 8 → 6 in 快照一号 and back to 8 in 快照四号; the containment held at both
-  // values, and would hold for any floor ≥ 5.) `aTop1`'s legacy branch is gated too, so the
+  // enough that the operator's own evidence floor (⑮) already refuses to call them AI. That
+  // containment is exact rather than lucky: this branch fires below SMALL_N (5), and the floor has
+  // always been ≥ 5, so every side it neutralises is one the floor would have refused anyway.
+  // (The floor went 8 → 6 in 快照一号, back to 8 in 快照四号, and to **12** in 快照六号; the
+  // containment held at all three values.) `aTop1`'s legacy branch is gated too, so the
   // comparison switch cannot drift apart from the live reading it exists to reproduce.
   const aTop1 = n < SMALL_N ? 0.5 : (legacy ? rampUp(top1, t.top1Lo, t.top1Hi)
                                             : rampUp(topProx, t.topProxLo, t.topProxHi));
@@ -4167,7 +4178,29 @@ const LOWEND_STEADY_MIN = 0.7;
 //   与之匹配的位置，否则「6 手就宣布 AI」会变成「6 手里某一手落点好就宣布 AI」。
 //   ⚠ 这一条同样只约束**判词**：`risk` 一位不变，卡片上的大字与边框不会因为门槛变化而改变，
 //     只有「判 AI / 判疑似」这一步会（`_tools/_probe-111-floor.cjs` 把 130 侧的位移量出来了）。
-const MIN_AI_HANDS = 8;
+//
+// ⚠⚠ 1.0.8 快照六号 §一 —— 8 → **12**。这一版第一次拿**样本库里的操作者标注**（30 局 / 60 侧，
+//   40 个带明确标签：28 AI / 12 人类）按证据量分档量了一次准确率（`_tools/_exp-114-sim.cjs`）：
+//
+//     每侧有效手数     侧数   50 线准确   分数中位（AI / 人类）
+//       6–7 手         8       63%           65 / 44
+//       8–9 手         7       71%          125 / 120     ← 两组的分布**重叠**
+//      12–15 手        10      70%          103 / 57
+//      ≥16 手          12     100%          150 / —
+//
+//   8–9 手这一档是唯一「AI 中位 125、人类中位 120」的档：这一档里 145 分的人类与 131 分的 AI
+//   排在同一侧，任何阈值都切不开。原因不是分数算错了，是**证据不够**——短局全是速胜局，
+//   16 个短局侧里 14 个**一手劣势局面都没有**（`bestWR` 全在 0.8 以上），而「已经赢定的手」
+//   走对不携带任何 AI 信息（手级标注 518 手：胜势档 AI 步 top1 64%、非 AI 步 72%，方向是反的）。
+//   ⇒ 8–9 手这一档的 risk 排序能力接近随机（AUC 0.55），继续给「确认 AI」只会增加误报。
+//
+//   移到 12 的代价是明确的、并且在这 40 个带标签的侧上实测过：**判 AI 的侧从 20 个减到 14 个**，
+//   精确率 90.0% → 100%（14/14），召回 64.3% → 50.0%。6 个侧从「确认 AI」降为「疑似 · 证据不足」
+//   （其中 4 个真是 AI、2 个是人类）—— 它们没有被「放过」，只是不再下确定结论。
+//   这是「少判」不是「判得更准」，写在这里是为了下一个人别再指望一个阈值能救短局。
+//   ⚠ 没有同时改 `risk`：`_tools/verify-075` 把「门槛只挡判词、不动分数」钉成断言，是为了防止
+//     这条被改成一个乘到分数上的系数 —— 那会让同一条 50 线在不同 n 上有不同含义。
+const MIN_AI_HANDS = 12;
 
 function classifySide(risk, segments, steps, side, thresholds, acts) {
   const band = riskBand(risk, thresholds);
